@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 import os
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 path = ROOT / 'config' / 'frb_launch_sample_data_v0_1.json'
 source = path.read_text(encoding='utf-8-sig')
 data = json.loads(source)

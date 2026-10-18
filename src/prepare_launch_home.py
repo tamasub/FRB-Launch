@@ -66,7 +66,7 @@ def link_build(root):
 
 if __name__=='__main__':
     import sys
-    root=Path(__file__).parent
+    root=Path(__file__).resolve().parents[1]
     if '--link' in sys.argv:link_build(root)
     else:
         backup=prepare(root)

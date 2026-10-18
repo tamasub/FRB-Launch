@@ -80,7 +80,7 @@ def apply_scrollbar_theme(view, background='#202b29'):
     view.horizontalScrollBar().setStyleSheet(style)
 
 
-ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[1]
 LAUNCH_HOME = launch_home(ROOT)
 CONFIG = LAUNCH_HOME / 'config' / 'frb_launch_sample_data_v0_1.json'
 STATE = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'FRBLaunch'
@@ -120,15 +120,15 @@ def icon(kind):
 
 
 def application_icon():
-    # PyInstaller bundles assets below _MEIPASS; source runs use app.py's folder.
-    resources = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
+    # PyInstaller bundles assets below _MEIPASS; source runs use the project root.
+    resources = Path(getattr(sys, '_MEIPASS', ROOT))
     path = resources / 'assets' / 'frb_launch.ico'
     result = QIcon(str(path))
     return result if not result.isNull() else icon('command')
 
 
 def tray_icon():
-    resources = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
+    resources = Path(getattr(sys, '_MEIPASS', ROOT))
     result = QIcon(str(resources / 'assets' / 'frb_launch_tray.svg'))
     return result if not result.isNull() else application_icon()
 

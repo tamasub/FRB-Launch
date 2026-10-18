@@ -58,5 +58,5 @@ def prepare_build_output(root: Path, retries: int = RETRIES, wait_seconds: float
 
 
 if __name__ == "__main__":
-    project_root = Path(__file__).resolve().parent
+    project_root = Path(__file__).resolve().parents[1]
     sys.exit(0 if prepare_build_output(project_root) else 1)

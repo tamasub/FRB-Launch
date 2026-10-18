@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 PROBE_CODE = (
     "import json, struct, sys; "
     "print(json.dumps({'version': list(sys.version_info[:3]), "
@@ -80,9 +80,9 @@ def install_and_check(venv_python: Path, requirements: Path) -> None:
 
 
 def run_build() -> None:
-    build = ROOT / "build_windows.bat"
+    build = ROOT / "_build_windows.bat"
     if not build.is_file():
-        raise RefreshError("build_windows.bat not found")
+        raise RefreshError("_build_windows.bat not found")
     env = os.environ.copy()
     env["FRB_ENV_REFRESH"] = "1"
     must_run(["cmd.exe", "/d", "/c", str(build)], env=env)
@@ -125,8 +125,8 @@ def refresh(*, force: bool = False, no_build: bool = False) -> int:
     print(f"[TARGET] Python {sys.version.split()[0]} / {struct.calcsize('P') * 8}bit", flush=True)
     print(f"[TARGET] {sys.executable}", flush=True)
     requirements = ensure_requirements()
-    if not no_build and not (ROOT / "build_windows.bat").is_file():
-        raise RefreshError("build_windows.bat is missing; update is aborted")
+    if not no_build and not (ROOT / "_build_windows.bat").is_file():
+        raise RefreshError("_build_windows.bat is missing; update is aborted")
 
     venv = ROOT / ".venv"
     if venv.is_symlink():

@@ -35,4 +35,4 @@ def make_zip(root):
     return target
 
 if __name__ == '__main__':
-    print(make_zip(Path(__file__).parent))
+    print(make_zip(Path(__file__).resolve().parents[1]))
