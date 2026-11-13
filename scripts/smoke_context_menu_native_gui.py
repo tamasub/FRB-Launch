@@ -23,6 +23,7 @@ from PySide6.QtWidgets import QApplication
 
 from app import FRBContextMenu
 from context_menu_presentation import style_context_menu
+from context_menu_pixel_probe import changed_label_pixels
 
 
 class StubLauncher:
@@ -86,14 +87,50 @@ def verify_menu(app, *, column):
             and c.green() < 145 and c.blue() < 145,
             67, min(205, image.width() - 20),
         )
-        if icon_pixels < 8 or label_pixels < 8:
+        # A fixed RGB cutoff and x range can misread visible Windows text.
+        # Verify instead that *changing only the QAction label* changes its
+        # rendered pixels.  Keep its 3-glyph Japanese width and icon fixed so
+        # a layout change cannot accidentally satisfy the acceptance test.
+        original_geometry = menu.actionGeometry(copy_action)
+        original_size = (menu.width(), menu.height())
+        try:
+            copy_action.setText('ラベル')  # 3 glyphs, same width as コピー
+            menu.repaint()
+            app.processEvents()
+            variant = menu.grab().toImage().convertToFormat(
+                QImage.Format.Format_RGBA8888)
+            variant_geometry = menu.actionGeometry(copy_action)
+            variant_size = (menu.width(), menu.height())
+        finally:
+            copy_action.setText('コピー')
+            app.processEvents()
+        geometry_unchanged = (
+            original_size == variant_size
+            and original_geometry == variant_geometry
+        )
+        changed_pixels = (
+            changed_label_pixels(image, variant, row)
+            if geometry_unchanged else 0
+        )
+        # A label must change the rasterized row; the icon must be visible.
+        # Old label_pixels is informational because some native palettes/fonts
+        # don't satisfy its hard-coded dark-RGB predicate.
+        if icon_pixels < 8 or changed_pixels < 8:
             target = ROOT / f'context_menu_smoke_failure_{column.lower()}.png'
+            variant_target = ROOT / f'context_menu_smoke_variant_{column.lower()}.png'
             image.save(str(target))
+            variant.save(str(variant_target))
             raise AssertionError(
-                f'{column}: missing visual foreground: '
-                f'icon={icon_pixels}, label={label_pixels}; screenshot={target}'
+                f'{column}: missing visual foreground: icon={icon_pixels}, '
+                f'dark_label={label_pixels}, text_diff={changed_pixels}, '
+                f'geometry_same={geometry_unchanged}; '
+                f'screenshot={target}; variant={variant_target}'
             )
-        print(f'PASS {column}: visible icon ({icon_pixels} px) and label ({label_pixels} px)')
+        print(
+            f'PASS {column}: visible icon ({icon_pixels} px), '
+            f'label text diff ({changed_pixels} px), '
+            f'dark-pixel hint ({label_pixels} px)'
+        )
     finally:
         menu.close()
         app.processEvents()

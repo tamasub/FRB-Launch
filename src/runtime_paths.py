@@ -17,11 +17,28 @@ def launch_home(binary_root):
 
 
 def bundled_studio_root(launch_home_dir):
-    """Resolve a sibling Studio from the *installed* Launch location.
+    """Find Studio by installation layout, independently of old JSON paths.
 
-    None means standalone/developer Launch: retain its existing configured
-    studio_root value. Never consult the process working directory.
+    Supported layouts (prefer an existing EXE, then a source-only tree):
+      1. FRB_Launch/Studio              (portable bundle)
+      2. FRB_Apps/FRB_Studio           (independent sibling app)
+
+    A Studio source tree also counts as an installation root.  In that case,
+    the menu can report the precise missing _publish EXE and its build step,
+    instead of incorrectly trying the old F:/FRB/tools/... setting.
+
+    None means no recognizable local Studio: retain the configured fallback.
+    The process working directory is never used.
     """
-    candidate = Path(launch_home_dir) / 'Studio'
-    exe = candidate / 'NativeShell' / '_publish' / 'FRBStudio.NativeShell.exe'
-    return str(candidate.resolve()) if exe.is_file() else None
+    home = Path(launch_home_dir).resolve()
+    candidates = (home / 'Studio', home.parent / 'FRB_Studio')
+    # Prefer a runnable Studio over an incomplete source-only Studio.
+    for candidate in candidates:
+        exe = candidate / 'NativeShell' / '_publish' / 'FRBStudio.NativeShell.exe'
+        if exe.is_file():
+            return str(candidate.resolve())
+    for candidate in candidates:
+        project = candidate / 'NativeShell' / 'FRBStudio.NativeShell.csproj'
+        if project.is_file():
+            return str(candidate.resolve())
+    return None

@@ -32,7 +32,7 @@
     {
       "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
       "sort_order": 40,
-      "title": "💟 testwk",
+      "title": "💟 testwk_new1",
       "enabled": true,
       "icon_key": "なし"
     },
@@ -48,6 +48,13 @@
       "sort_order": 60,
       "title": "🔗 FRB公開情報",
       "enabled": true
+    },
+    {
+      "title": "Test Page mmm",
+      "icon_key": "⭐",
+      "enabled": true,
+      "sort_order": 70,
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975"
     }
   ],
   "items": [
@@ -343,7 +350,7 @@
       "item_id": "studio_dir",
       "page_id": "system",
       "parent_item_id": "folders",
-      "title": "FRB Studio_App",
+      "title": "FRB Studio",
       "description": "",
       "item_kind": "directory",
       "icon_key": "category.blue",
@@ -1007,7 +1014,7 @@
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat"
+          "launch_target": "%launch_home%\\_make_launch_zip.bat"
         }
       ],
       "shuriken_enabled": true,
@@ -1846,13 +1853,13 @@
       "launch_selection_value_field": "",
       "launch_selection_separator": "",
       "launch_selection_result_name": "",
-      "launch_browse_target": "F:\\FRB\\tools\\FRB_Launch",
+      "launch_browse_target": "%launch_home%",
       "launch_context_app": "",
       "launch_context_url_pattern": "",
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch"
+          "launch_target": "%launch_home%"
         }
       ]
     },
@@ -2139,13 +2146,13 @@
       "launch_selection_value_field": "",
       "launch_selection_separator": "",
       "launch_selection_result_name": "",
-      "launch_browse_target": "F:\\FRB\\tools\\FRBStudio_App\\data\\json",
+      "launch_browse_target": "%studio_root%\\data\\json",
       "launch_context_app": "",
       "launch_context_url_pattern": "",
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRBStudio_App\\data"
+          "launch_target": "%studio_root%\\data"
         }
       ]
     },
@@ -2945,7 +2952,7 @@
       "shuriken_enabled": false
     },
     {
-      "title": "zz",
+      "title": "zz_new",
       "item_kind": "category",
       "icon_key": "folder.pink",
       "enabled": true,
@@ -2985,7 +2992,7 @@
     },
     {
       "title": "_make_launch_zip.bat",
-      "description": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\_make_launch_zip.bat",
       "item_kind": "command",
       "icon_key": "file",
       "enabled": true,
@@ -2993,7 +3000,7 @@
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat",
+          "launch_target": "%launch_home%\\_make_launch_zip.bat",
           "launch_program": "",
           "launch_arguments": [],
           "launch_working_directory": "",
@@ -3270,7 +3277,7 @@
       "sort_order": 20
     },
     {
-      "title": "aaa",
+      "title": "aaa_new",
       "item_kind": "category",
       "icon_key": "folder.gray",
       "enabled": true,
@@ -3336,7 +3343,7 @@
     },
     {
       "title": "pytest.ini",
-      "description": "F:\\FRB\\tools\\FRB_Launch\\pytest.ini",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\pytest.ini",
       "item_kind": "command",
       "icon_key": "file",
       "enabled": true,
@@ -3344,7 +3351,7 @@
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\pytest.ini",
+          "launch_target": "%launch_home%\\pytest.ini",
           "launch_program": "",
           "launch_arguments": [],
           "launch_working_directory": "",
@@ -3362,7 +3369,7 @@
     },
     {
       "title": "open_apps_log.bat",
-      "description": "F:\\FRB\\tools\\FRB_Launch\\open_apps_log.bat",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\open_apps_log.bat",
       "item_kind": "command",
       "icon_key": "file",
       "enabled": true,
@@ -3370,7 +3377,7 @@
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\open_apps_log.bat",
+          "launch_target": "%launch_home%\\open_apps_log.bat",
           "launch_program": "",
           "launch_arguments": [],
           "launch_working_directory": "",
@@ -3388,7 +3395,7 @@
     },
     {
       "title": "_make_launch_zip.bat",
-      "description": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\_make_launch_zip.bat",
       "item_kind": "command",
       "icon_key": "file",
       "enabled": true,
@@ -3396,7 +3403,7 @@
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat",
+          "launch_target": "%launch_home%\\_make_launch_zip.bat",
           "launch_program": "",
           "launch_arguments": [],
           "launch_working_directory": "",
@@ -3414,7 +3421,7 @@
     },
     {
       "title": "_build_windows.bat",
-      "description": "F:\\FRB\\tools\\FRB_Launch\\_build_windows.bat",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\_build_windows.bat",
       "item_kind": "command",
       "icon_key": "file",
       "enabled": true,
@@ -3422,7 +3429,7 @@
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\_build_windows.bat",
+          "launch_target": "%launch_home%\\_build_windows.bat",
           "launch_program": "",
           "launch_arguments": [],
           "launch_working_directory": "",
@@ -3440,7 +3447,7 @@
     },
     {
       "title": "launch_json_move.py",
-      "description": "F:\\FRB\\tools\\FRB_Launch\\src\\launch_json_move.py",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\src\\launch_json_move.py",
       "item_kind": "command",
       "icon_key": "file",
       "enabled": true,
@@ -3448,7 +3455,7 @@
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\src\\launch_json_move.py",
+          "launch_target": "%launch_home%\\src\\launch_json_move.py",
           "launch_program": "",
           "launch_arguments": [],
           "launch_working_directory": "",
@@ -3466,7 +3473,7 @@
     },
     {
       "title": "registered_root_studio.py",
-      "description": "F:\\FRB\\tools\\FRB_Launch\\src\\registered_root_studio.py",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\src\\registered_root_studio.py",
       "item_kind": "command",
       "icon_key": "file",
       "enabled": true,
@@ -3474,7 +3481,7 @@
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\src\\registered_root_studio.py",
+          "launch_target": "%launch_home%\\src\\registered_root_studio.py",
           "launch_program": "",
           "launch_arguments": [],
           "launch_working_directory": "",
@@ -3492,15 +3499,15 @@
     },
     {
       "title": "experiments",
-      "description": "F:\\FRB\\tools\\FRB_Launch\\experiments",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\experiments",
       "item_kind": "directory",
       "icon_key": "folder.yellow",
       "enabled": true,
-      "launch_browse_target": "F:\\FRB\\tools\\FRB_Launch\\experiments",
+      "launch_browse_target": "%launch_home%\\experiments",
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\experiments",
+          "launch_target": "%launch_home%\\experiments",
           "launch_program": "",
           "launch_arguments": [],
           "launch_working_directory": "",
@@ -3827,6 +3834,383 @@
       "page_id": "frb",
       "item_id": "67d5cc85-6f79-42c8-bcc9-cd8ba16a02fc",
       "sort_order": 50
+    },
+    {
+      "title": "src",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\src",
+      "item_kind": "directory",
+      "icon_key": "folder.yellow",
+      "enabled": true,
+      "launch_browse_target": "F:\\FRB_Apps\\FRB_Launch\\src",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "F:\\FRB_Apps\\FRB_Launch\\src",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "",
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975",
+      "item_id": "d233cb88-3887-402e-bd6f-f3edcd3d2dcf",
+      "sort_order": 10
+    },
+    {
+      "title": "experiments",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\experiments",
+      "item_kind": "directory",
+      "icon_key": "folder.yellow",
+      "enabled": true,
+      "launch_browse_target": "F:\\FRB_Apps\\FRB_Launch\\experiments",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "F:\\FRB_Apps\\FRB_Launch\\experiments",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "",
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975",
+      "item_id": "dddc9eef-4b76-4899-84a7-4103be232df6",
+      "sort_order": 20
+    },
+    {
+      "title": "scripts",
+      "description": "F:\\FRB_Apps\\FRB_Launch\\scripts",
+      "item_kind": "directory",
+      "icon_key": "folder.yellow",
+      "enabled": true,
+      "launch_browse_target": "F:\\FRB_Apps\\FRB_Launch\\scripts",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "F:\\FRB_Apps\\FRB_Launch\\scripts",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "",
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975",
+      "item_id": "811599de-1030-4df1-ac36-cbfc25ee2feb",
+      "sort_order": 30
+    },
+    {
+      "title": "Book1.xlsx",
+      "description": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\Book1.xlsx",
+      "item_kind": "command",
+      "icon_key": "file",
+      "enabled": true,
+      "launch_browse_target": "",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\Book1.xlsx",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "",
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975",
+      "item_id": "386bcfb0-b8a1-423b-bfbf-aaf3c7d1b613",
+      "sort_order": 40
+    },
+    {
+      "title": "VirtualBox_VMs",
+      "description": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\VirtualBox_VMs",
+      "item_kind": "directory",
+      "icon_key": "folder.yellow",
+      "enabled": true,
+      "launch_browse_target": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\VirtualBox_VMs",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\VirtualBox_VMs",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "",
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975",
+      "item_id": "db6114cc-742d-4176-ba31-73d32428eb36",
+      "sort_order": 50
+    },
+    {
+      "title": "Visual Studio 2022",
+      "description": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\Visual Studio 2022",
+      "item_kind": "directory",
+      "icon_key": "folder.yellow",
+      "enabled": true,
+      "launch_browse_target": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\Visual Studio 2022",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\Visual Studio 2022",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "",
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975",
+      "item_id": "1ba558b7-5a57-4a0d-8410-1a022a2e3663",
+      "sort_order": 60
+    },
+    {
+      "title": "サウンド レコーディング",
+      "description": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\サウンド レコーディング",
+      "item_kind": "directory",
+      "icon_key": "folder.yellow",
+      "enabled": true,
+      "launch_browse_target": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\サウンド レコーディング",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\サウンド レコーディング",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "",
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975",
+      "item_id": "e7f0a45e-a8ed-4c50-84c1-77065f9cb000",
+      "sort_order": 70
+    },
+    {
+      "title": "Book1 (1).xlsx",
+      "description": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\Book1 (1).xlsx",
+      "item_kind": "command",
+      "icon_key": "file",
+      "enabled": true,
+      "launch_browse_target": "",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\Book1 (1).xlsx",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "",
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975",
+      "item_id": "583e4ab2-6ee5-4f71-9272-b577047ccf10",
+      "sort_order": 80
+    },
+    {
+      "title": "Default.rdp",
+      "description": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\Default.rdp",
+      "item_kind": "command",
+      "icon_key": "file",
+      "enabled": true,
+      "launch_browse_target": "",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "C:\\Users\\tsub-\\OneDrive\\ドキュメント\\Default.rdp",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "",
+      "page_id": "feaf2ae4-53b8-49c6-b6ce-2519a837d975",
+      "item_id": "d62c5709-480e-48f3-a5e0-2b563cae38f8",
+      "sort_order": 90
+    },
+    {
+      "title": "eee",
+      "item_kind": "category",
+      "icon_key": "category.blue",
+      "enabled": true,
+      "description": "",
+      "launch_browse_target": "",
+      "launch_actions": [],
+      "parent_item_id": "c505af88-cda6-4a06-8181-b65c5b3622ac",
+      "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
+      "item_id": "d95e1b58-0286-4dc1-ae65-66a7547cccdb",
+      "sort_order": 60
+    },
+    {
+      "title": "fff",
+      "item_kind": "category",
+      "icon_key": "category.blue",
+      "enabled": true,
+      "description": "",
+      "launch_browse_target": "",
+      "launch_actions": [],
+      "parent_item_id": "d95e1b58-0286-4dc1-ae65-66a7547cccdb",
+      "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
+      "item_id": "70d1641a-64a7-4504-b3ef-52c0e093fdf7",
+      "sort_order": 10
+    },
+    {
+      "title": "ggg",
+      "item_kind": "category",
+      "icon_key": "category.blue",
+      "enabled": true,
+      "description": "",
+      "launch_browse_target": "",
+      "launch_actions": [],
+      "parent_item_id": "70d1641a-64a7-4504-b3ef-52c0e093fdf7",
+      "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
+      "item_id": "74200b42-c94e-4300-bf76-73998eb80b85",
+      "sort_order": 10
+    },
+    {
+      "title": "hhh",
+      "item_kind": "category",
+      "icon_key": "category.blue",
+      "enabled": true,
+      "description": "",
+      "launch_browse_target": "",
+      "launch_actions": [],
+      "parent_item_id": "74200b42-c94e-4300-bf76-73998eb80b85",
+      "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
+      "item_id": "647ab018-fd12-404a-889f-98ea764e3947",
+      "sort_order": 10
+    },
+    {
+      "title": "iii",
+      "item_kind": "category",
+      "icon_key": "category.blue",
+      "enabled": true,
+      "description": "",
+      "launch_browse_target": "",
+      "launch_actions": [],
+      "parent_item_id": "74200b42-c94e-4300-bf76-73998eb80b85",
+      "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
+      "item_id": "e382f11e-eee5-43dd-9fdf-53b0ce61e774",
+      "sort_order": 20
+    },
+    {
+      "title": "jjj",
+      "item_kind": "category",
+      "icon_key": "category.blue",
+      "enabled": true,
+      "description": "",
+      "launch_browse_target": "",
+      "launch_actions": [],
+      "parent_item_id": "e382f11e-eee5-43dd-9fdf-53b0ce61e774",
+      "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
+      "item_id": "be0ba857-6962-4cd9-b10d-8fc096916d78",
+      "sort_order": 10
+    },
+    {
+      "title": "新しいフォルダー403",
+      "description": "C:\\Users\\tsub-\\Documents\\新しいフォルダー403",
+      "item_kind": "directory",
+      "icon_key": "folder.yellow",
+      "enabled": true,
+      "launch_browse_target": "C:\\Users\\tsub-\\Documents\\新しいフォルダー403",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "C:\\Users\\tsub-\\Documents\\新しいフォルダー403",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "e382f11e-eee5-43dd-9fdf-53b0ce61e774",
+      "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
+      "item_id": "2a5605db-fd9a-4659-9722-39eec9ab3724",
+      "sort_order": 20
+    },
+    {
+      "title": "新しいフォルダー001",
+      "description": "C:\\Users\\tsub-\\Documents\\新しいフォルダー001",
+      "item_kind": "directory",
+      "icon_key": "folder.yellow",
+      "enabled": true,
+      "launch_browse_target": "C:\\Users\\tsub-\\Documents\\新しいフォルダー001",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_target": "C:\\Users\\tsub-\\Documents\\新しいフォルダー001",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "parent_item_id": "e382f11e-eee5-43dd-9fdf-53b0ce61e774",
+      "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
+      "item_id": "ad7937a2-5341-4a1f-8034-10e78253a6ce",
+      "sort_order": 30
+    },
+    {
+      "title": "kkk",
+      "item_kind": "category",
+      "icon_key": "category.blue",
+      "enabled": true,
+      "description": "",
+      "launch_browse_target": "",
+      "launch_actions": [],
+      "parent_item_id": "be0ba857-6962-4cd9-b10d-8fc096916d78",
+      "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
+      "item_id": "c3cad0f7-29a1-4ca0-a1c2-58bc3b86ac37",
+      "sort_order": 10
     }
   ],
   "launch_variables": [
@@ -3834,7 +4218,7 @@
       "variable_id": "studio_root",
       "title": "Studioのフォルダー",
       "launch_variable_type": "literal",
-      "launch_value": "F:\\FRB\\tools\\FRBStudio_App",
+      "launch_value": "F:\\FRB_Apps\\FRB_Studio",
       "launch_date_offset_days": 0,
       "launch_date_format": "",
       "enabled": true

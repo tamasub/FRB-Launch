@@ -435,7 +435,10 @@ def mime_sources(mime):
 def studio_core_root(launch_home, configured_root=''):
     """Find actual Studio source, never fabricate a CLI nor silently direct-write."""
     home = Path(launch_home).resolve()
-    candidates = [configured_root, home / 'Studio', home.parent / 'FRBStudio_App',
+    # Installed FRB_Apps layout takes precedence over a stale saved variable
+    # still pointing to F:/FRB/tools/FRBStudio_App. Never change the JSON here.
+    candidates = [home / 'Studio', home.parent / 'FRB_Studio',
+                  configured_root, home.parent / 'FRBStudio_App',
                   home.parent / 'Studio', home.parent.parent / 'FRBStudio_App']
     for candidate in candidates:
         if not candidate:

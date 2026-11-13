@@ -11907,7 +11907,8 @@ class Launcher(QWidget):
         studio_root = self.expander().values.get('studio_root', '')
         exe = Path(studio_root) / 'NativeShell' / '_publish' / 'FRBStudio.NativeShell.exe'
         if not exe.is_file():
-            self.error('Studioくんが見つかりません: ' + str(exe))
+            self.error('Studioくんの実行ファイルが見つかりません: ' + str(exe)
+                       + '\n新Studioフォルダーで cmd_compile_NativeShell.bat を実行してください。')
             return
         args = ['--open-json=' + str(CONFIG)]
         target_page_id = str(page_id if page_id is not None else self.page_id)
@@ -13238,10 +13239,9 @@ class Launcher(QWidget):
     def expander(self, values=None):
         ex=Expander(self.data,QApplication.clipboard().text(),values or {})
         ex.values.update(launch_data=str(CONFIG),launch_dir=str(ROOT),launch_home=str(LAUNCH_HOME),launch_scripts=str(LAUNCH_HOME/'scripts'))
-        # Portable distribution: the bundled Studio always takes priority.
-        # Do NOT persist a build-machine absolute path in the Launch JSON.
-        # This covers the context settings menu, authored Run actions, and
-        # Studio-managed file routes, all of which share Expander values.
+        # Portable bundle or FRB_Apps sibling Studio takes priority over a
+        # stale absolute path saved in Launch JSON. Never rewrite user data.
+        # Menus, Run actions, Change Core and file routes share this value.
         bundled = bundled_studio_root(LAUNCH_HOME)
         if bundled is not None:
             ex.values['studio_root'] = bundled

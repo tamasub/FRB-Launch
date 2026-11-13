@@ -1,0 +1,9 @@
+/dist/
+/build/
+/backups/
+/app_zip/
+/migration_logs/
+__pycache__/
+*.py[cod]
+/.venv/
+/*.zip

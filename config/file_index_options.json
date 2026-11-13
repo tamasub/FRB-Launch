@@ -7,7 +7,7 @@
   "enabled": true,
   "index_mode": "registered",
   "index_folders": [
-    "F:\\FRB\\tools\\FRB_Launch",
+    "F:\\FRB_Apps\\FRB_Launch",
     "C:\\Users\\tsub-\\Pictures"
   ],
   "max_depth": null,
