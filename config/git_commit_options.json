@@ -1,6 +1,22 @@
 {
-  "version": 1,
+  "version": 2,
   "enabled": true,
-  "repository_path": "F:\\FRB",
-  "include_untracked": true
+  "include_untracked": true,
+  "repositories": [
+    {
+      "id": "frb",
+      "name": "FRB 本体",
+      "path": "F:\\FRB"
+    },
+    {
+      "id": "studio",
+      "name": "FRB Studio",
+      "path": "F:\\FRB_Apps\\FRB_Studio"
+    },
+    {
+      "id": "launch",
+      "name": "FRB Launch",
+      "path": "F:\\FRB_Apps\\FRB_Launch"
+    }
+  ]
 }

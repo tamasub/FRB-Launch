@@ -235,34 +235,78 @@ def _git(repo, *arguments, timeout=30):
 
 
 def read_git_commit_options(config_path):
+    """Load explicit Git commit destinations. No file-path based selection.
+
+    v2 defines named repositories for the UI; no repository is preselected.
+    v1 remains readable for legacy API callers, but Launch's UI requires v2.
+    """
     import json
     options = json.loads(Path(config_path).read_text(encoding='utf-8-sig'))
-    if not isinstance(options, dict) or options.get('version') != 1:
-        raise ValueError('Git設定: version=1 が必要です')
+    if not isinstance(options, dict) or options.get('version') not in (1, 2):
+        raise ValueError('Git設定: version=1 または 2 が必要です')
     if not isinstance(options.get('enabled'), bool):
         raise ValueError('Git設定: enabled は真偽値です')
-    value = options.get('repository_path')
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError('Git設定: repository_path を指定してください')
     if not isinstance(options.get('include_untracked', False), bool):
         raise ValueError('Git設定: include_untracked は真偽値です')
+    if options['version'] == 1:
+        value = options.get('repository_path')
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError('Git設定: repository_path を指定してください')
+        return options
+
+    repositories = options.get('repositories')
+    if not isinstance(repositories, list) or not repositories:
+        raise ValueError('Git設定: repositories に候補を1件以上登録してください')
+    seen_ids, seen_paths = set(), set()
+    for item in repositories:
+        if not isinstance(item, dict):
+            raise ValueError('Git設定: repositories の要素はオブジェクトです')
+        for key in ('id', 'name', 'path'):
+            if not isinstance(item.get(key), str) or not item[key].strip():
+                raise ValueError(f'Git設定: repositories の {key} が不正です')
+        identifier = item['id'].casefold()
+        normalized_path = item['path'].replace('/', '\\').rstrip('\\').casefold()
+        if identifier in seen_ids or normalized_path in seen_paths:
+            raise ValueError('Git設定: 重複するリポジトリIDまたはパスがあります')
+        seen_ids.add(identifier)
+        seen_paths.add(normalized_path)
     return options
 
 
-def git_commit_preview(options):
-    """Validate repo and return tracked-file changes to be committed.
+def selected_git_commit_options(options, repository_id):
+    """Choose exactly one explicitly selected configured repository.
 
-    Untracked files are purposefully left out; they are not silently staged.
+    Filename/location of the message source does not influence this selection.
     """
+    if not options.get('enabled'):
+        raise ValueError('Gitコミット機能は設定で無効になっています')
+    if options.get('version') != 2:
+        raise ValueError('リポジトリ選択用のGit設定 version=2 が必要です')
+    if not isinstance(repository_id, str) or not repository_id:
+        raise ValueError('コミット先リポジトリを選択してください')
+    matches = [repo for repo in options['repositories'] if repo['id'] == repository_id]
+    if len(matches) != 1:
+        raise ValueError('選択したリポジトリはGit設定に存在しません')
+    return {
+        'enabled': True,
+        'repository_path': matches[0]['path'],
+        'include_untracked': options.get('include_untracked', False),
+    }
+
+
+def git_commit_preview(options):
+    """Validate repo and preview the actual tracked/untracked change set."""
     if not options['enabled']:
         raise ValueError('Gitコミット機能は設定で無効になっています')
+    if not options.get('repository_path'):
+        raise ValueError('コミット先リポジトリを選択してください')
     repository = Path(os.path.expandvars(options['repository_path'])).expanduser().resolve()
     if not repository.is_dir():
         raise ValueError('Gitリポジトリのフォルダーがありません: ' + str(repository))
     top = Path(_git(repository, 'rev-parse', '--show-toplevel').strip()).resolve()
     if top != repository:
         raise ValueError('Git設定はリポジトリのルートを指定してください: ' + str(top))
-    untracked_mode = 'normal' if options.get('include_untracked', False) else 'no'
+    untracked_mode = 'all' if options.get('include_untracked', False) else 'no'
     status = _git(repository, '-c', 'core.quotepath=false', 'status', '--porcelain',
                   f'--untracked-files={untracked_mode}')
     lines = [line for line in status.splitlines() if line.strip()]

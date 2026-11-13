@@ -98,7 +98,7 @@ from context_menu_config import load_context_menus, visible_context_entries
 from context_menu_actions import (show_windows_properties, open_file_explorer, open_parent_folder,
                                   open_with_windows_dialog, open_folder_terminal, open_parent_powershell,
                                   run_script_with_pause, rename_file_or_folder, move_to_recycle_bin, sort_browser_entries,
-                                  is_downloads_zip, read_git_commit_options, git_commit_preview,
+                                  is_downloads_zip, read_git_commit_options, selected_git_commit_options, git_commit_preview,
                                   commit_tracked_changes)
 from menu_viewport import place_popup, main_cascade_anchor_x, MENU_SCREEN_MARGIN
 from bookmark_menu import visible_bookmark_children
@@ -13155,24 +13155,36 @@ class Launcher(QWidget):
                 QTimer.singleShot(0, closer)
 
     def git_commit_using_filename(self, selected_path):
-        """Use any selected file name as the message; commit repository changes."""
+        """Ask a human for the Git repository; filename is message text only."""
         try:
             if not Path(selected_path).is_file():
                 raise ValueError('存在するファイルだけが対象です（フォルダーは対象外）')
             options = read_git_commit_options(GIT_COMMIT_OPTIONS)
-            preview = git_commit_preview(options)
-            # QInputDialog#setMinimumWidth only widened the outer dialog on
-            # some Windows Qt styles: the actual QLineEdit stayed ~150px.
-            # Give the editor its OWN minimum width in a normal QDialog.
+            if options.get('version') != 2:
+                raise ValueError('Git設定をversion=2（リポジトリ一覧）へ更新してください')
+            if not options['enabled']:
+                raise ValueError('Gitコミット機能は設定で無効になっています')
+
+            # The source filename is NEVER used to infer a repository.
+            # Selection starts blank for EVERY commit (even if there is only one).
             dialog = QDialog(self)
-            dialog.setWindowTitle('Gitコミットメッセージ')
+            dialog.setWindowTitle('Gitコミット先とメッセージ')
             form = QVBoxLayout(dialog)
             form.setContentsMargins(14, 12, 14, 12)
             form.setSpacing(8)
+            form.addWidget(QLabel('コミット先リポジトリ（必ず選択）:', dialog))
+            repository_selector = QComboBox(dialog)
+            repository_selector.setMinimumWidth(510)
+            repository_selector.addItem('選択してください...', '')
+            for entry in options['repositories']:
+                repository_selector.addItem(
+                    f'{entry["name"]}  [{entry["path"]}]', entry['id'])
+            repository_selector.setCurrentIndex(0)
+            form.addWidget(repository_selector)
             form.addWidget(QLabel('選択ファイルの名前（編集できます）:', dialog))
             message_editor = QLineEdit(dialog)
             message_editor.setText(Path(selected_path).name)
-            message_editor.setMinimumWidth(360)  # The real text input, not its frame.
+            message_editor.setMinimumWidth(510)
             message_editor.selectAll()
             form.addWidget(message_editor)
             actions = QDialogButtonBox(
@@ -13181,20 +13193,24 @@ class Launcher(QWidget):
             actions.accepted.connect(dialog.accept)
             actions.rejected.connect(dialog.reject)
             form.addWidget(actions)
-            dialog.setMinimumWidth(480)
-            dialog.resize(500, dialog.sizeHint().height())
-            accepted = self.run_launch_button_dialog(dialog, actions, message_editor)
-            message = message_editor.text()
+            dialog.setMinimumWidth(680)
+            dialog.resize(720, dialog.sizeHint().height())
+            accepted = self.run_launch_button_dialog(dialog, actions, repository_selector)
             if not accepted:
                 return
+            chosen_id = repository_selector.currentData()
+            message = message_editor.text()
+            # Validate the explicit choice BEFORE reading any repository state.
+            selected_options = selected_git_commit_options(options, chosen_id)
             if not message.strip():
                 raise ValueError('コミットメッセージは空にできません')
+            preview = git_commit_preview(selected_options)
             visible_changes = '\n'.join(preview['changes'][:12])
             if len(preview['changes']) > 12:
                 visible_changes += f'\n...ほか {len(preview["changes"])-12} 件'
             answer = self.ask_remote_confirmation(
                 'Gitコミットの確認',
-                '現在のGit作業ツリーの変更をコミットしますか？',
+                '選択したGitリポジトリの変更をコミットしますか？',
                 informative=(f'リポジトリ: {preview["repository"]}\n'
                              f'コミットメッセージ: {message}\n'
                              f'変更候補: {len(preview["changes"])} 件\n\n'
