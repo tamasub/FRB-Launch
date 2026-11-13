@@ -46,6 +46,7 @@ from webview_routes import bookmark_web_url
 from registered_url_route import registered_embedded_url
 from launch_url_dialog import LaunchURLRegistrationDialog
 from webview_settings import read_webview_settings
+from launch_option_runtime import effective_options_path
 from search_history import SearchHistory, normalize_keyword
 from session_search_history import SessionSearchHistory, SESSION_HISTORY
 from search_history_categories import SearchHistoryCategories, UNCATEGORIZED
@@ -2939,8 +2940,18 @@ class Launcher(QWidget):
         self.frame_title = QLabel('', self)
         self.frame_title.hide()
         self.app_records=installed_apps.read_cache(STATE/'apps_cache.json');self.apps_proc=None;self.apps_log=STATE/'apps.log'
-        self.file_index_options_path = LAUNCH_HOME / 'config' / 'file_index_options.json'
-        self.webview_settings = read_webview_settings(LAUNCH_HOME / 'config' / 'webview_settings.json')
+        # A broken User setting must NEVER be silently ignored. Show an explicit
+        # warning, keep the original User JSON untouched, and allow recovery.
+        try:
+            self.file_index_options_path = effective_options_path(LAUNCH_HOME, STATE, 'file_index')
+            self.webview_settings = read_webview_settings(effective_options_path(LAUNCH_HOME, STATE, 'webview'))
+        except Exception as option_error:
+            self.file_index_options_path = LAUNCH_HOME / 'config' / 'file_index_options.json'
+            self.webview_settings = read_webview_settings(LAUNCH_HOME / 'config' / 'webview_settings.json')
+            QTimer.singleShot(0, lambda reason=str(option_error): self.show_launch_notice(
+                QMessageBox.Icon.Warning, 'FRB Launch - User設定エラー',
+                '保存済みUser設定を適用できませんでした。既存のUser JSONは保持しています。\n'
+                '今回はSystem標準値で起動します。設定を確認してください。\n\n' + reason))
         self.file_index_db = STATE / 'file_index.db'
         self.file_index_busy = False
         self._file_index_manual = False
@@ -3376,6 +3387,8 @@ class Launcher(QWidget):
         self.theme_studio_action = self.theme_menu.addAction('メニュー設定 (FRB Studio)')
         self.theme_studio_action.triggered.connect(
             lambda checked=False: self.launch_configuration_studio(page_properties=True))
+        self.theme_option_settings_action = self.theme_menu.addAction('オプション設定...')
+        self.theme_option_settings_action.triggered.connect(self.open_option_settings)
         self.theme_menu.addSeparator()
         self.theme_about_action = self.theme_menu.addAction('バージョン情報...')
         self.theme_about_action.triggered.connect(self.show_version_information)
@@ -3782,6 +3795,8 @@ class Launcher(QWidget):
 
     def open_theme_menu_at(self, anchor):
         """Reuse the settings menu with a different display anchor for Remote."""
+        if getattr(self, '_option_settings_pending', False):
+            return  # Remote may have a queued open when Options was clicked.
         self.close_cascade_for_main_interaction()
         self.hide_history_popup()
         for theme_id, action in self.theme_actions.items():
@@ -7345,6 +7360,9 @@ class Launcher(QWidget):
             self.settings.setValue('appearance_theme', resolved)
             self.settings.sync()
             self.apply_color_theme()
+            existing = getattr(self, '_option_settings_window', None)
+            if existing is not None and existing.isVisible():
+                existing.set_theme(resolved)
         # Do not leave keyboard navigation on a hidden popup/menu button.
         if self.isVisible():
             self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
@@ -11899,6 +11917,59 @@ class Launcher(QWidget):
             self.composing=bool(event.preeditString())
         return super().eventFilter(obj,event)
 
+    def open_option_settings(self, checked=False):
+        """Dismiss the non-grabbing settings menu before launching the editor.
+
+        This QMenu uses Qt.Tool for the ぐりぐり UI, so QAction.triggered does
+        not reliably hide it.  Defer the dialog until the menu-close events
+        have been processed (the same lifetime rule as About).
+        """
+        if getattr(self, '_option_settings_pending', False):
+            return
+        self._option_settings_pending = True
+        try:
+            self.theme_menu.close()
+            for child in self.theme_menu.findChildren(QMenu):
+                if child.isVisible():
+                    child.close()
+            self.theme_menu.hide()
+            QTimer.singleShot(0, self._show_option_settings_after_menu_close)
+        except Exception:
+            self._option_settings_pending = False
+            raise
+
+    def _show_option_settings_after_menu_close(self):
+        """Reuse an open options dialog or open the one shared editor host."""
+        try:
+            # QAction.triggered may fire before Qt.Tool finishes mouse-release.
+            # A second close here (on the NEXT event-loop turn) is required.
+            for child in self.theme_menu.findChildren(QMenu):
+                if child.isVisible():
+                    child.close()
+                    child.hide()
+            self.theme_menu.close()
+            self.theme_menu.hide()
+            self.theme_menu.setActiveAction(None)
+            wheel = getattr(self, '_remote_context_wheel', None)
+            if wheel is not None and getattr(wheel, 'root', None) is self.theme_menu:
+                wheel.stop()
+            existing = getattr(self, '_option_settings_window', None)
+            if existing is not None and existing.isVisible():
+                existing.raise_()
+                existing.activateWindow()
+                return
+            from option_settings_window import OptionSettingsWindow
+            studio_root = self.expander().values.get('studio_root', '')
+            dialog = OptionSettingsWindow(LAUNCH_HOME, STATE, studio_root=studio_root, parent=self, theme=self.color_theme)
+            self._option_settings_window = dialog
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+        except Exception as exc:
+            self.error('オプション設定を起動できません: ' + str(exc))
+        finally:
+            self._option_settings_pending = False
+
     def launch_configuration_studio(self, *, item_id=None, new_category=False,
                                     page_properties=False, page_id=None):
         """Open the authored Launch DataJSON.  UI never edits the JSON itself."""
@@ -11910,7 +11981,9 @@ class Launcher(QWidget):
             self.error('Studioくんの実行ファイルが見つかりません: ' + str(exe)
                        + '\n新Studioフォルダーで cmd_compile_NativeShell.bat を実行してください。')
             return
-        args = ['--open-json=' + str(CONFIG)]
+        args = ['--open-json=' + str(CONFIG),
+                '--launch-view-def=' + str((Path(LAUNCH_HOME) / 'defs' / 'launch' /
+                                          'frb_launch_maintenance_view_def_v0_1.json').resolve())]
         target_page_id = str(page_id if page_id is not None else self.page_id)
         if new_category:
             args.append('--launch-new-category=' + target_page_id)

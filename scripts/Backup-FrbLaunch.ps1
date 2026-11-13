@@ -122,6 +122,22 @@ function Add-UserSettingsAndLogs {
                 Add-BackupDirectory -Source $child.FullName `
                     -EntryPrefix ('user_data/' + $child.Name) `
                     -Destination $Destination -DiagnosticOnly
+            } elseif ($child.Name -ieq 'UserConfig') {
+                # New Option Settings: these JSONs are the User-owned source
+                # of truth. Back up only persistent *.json files, never locks,
+                # temporary saves, or the composed EffectiveOptions cache.
+                foreach ($configFile in (Get-ChildItem -LiteralPath $child.FullName -File -Filter '*.json' -Force)) {
+                    if (($configFile.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        continue
+                    }
+                    [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                        $Destination,
+                        $configFile.FullName,
+                        ('user_data/UserConfig/' + $configFile.Name),
+                        [System.IO.Compression.CompressionLevel]::Optimal
+                    )
+                    $script:entryCount++
+                }
             } elseif ($child.Name -ieq '_Backups' -or $child.Name -ieq 'web_profile') {
                 Write-Host ('[INFO] Backup/runtime/browser directory excluded: user_data/' +
                     $child.Name)

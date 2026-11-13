@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 from launch_menu_registration import (RegistrationError, VIEW_DEF, DOCUMENT_REF,
+                                      launch_view_def_path,
                                       _invoke_delete_cli)
 
 PAGE_VIEW = 'pages_view'
@@ -90,6 +91,7 @@ def commit_page_operation(config_path, studio_root, action, *, page_id='',
     trusted = {'schema_version': 'studio_change_core_config_v0_1',
                'documents': {DOCUMENT_REF: {
                    'path': str(plan['filename']), 'view_def': VIEW_DEF,
+                   'view_def_path': str(launch_view_def_path(plan['filename'])),
                    'view_id': PAGE_VIEW, 'section_ids': [PAGE_SECTION]}}}
     request = {'schema_version': 'studio_changeset_v0_1',
                'request_id': 'launch-page-' + uuid.uuid4().hex,

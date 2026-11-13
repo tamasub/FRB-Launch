@@ -17,7 +17,7 @@ class SiblingStudioCoreTests(unittest.TestCase):
             launch.mkdir(parents=True)
             studio = apps / 'FRB_Studio'
             cli = studio / 'tools/change_core/cli.mjs'
-            viewdef = studio / 'defs/launch/frb_launch_maintenance_view_def_v0_1.json'
+            viewdef = launch / 'defs/launch/frb_launch_maintenance_view_def_v0_1.json'
             for path in (cli, viewdef):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('test', encoding='utf-8')
@@ -28,6 +28,8 @@ class SiblingStudioCoreTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('test', encoding='utf-8')
             self.assertEqual(studio_core_root(launch, old), studio.resolve())
+            # Studio owns no Launch ViewDef; renaming Studio's defs/launch is safe.
+            self.assertFalse((studio / 'defs/launch').exists())
 
     def test_new_root_is_independent_of_working_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

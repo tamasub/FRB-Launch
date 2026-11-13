@@ -66,7 +66,7 @@
       "description": "日付入力と定型プロンプト",
       "item_kind": "category",
       "icon_key": "category.blue",
-      "sort_order": 30,
+      "sort_order": 20,
       "enabled": true,
       "keywords": [],
       "launch_selection_group_id": "",
@@ -87,7 +87,7 @@
       "description": "組織別の宛先を選択",
       "item_kind": "category",
       "icon_key": "category.blue",
-      "sort_order": 40,
+      "sort_order": 30,
       "enabled": true,
       "keywords": [],
       "launch_selection_group_id": "",
@@ -1120,7 +1120,7 @@
       "description": "接続中の出力デバイスから選ぶ",
       "item_kind": "command",
       "icon_key": "volume",
-      "sort_order": 60,
+      "sort_order": 50,
       "enabled": true,
       "keywords": [],
       "launch_selection_group_id": "",
@@ -1160,7 +1160,7 @@
       "description": "接続中の出力デバイスから選ぶ",
       "item_kind": "command",
       "icon_key": "volume",
-      "sort_order": 70,
+      "sort_order": 60,
       "enabled": true,
       "keywords": [],
       "launch_selection_group_id": "",
@@ -2327,26 +2327,6 @@
       ]
     },
     {
-      "page_id": "work",
-      "parent_item_id": "",
-      "item_id": "928afb99-5394-4bf6-8c53-6333874421ff",
-      "title": "Quick",
-      "description": "",
-      "item_kind": "category",
-      "icon_key": "category.blue",
-      "sort_order": 20,
-      "enabled": true,
-      "keywords": [],
-      "launch_selection_group_id": "",
-      "launch_selection_value_field": "",
-      "launch_selection_separator": "",
-      "launch_selection_result_name": "",
-      "launch_browse_target": "",
-      "launch_context_app": "",
-      "launch_context_url_pattern": "",
-      "launch_actions": []
-    },
-    {
       "item_id": "bc7c281c-7842-4166-bb49-e960e43fa51a",
       "page_id": "system",
       "parent_item_id": "folders",
@@ -2609,44 +2589,6 @@
         {
           "launch_action_type": "Open",
           "launch_target": "%launch_home%\\backup_frb_launch_config_log.bat"
-        }
-      ]
-    },
-    {
-      "page_id": "work",
-      "parent_item_id": "928afb99-5394-4bf6-8c53-6333874421ff",
-      "item_id": "d337a881-435f-4e8a-8083-52bca2dd112d",
-      "title": "AI協働：Python製ランチャー「FRB Launch」の独自UI機能14選 ～ぐりぐり・とんとん・ごちゃまぜの操作革命～",
-      "description": "",
-      "item_kind": "command",
-      "icon_key": "globe",
-      "sort_order": 20,
-      "enabled": true,
-      "keywords": [],
-      "launch_selection_group_id": "",
-      "launch_selection_value_field": "",
-      "launch_selection_separator": "",
-      "launch_selection_result_name": "",
-      "launch_browse_target": "",
-      "launch_context_app": "",
-      "launch_context_url_pattern": "",
-      "launch_actions": [
-        {
-          "launch_action_type": "Open",
-          "launch_target": "https://qiita.com/tamasub/items/659b0b74c5cacbba701f",
-          "launch_text": "",
-          "launch_program": "explorer.exe",
-          "launch_arguments": [
-            "ms-settings:network-wifi"
-          ],
-          "launch_working_directory": "",
-          "launch_browser": "",
-          "launch_wait_for_exit": false,
-          "launch_show_console": false,
-          "launch_timeout_ms": 30000,
-          "launch_failure_policy": "stop",
-          "launch_result_name": "",
-          "launch_result_format": "none"
         }
       ]
     },
@@ -4211,6 +4153,76 @@
       "page_id": "f582b998-0dee-4e21-bc9e-54e937850abb",
       "item_id": "c3cad0f7-29a1-4ca0-a1c2-58bc3b86ac37",
       "sort_order": 10
+    },
+    {
+      "item_id": "bd27e9ef-4c5c-440e-991d-58460c63b5a5",
+      "page_id": "work",
+      "parent_item_id": "",
+      "title": "ごみ箱",
+      "description": "shell:RecycleBinFolder",
+      "item_kind": "command",
+      "icon_key": "folder.gray",
+      "sort_order": 40,
+      "enabled": true,
+      "keywords": [],
+      "launch_selection_group_id": "",
+      "launch_selection_value_field": "value",
+      "launch_selection_separator": "; ",
+      "launch_selection_result_name": "recipients",
+      "launch_browse_target": "",
+      "launch_context_app": "",
+      "launch_context_url_pattern": "",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_text": "",
+          "launch_target": "shell:RecycleBinFolder",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "shuriken_enabled": false
+    },
+    {
+      "item_id": "6b4a4ace-edc9-44f7-bdd9-04eb3245a7b5",
+      "page_id": "windows",
+      "parent_item_id": "locations",
+      "title": "ビデオ",
+      "description": "shell:My Video",
+      "item_kind": "command",
+      "icon_key": "folder.yellow",
+      "sort_order": 105,
+      "enabled": true,
+      "keywords": [],
+      "launch_selection_group_id": "",
+      "launch_selection_value_field": "value",
+      "launch_selection_separator": "; ",
+      "launch_selection_result_name": "recipients",
+      "launch_browse_target": "",
+      "launch_context_app": "",
+      "launch_context_url_pattern": "",
+      "launch_actions": [
+        {
+          "launch_action_type": "Open",
+          "launch_text": "",
+          "launch_target": "shell:My Video",
+          "launch_program": "",
+          "launch_arguments": [],
+          "launch_working_directory": "",
+          "launch_wait_for_exit": false,
+          "launch_timeout_ms": 30000,
+          "launch_failure_policy": "stop",
+          "launch_result_name": "",
+          "launch_result_format": "none"
+        }
+      ],
+      "shuriken_enabled": false
     }
   ],
   "launch_variables": [

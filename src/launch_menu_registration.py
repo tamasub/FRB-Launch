@@ -21,6 +21,12 @@ from html import unescape
 
 
 VIEW_DEF = 'launch/frb_launch_maintenance_view_def_v0_1.json'
+
+
+def launch_view_def_path(config_path):
+    """One authoritative Launch-owned ViewDef, independent of Studio's defs."""
+    filename = Path(config_path).resolve()
+    return filename.parent.parent / 'defs' / VIEW_DEF
 VIEW_ID = 'items_view'
 SECTION_ID = 'items'
 DOCUMENT_REF = 'approved_launch_config'
@@ -445,7 +451,7 @@ def studio_core_root(launch_home, configured_root=''):
             continue
         root = Path(candidate)
         if ((root / 'tools/change_core/cli.mjs').is_file() and
-                (root / 'defs' / VIEW_DEF).is_file()):
+                launch_view_def_path(home / 'config' / 'frb_launch_data.json').is_file()):
             return root.resolve()
     raise RegistrationError('Studio Change Coreが見つかりません。Studioの配置先を確認してください。')
 
@@ -475,6 +481,7 @@ def commit_add(config_path, studio_root, page_id, parent_id, records, *, timeout
     config = {'schema_version': 'studio_change_core_config_v0_1',
               'documents': {DOCUMENT_REF: {
                   'path': str(filename), 'view_def': VIEW_DEF,
+                  'view_def_path': str(launch_view_def_path(filename)),
                   'view_id': VIEW_ID, 'section_ids': [SECTION_ID]}}}
     request = {
         'schema_version': 'studio_changeset_v0_1',
@@ -545,6 +552,7 @@ def _delete_trusted_config(filename):
     return {'schema_version': 'studio_change_core_config_v0_1',
             'documents': {DOCUMENT_REF: {
                 'path': str(filename), 'view_def': VIEW_DEF,
+                  'view_def_path': str(launch_view_def_path(filename)),
                 'view_id': VIEW_ID, 'section_ids': [SECTION_ID]}}}
 
 
