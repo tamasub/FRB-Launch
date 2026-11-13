@@ -70,6 +70,10 @@
               "type": "stringArray",
               "edit": {
                 "visible": true
+              },
+              "visibleWhen": {
+                "field": "index_mode",
+                "equals": "configured"
               }
             },
             {

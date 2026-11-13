@@ -35,5 +35,8 @@ class LaunchViewDefContractTests(unittest.TestCase):
         self.assertIn('self.resize(660, 530)',source)
         self.assertIn('&theme={self._theme}',source)
         self.assertIn('def set_theme(self, theme):',source)
+        self.assertIn('DwmSetWindowAttribute',source)
+        self.assertIn('def showEvent(self, event):',source)
+        self.assertIn('self._apply_native_titlebar_theme()',source)
 
 if __name__=='__main__':unittest.main()

@@ -70,6 +70,8 @@ def test_launch_owns_viewdefs_and_only_one_registry():
     mode=next(f for f in fields if f['field']=='index_mode')
     assert [o['value'] for o in mode['options']]==['registered','configured','off']
     assert all(any(ord(c)>127 for c in o['label']) for o in mode['options'])
+    folders=next(f for f in fields if f['field']=='index_folders')
+    assert folders['visibleWhen']=={'field':'index_mode','equals':'configured'}
     help_field=next(f for f in fields if f['field']=='_index_mode_help')
     assert help_field['type']=='textarea' and help_field['readonly']
     assert help_field['edit']['readonly'] is True

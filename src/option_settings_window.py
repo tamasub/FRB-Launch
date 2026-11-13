@@ -5,6 +5,7 @@ implemented here.  A private loopback Node process handles Composition/Save.
 """
 from __future__ import annotations
 import json
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt, QUrl
@@ -56,8 +57,40 @@ class OptionSettingsWindow(QDialog):
         self._process.errorOccurred.connect(lambda e: self.label.setText('起動エラー: '+self._process.errorString()))
         self._process.start()
 
+    def _apply_native_titlebar_theme(self):
+        """Match the Windows DWM caption to Launch's light/dark theme.
+
+        The WebEngine CSS cannot style a native QDialog title bar.
+        On older Windows builds, unsupported DWM attributes fail harmlessly.
+        """
+        if sys.platform != 'win32':
+            return
+        try:
+            import ctypes
+            hwnd = ctypes.c_void_p(int(self.winId()))
+            set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+            dark = ctypes.c_int(1 if self._theme == 'dark' else 0)
+            for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
+                if set_attribute(hwnd, attribute, ctypes.byref(dark), ctypes.sizeof(dark)) == 0:
+                    break
+            # Windows 11: match the Launch dark green titlebar instead of black.
+            # COLORREF is 0x00BBGGRR; 0xFFFFFFFF restores OS defaults in light mode.
+            caption = ctypes.c_uint32(0x00272b20 if self._theme == 'dark' else 0xFFFFFFFF)
+            foreground = ctypes.c_uint32(0x00ebf0e6 if self._theme == 'dark' else 0xFFFFFFFF)
+            set_attribute(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))
+            set_attribute(hwnd, 36, ctypes.byref(foreground), ctypes.sizeof(foreground))
+        except (OSError, AttributeError, ValueError):
+            # Native caption theming is cosmetic.  Never block option editing.
+            pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._apply_native_titlebar_theme()
+
     def set_theme(self, theme):
         self._theme = 'dark' if str(theme).lower() == 'dark' else 'light'
+        if self.isVisible():
+            self._apply_native_titlebar_theme()
         if self.view.url().isValid():
             self.view.page().runJavaScript(
                 "document.documentElement.dataset.theme = " + json.dumps(self._theme))
