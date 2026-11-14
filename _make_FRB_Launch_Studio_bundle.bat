@@ -11,6 +11,11 @@ set "OUTPUT_DIR=%~3"
 if not defined LAUNCH_SOURCE set "LAUNCH_SOURCE=%~dp0"
 if not defined STUDIO_SOURCE set "STUDIO_SOURCE=%LAUNCH_SOURCE%\..\FRB_Studio"
 if not defined OUTPUT_DIR set "OUTPUT_DIR=%LAUNCH_SOURCE%\..\FRB_Release_Output"
+rem Resolve all directory paths before quoting for Python. A trailing backslash
+rem before a closing quote can swallow subsequent arguments on Windows.
+for %%D in ("%LAUNCH_SOURCE%\.") do set "LAUNCH_SOURCE=%%~fD"
+for %%D in ("%STUDIO_SOURCE%\.") do set "STUDIO_SOURCE=%%~fD"
+for %%D in ("%OUTPUT_DIR%\.") do set "OUTPUT_DIR=%%~fD"
 if not exist "%LAUNCH_SOURCE%\scripts\build_portable_distribution.py" (
   echo [ERROR] Current build scripts not found under Launch source:
   echo         "%LAUNCH_SOURCE%\scripts\build_portable_distribution.py"
@@ -67,15 +72,8 @@ if /i "%APPROVAL_INPUT%"=="APPROVED" set "APPROVAL_ARG=--approve-template"
 :approval_done
 echo.
 echo [BUILD] Building portable and updater ZIPs from prebuilt EXEs...
-"%PYTHON_BIN%" "%LAUNCH_SOURCE%\scripts\build_portable_distribution.py" ^
-  --launch-source "%LAUNCH_SOURCE%" ^
-  --studio-source "%STUDIO_SOURCE%" ^
-  --output "%OUTPUT_DIR%" ^
-  --version "%FRB_RELEASE_VERSION%" ^
-  --launch-version "%FRB_LAUNCH_VERSION%" ^
-  --studio-version "%FRB_STUDIO_VERSION%" ^
-  --updater-version "%FRB_UPDATER_VERSION%" ^
-  %APPROVAL_ARG%
+rem One logical line: do not depend on caret continuation or empty last line.
+"%PYTHON_BIN%" "%LAUNCH_SOURCE%\scripts\build_portable_distribution.py" --launch-source "%LAUNCH_SOURCE%" --studio-source "%STUDIO_SOURCE%" --output "%OUTPUT_DIR%" --version "%FRB_RELEASE_VERSION%" --launch-version "%FRB_LAUNCH_VERSION%" --studio-version "%FRB_STUDIO_VERSION%" --updater-version "%FRB_UPDATER_VERSION%" %APPROVAL_ARG%
 set "RESULT=%ERRORLEVEL%"
 if not "%RESULT%"=="0" goto build_error
 echo.

@@ -103,6 +103,10 @@ def test_updater_bootstrap_local_feed_and_product_request(tmp_path):
 
 def test_builder_omits_personal_files_and_preserves_defaults(tmp_path):
     launch=tmp_path/'dist';launch.mkdir();(launch/'FRBLaunch.exe').write_bytes(b'launch')
+    base_lib = launch/'_internal'/'base_library.zip'
+    base_lib.parent.mkdir(parents=True)
+    with zipfile.ZipFile(base_lib, 'w') as z:
+        z.writestr('encodings/__init__.pyc', b'fixture')
     (launch/'launch_home.json').write_text('{"launch_home":"../.."}')
     studio=tmp_path/'studio';(studio/'NativeShell'/'_publish').mkdir(parents=True)
     (studio/'NativeShell'/'_publish'/'FRBStudio.NativeShell.exe').write_bytes(b'studio')

@@ -60,7 +60,8 @@ def _urlopen(url: str, *, allow_local=False):
     check_source(url, allow_local=allow_local)
     return urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent':'FRB-Update/0.1'}),timeout=25)
 
-def download(url: str, output: Path, *, digest: str, size: int, allow_local: bool = False):
+def download(url: str, output: Path, *, digest: str, size: int, allow_local: bool = False,
+             progress=None):
     if not SHA256.fullmatch(str(digest)):
         raise UpdateError('SHA-256が不正です')
     if not isinstance(size, int) or size < 1 or size > MAX_ARCHIVE_SIZE:
@@ -80,6 +81,8 @@ def download(url: str, output: Path, *, digest: str, size: int, allow_local: boo
                     raise UpdateError('ダウンロードが公開サイズを超過しました')
                 actual.update(chunk)
                 fp.write(chunk)
+                if progress is not None and (count == size or count % (8*1024*1024) < len(chunk)):
+                    progress(count,size)
             fp.flush()
         if count != size or actual.hexdigest().lower() != digest.lower():
             raise UpdateError('サイズまたはSHA-256が一致しません')

@@ -50,13 +50,17 @@ def prepare_request(product: dict, work_dir: Path, *, allow_local=False) -> Path
     return target
 
 def start_updater(binary: Path, *, request: Path, install_root: Path, host_pid: int,
-                  host_binary: str = 'FRBLaunch.exe', allow_local: bool = False):
+                  host_binary: str = 'FRBLaunch.exe', allow_local: bool = False,
+                  ready_file: Path | None = None):
     """Launch installed Updater. Caller must close its own UI after this returns."""
     if Path(host_binary).name != host_binary or not host_binary.lower().endswith('.exe'):
         raise UpdateError('起動対象EXE名が不正です')
     cmd = [str(binary), 'apply', '--request', str(request), '--install-root',str(install_root),
            '--wait-pid',str(host_pid),'--host-exe',host_binary]
     if allow_local: cmd.append('--allow-local-for-test')
+    cmd.append('--show-progress')
+    if ready_file is not None:
+        cmd.extend(['--ready-file', str(Path(ready_file).resolve())])
     flags = getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0)
     return subprocess.Popen(cmd,cwd=str(Path(binary).parent),stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,

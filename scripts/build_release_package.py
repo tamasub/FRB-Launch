@@ -7,19 +7,48 @@ import argparse
 import hashlib
 import json
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from frb_update.contracts import safe_relative, sha256_file, version_tuple
-from frb_update.updater_core import PACKAGE_SCHEMA
+from frb_update.updater_core import PACKAGE_SCHEMA, MAX_RELEASE_MANIFEST_SIZE
 
 BLOCKED_NAMES={'.git','.venv','.venv_backup','__pycache__','node_modules','build','app_zip','backups','updater','userdata','userconfig','.pytest_cache'}
 BLOCKED_SUFFIXES={'.pyc','.pyo','.zip','.log','.bak'}
+# PyInstaller --onedir stores its startup standard library (including
+# encodings) in this archive. It is an executable runtime dependency, NOT a
+# user-created .zip to exclude from the System release.
+PYINSTALLER_BASE_LIBRARY = '_internal/base_library.zip'
+
+def verify_pyinstaller_runtime(launch_dist: Path):
+    runtime = launch_dist / PYINSTALLER_BASE_LIBRARY
+    if not runtime.is_file():
+        raise ValueError(
+            'PyInstaller実行環境が不足しています: ' + str(runtime) + '\n'
+            '_build_windows.bat でLaunchを再ビルドし、dist/FRBLaunch/_internal を確認してください'
+        )
+    try:
+        with zipfile.ZipFile(runtime) as archive:
+            # Python 3.10-3.14 PyInstaller archives include the encodings
+            # module, required BEFORE the application can start.
+            if 'encodings/__init__.pyc' not in archive.namelist():
+                raise ValueError('encodings/__init__.pyc が見つかりません')
+            damaged = archive.testzip()
+            if damaged is not None:
+                raise ValueError('破損エントリー: ' + damaged)
+    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+        raise ValueError('PyInstaller base_library.zipが不正です: ' + str(exc)) from exc
+
 
 def selectable(path: Path, rel: str):
     if path.is_symlink() or any(p.casefold() in BLOCKED_NAMES for p in Path(rel).parts):return False
-    if rel.lower().endswith(('.downloading','.tmp')) or path.suffix.lower() in BLOCKED_SUFFIXES:return False
+    if rel.lower().endswith(('.downloading','.tmp')):return False
+    # Keep excluding arbitrary ZIPs; the one required Python runtime archive
+    # is the sole exception, and is validated before package construction.
+    if path.suffix.lower() in BLOCKED_SUFFIXES and rel.casefold() != PYINSTALLER_BASE_LIBRARY:
+        return False
     if rel.casefold() in {'launch_home.json','config/frb_launch_data.json','state.ini','installed_release.json'}:return False
     # System-only distribution. Studio's wwwroot/data mirror contains user documents,
     # even though it sits below the public web asset tree.
@@ -33,6 +62,7 @@ def selectable(path: Path, rel: str):
     return True
 
 def collect_files(launch_dist: Path, studio_runtime: Path, launch_source: Path, *, node_exe=None, node_license=None):
+    verify_pyinstaller_runtime(launch_dist)
     result={}
     for base,prefix in ((launch_dist,''),(studio_runtime,'Studio')):
         if not base.is_dir():raise ValueError(f'ビルド済みディレクトリがありません: {base}')
@@ -76,6 +106,8 @@ def collect_files(launch_dist: Path, studio_runtime: Path, launch_source: Path, 
     bat=launch_source/'backup_frb_launch_config_log.bat'
     if bat.is_file():result[bat.name]=bat
     for name in result:safe_relative(name)
+    if PYINSTALLER_BASE_LIBRARY not in result:
+        raise ValueError('配布物からPyInstaller実行環境が除外されました: ' + PYINSTALLER_BASE_LIBRARY)
     if 'FRBLaunch.exe' not in result:raise ValueError('ビルド済みFRBLaunch.exeが見つかりません')
     if 'Studio/NativeShell/_publish/FRBStudio.NativeShell.exe' not in result:
         raise ValueError('Studio/NativeShell/_publish/FRBStudio.NativeShell.exeが見つかりません')
@@ -102,11 +134,31 @@ def build(args):
               'notes':args.notes or '',
               'files':{name:sha256_file(path) for name,path in files.items()}}
     output=args.output.resolve();output.parent.mkdir(parents=True,exist_ok=True)
-    with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
-        archive.writestr('release.json',json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
-        for name,path in files.items():archive.write(path,'system/'+name)
-    from frb_update.updater_core import validate_zip
-    validate_zip(output,expected_version=args.version)
+    if output.exists():
+        raise FileExistsError('既存の配布ZIPは上書きしません: ' + str(output))
+    manifest_bytes=(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode('utf-8')
+    print(f'[MANIFEST] {len(files):,} files / release.json {len(manifest_bytes):,} bytes / limit {MAX_RELEASE_MANIFEST_SIZE:,} bytes', flush=True)
+    if len(manifest_bytes) > MAX_RELEASE_MANIFEST_SIZE:
+        raise ValueError(
+            f'release.jsonが大きすぎます ({len(manifest_bytes):,} bytes / '
+            f'上限 {MAX_RELEASE_MANIFEST_SIZE:,} bytes、{len(files):,} files)'
+        )
+    # ZIP is not exposed as a release until the archive and every SHA-256
+    # have passed validation. On failure, remove only this temporary file.
+    with tempfile.NamedTemporaryFile(prefix=output.name+'.', suffix='.building',
+                                     dir=output.parent,delete=False) as temp:
+        staged=Path(temp.name)
+    try:
+        with zipfile.ZipFile(staged,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
+            archive.writestr('release.json',manifest_bytes)
+            for name,path in files.items():archive.write(path,'system/'+name)
+        from frb_update.updater_core import validate_zip
+        validate_zip(staged,expected_version=args.version)
+        if output.exists():
+            raise FileExistsError('既存の配布ZIPは上書きしません: ' + str(output))
+        staged.rename(output)
+    finally:
+        staged.unlink(missing_ok=True)
     print('ZIP:',output,'\nFiles:',len(files),'\nSHA256:',sha256_file(output))
     if args.archive_url:
         feed={'schema':'frb-product-feed-v1','product':'FRBLaunchIntegrated','version':args.version,

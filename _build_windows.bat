@@ -37,7 +37,8 @@ if errorlevel 1 goto fail
 :checkpython
 .venv\Scripts\python.exe -c "import sys,struct; print('Build Python:',sys.version); print('Bits:',struct.calcsize('P')*8); sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,15) and struct.calcsize('P')==8 else 1)"
 if errorlevel 1 goto unsupported
-.venv\Scripts\python.exe src\prepare_launch_home.py
+rem Validate only the shipped template. Do NOT migrate/write user config during an EXE build.
+.venv\Scripts\python.exe src\prepare_launch_home.py --build
 if errorlevel 1 goto fail
 rem The migration above must finish before any old dist is removed.
 rem Stop before the long PyInstaller build if the previous DLLs are locked.

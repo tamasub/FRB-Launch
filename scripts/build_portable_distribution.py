@@ -11,7 +11,10 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import sys
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,12 +40,77 @@ def get_node_exe(launch_dist: Path, studio: Path, explicit: Path | None):
 
 
 def find_node_license(node: Path, explicit: Path | None, launch_dist: Path, studio: Path):
-    candidates = ([explicit] if explicit else []) + [
+    """Prefer the exact license supplied with the selected Node.js runtime."""
+    if explicit is not None:
+        if not explicit.is_file():
+            raise FileNotFoundError('Specified --node-license not found: ' + str(explicit))
+        return explicit.resolve()
+    candidates = [
         node.parent / 'LICENSE', node.parent / 'NODE_LICENSE.txt',
         launch_dist / 'runtime/node/LICENSE', launch_dist / 'runtime/node/NODE_LICENSE.txt',
         studio / 'runtime/node/LICENSE', studio / 'runtime/node/NODE_LICENSE.txt',
     ]
-    return next((p.resolve() for p in candidates if p and p.is_file()), None)
+    return next((p.resolve() for p in candidates if p.is_file()), None)
+
+
+def get_node_version(node: Path):
+    """Read the version from the actual executable included in the release."""
+    try:
+        result = subprocess.run([str(node), '-p', 'process.versions.node'],
+                                capture_output=True, text=True, timeout=15, check=True)
+        version = result.stdout.strip()
+        if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+            raise ValueError('Unexpected Node.js version: ' + repr(version))
+        return version
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise RuntimeError('Cannot identify the selected node.exe version. '
+                           'Supply the matching official LICENSE with --node-license. '
+                           'Details: ' + str(exc)) from exc
+
+
+def ensure_node_license(node: Path, explicit: Path | None, launch_dist: Path,
+                        studio: Path, output: Path):
+    """Get the matching Node.js license without changing the source/installed Node.
+
+    A normal MSI installation can contain node.exe but not an adjacent LICENSE.
+    When missing, fetch the LICENSE for that *exact* Node release from the
+    official nodejs/node tagged repository; cache it outside the source tree.
+    If offline, the user can supply the LICENSE from the official Windows ZIP.
+    """
+    license_file = find_node_license(node, explicit, launch_dist, studio)
+    if license_file is not None:
+        return license_file
+
+    version = get_node_version(node)
+    cached = output / '_node_license_cache' / ('v' + version) / 'LICENSE'
+    if cached.is_file() and cached.stat().st_size > 100:
+        print('[NODE] Using cached official Node.js LICENSE:', cached)
+        return cached.resolve()
+
+    url = f'https://raw.githubusercontent.com/nodejs/node/v{version}/LICENSE'
+    print('[NODE] LICENSE not found beside node.exe; retrieving official v' + version + ' LICENSE...')
+    request = urllib.request.Request(url, headers={'User-Agent': 'FRB-ReleaseBuilder/1.0'})
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            data = response.read(4 * 1024 * 1024 + 1)
+        if len(data) > 4 * 1024 * 1024 or len(data) < 100:
+            raise ValueError('License file size is unexpected')
+        header = data[:1000].decode('utf-8', errors='replace')
+        if 'Node.js' not in header and 'Node.js' not in data[:10000].decode('utf-8', errors='replace'):
+            raise ValueError('Official Node.js license signature not found')
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        temp = cached.with_name('LICENSE.downloading')
+        temp.write_bytes(data)
+        temp.replace(cached)
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        raise FileNotFoundError(
+            'Node.js LICENSE missing and automatic retrieval failed for v' + version + ': ' + str(exc) + '\n'
+            'Offline fix: download the official node-v' + version + '-win-x64.zip '
+            'from https://nodejs.org/dist/v' + version + '/ and copy its LICENSE beside node.exe; '
+            'or run build_portable_distribution.py with --node-license PATH_TO_LICENSE.'
+        ) from exc
+    print('[NODE] Official LICENSE cached:', cached)
+    return cached.resolve()
 
 
 def archive_text(name: str, value: str):
@@ -115,14 +183,12 @@ def build(args):
     node = get_node_exe(dist, studio, args.node_exe)
     if node is None:
         raise FileNotFoundError('Node.js runtime unavailable. Specify --node-exe pointing to node.exe')
-    license_file = find_node_license(node, args.node_license, dist, studio)
-    if license_file is None:
-        raise FileNotFoundError('Node.js LICENSE unavailable. Specify --node-license from official Node.js distribution')
     output = args.output.resolve()
     for candidate in (launch, studio, dist):
         if output == candidate or candidate.is_relative_to(output):
             raise ValueError('Output must not contain a source tree')
     output.mkdir(parents=True, exist_ok=True)
+    license_file = ensure_node_license(node, args.node_license, dist, studio, output)
     marker = '' if args.approve_template else '_PRIVATE_REVIEW'
     portable = output / f'FRBLaunch_{args.version}{marker}_portable.zip'
     product = output / f'FRBLaunch_{args.version}{marker}_update.zip'

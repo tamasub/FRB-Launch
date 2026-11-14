@@ -2,12 +2,16 @@
 import json
 import os
 import sys
+import time
+from uuid import uuid4
 from pathlib import Path
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QFrame)
 from frb_update.contracts import UpdateError, read_sources, version_tuple
 from frb_update.bootstrap import check_feeds, ensure_updater, prepare_request, start_updater
+from frb_update.updater_core import pending_recovery
+from frb_update.progress_gate import activate
 
 class UpdateWorker(QThread):
     succeeded = Signal(object)
@@ -27,9 +31,11 @@ class UpdateWorker(QThread):
                                        allow_local=ctx['allow_local'])
                 request=prepare_request(ctx['product_feed'],ctx['work_dir'],
                                         allow_local=ctx['allow_local'])
+                ready_file=Path(ctx['work_dir']) / ('updater_ui_' + uuid4().hex + '.json')
                 process=start_updater(binary,request=request,install_root=ctx['install_root'],
-                                      host_pid=os.getpid(),allow_local=ctx['allow_local'])
-                result={'pid':process.pid}
+                                      host_pid=os.getpid(),allow_local=ctx['allow_local'],
+                                      ready_file=ready_file)
+                result={'pid':process.pid,'process':process,'ready_file':str(ready_file)}
             else:raise UpdateError('不明な処理です')
             self.succeeded.emit(result)
         except Exception as exc:
@@ -51,6 +57,13 @@ class UpdateInformationDialog(QDialog):
         self.product_feed=None
         self.config=None
         self.busy=False
+        self._waiting_for_ui=False
+        self._updater_process=None
+        self._updater_ready_file=None
+        self._ready_started=0.0
+        self._ready_timer=QTimer(self)
+        self._ready_timer.setInterval(150)
+        self._ready_timer.timeout.connect(self._check_updater_ui_ready)
         self.current=None
         state_file=self.install_root/'installed_release.json'
         if state_file.is_file():
@@ -75,12 +88,18 @@ class UpdateInformationDialog(QDialog):
         self.message=QLabel('「最新版を確認」で配布情報を取得します。')
         self.message.setWordWrap(True);self.message.setObjectName('updateStatus')
         lay.addWidget(self.message)
-        last=Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) / 'FRBLaunch' / 'UpdateLogs' / 'last_update_status.json'
+        self.last_result=QLabel('前回の更新結果: まだありません。')
+        self.last_result.setObjectName('lastUpdateResult')
+        self.last_result.setWordWrap(True)
+        lay.addWidget(self.last_result)
+        last=Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) / 'FRBLaunch' / 'UpdateLogs' / 'last_update_status.json' 
         if last.is_file():
             try:
                 status=json.loads(last.read_text('utf-8-sig'))
-                self.message.setText(('前回: 成功 — ' if status.get('success') else '前回: 失敗 — ')
-                                     +str(status.get('message','')))
+                recorded_root=status.get('install_root')
+                if not recorded_root or Path(recorded_root).resolve()==self.install_root:
+                    self.last_result.setText(('前回: 成功 — ' if status.get('success') else '前回: 失敗 — ')
+                                             +str(status.get('message','')))
             except (OSError,ValueError):pass
         lay.addStretch(1)
         buttons=QHBoxLayout();buttons.setSpacing(6)
@@ -101,6 +120,7 @@ class UpdateInformationDialog(QDialog):
             QLabel {{color:{fg};}}
             QLabel#updateHeading {{font-weight:600;font-size:15px;}}
             QLabel#updateStatus {{color:{'#c0d0d1' if dark else '#48545b'};}}
+            QLabel#lastUpdateResult {{color:{'#dfb199' if dark else '#8d4e26'};}}
             QPushButton {{color:{fg};background:{field};border:1px solid {border};
                border-radius:4px;min-height:24px;padding:2px 9px;}}
             QPushButton:disabled {{color:#888888;}}
@@ -158,8 +178,11 @@ class UpdateInformationDialog(QDialog):
             newer=not self.current or version_tuple(product['version'])>version_tuple(self.current['version'])
         except (KeyError,ValueError,UpdateError):newer=False
         self.message.setText('更新可能です。' if newer else '最新版を使用しています。')
-        self.apply.setEnabled(bool(newer and self._can_apply()))
-        if newer and not self._can_apply():
+        recovery_required = pending_recovery(self.install_root)
+        self.apply.setEnabled(bool(newer and self._can_apply() and not recovery_required))
+        if recovery_required:
+            self.message.setText('復旧未完了の更新があります。新しい更新を開始せず、Launchを終了して復旧してください。')
+        elif newer and not self._can_apply():
             self.message.setText('開発用起動では更新できません。製品配布フォルダーで起動してください。')
 
     def _can_apply(self):
@@ -168,6 +191,10 @@ class UpdateInformationDialog(QDialog):
 
     def start_update(self):
         if not self.product_feed or not self.updater_feed or not self._can_apply():return
+        if pending_recovery(self.install_root):
+            self.message.setText('復旧未完了の更新があります。先に復旧が必要です。')
+            self.apply.setEnabled(False)
+            return
         context=self._context()
         context.update({'updater_feed':self.updater_feed,'product_feed':self.product_feed,
                         'work_dir':Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) / 'FRBLaunch' / 'UpdateWork'})
@@ -175,26 +202,80 @@ class UpdateInformationDialog(QDialog):
         self.message.setText('Updaterの検証・準備中...')
 
     def _prepared(self,result):
-        self.message.setText('Updaterを起動しました。Launchを終了します。')
-        from PySide6.QtWidgets import QApplication
-        launcher=self.parent()
-        self.accept()
-        if callable(getattr(launcher,'quit',None)):
-            launcher.quit()
-        else:
-            QApplication.instance().quit()
+        # Do not close Launch until native Updater UI is actually created.
+        # The independent Updater remains gated until we acknowledge it.
+        self._updater_process=result['process']
+        self._updater_ready_file=Path(result['ready_file'])
+        self._waiting_for_ui=True
+        self._ready_started=time.monotonic()
+        self.message.setText('Updater進捗画面の表示を確認しています...')
+        self._ready_timer.start()
+
+    def _check_updater_ui_ready(self):
+        if not self._waiting_for_ui:
+            return
+        try:
+            ready=self._updater_ready_file
+            if ready.is_file():
+                info=json.loads(ready.read_text(encoding='utf-8'))
+                # PyInstaller --onefile may have a supervisor and a worker
+                # process with DIFFERENT PIDs. The UUID-named marker is the
+                # binding, not Popen.pid.
+                if info.get('status') == 'error':
+                    raise RuntimeError('Updater進捗画面の起動失敗: ' + str(info.get('message','')))
+                if info.get('status') != 'ready':
+                    raise RuntimeError('Updater進捗画面の状態が不正です')
+                # This is the single authorization to start the update.
+                activate(ready)
+                self._ready_timer.stop()
+                self._waiting_for_ui=False
+                self.busy=False  # QDialog.closeEvent must allow a normal exit.
+                ready.unlink(missing_ok=True)
+                self.message.setText('Updater進捗画面を確認しました。Launchを終了します。')
+                from PySide6.QtWidgets import QApplication
+                launcher=self.parent()
+                self.accept()
+                if callable(getattr(launcher,'quit',None)):
+                    launcher.quit()
+                else:
+                    QApplication.instance().quit()
+                return
+            if self._updater_process.poll() is not None:
+                raise RuntimeError('Updaterが進捗画面を表示する前に終了しました')
+            if time.monotonic() - self._ready_started > 40:
+                raise TimeoutError('Updater進捗画面を確認できませんでした（40秒）。更新は開始しません。')
+        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+            self._ready_timer.stop()
+            self._waiting_for_ui=False
+            self._updater_process=None
+            self._updater_ready_file=None
+            self._failed(str(exc))
+            self._finish_ui_wait()
+
+    def _finish_ui_wait(self):
+        self.busy=False
+        self.check.setEnabled(True)
+        self.close_btn.setEnabled(True)
+        if self.product_feed and self.updater_feed:
+            try:
+                newer=not self.current or version_tuple(self.product_feed['version'])>version_tuple(self.current['version'])
+                self.apply.setEnabled(bool(newer and self._can_apply() and not pending_recovery(self.install_root)))
+            except (ValueError, KeyError, UpdateError):
+                self.apply.setEnabled(False)
 
     def _failed(self,message):
         self.message.setText('更新処理を開始できません: '+message)
 
     def _finished(self):
+        if self._waiting_for_ui:
+            return  # The separate native progress window has not confirmed startup.
         self.busy=False
         self.check.setEnabled(True)
         self.close_btn.setEnabled(True)
         if self.product_feed and self.updater_feed:
             newer=not self.current or version_tuple(self.product_feed['version'])>version_tuple(self.current['version'])
-            self.apply.setEnabled(bool(newer and self._can_apply()))
+            self.apply.setEnabled(bool(newer and self._can_apply() and not pending_recovery(self.install_root)))
 
     def closeEvent(self,event):
-        if self.busy:event.ignore()
+        if self.busy or self._waiting_for_ui:event.ignore()
         else:super().closeEvent(event)

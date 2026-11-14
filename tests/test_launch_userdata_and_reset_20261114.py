@@ -161,7 +161,7 @@ def test_appdata_user_json_is_the_only_changeset_commit_target(tmp_path, monkeyp
     if not shutil.which('node') or not (studio_root/'tools/change_core/cli.mjs').is_file():
         pytest.skip('node/Studio source unavailable')
     home, state=_fixture(tmp_path)
-    source=ROOT/'config/frb_launch_data.json'
+    source=ROOT/'defaults/frb_launch_data.template.json'
     (home/'config/frb_launch_data.json').write_bytes(source.read_bytes())
     viewfile=home/'defs/launch/frb_launch_maintenance_view_def_v0_1.json'
     viewfile.parent.mkdir(parents=True)

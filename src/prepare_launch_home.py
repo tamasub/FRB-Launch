@@ -69,6 +69,30 @@ def prepare(root):
     return backup
 
 
+def check_build_template(root):
+    """Validate the shipped seed; never migrate or write user-owned data.
+
+    User Launch data now lives in %LOCALAPPDATA%/FRBLaunch/UserData.
+    Building the EXE must not depend on the obsolete config/ launch JSON,
+    the old .launch_home_ready marker, or the current user's AppData.
+    """
+    from launch_config_path import TEMPLATE_RELATIVE
+    from core import validate
+
+    root = Path(root).resolve()
+    template = root / TEMPLATE_RELATIVE
+    if not template.is_file():
+        raise RuntimeError('Launch初期化テンプレートが見つかりません: ' + str(template))
+    try:
+        data = json.loads(template.read_text(encoding='utf-8-sig'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError('Launch初期化テンプレートを読み込めません: ' + str(template)) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError('Launch初期化テンプレートのルートがオブジェクトではありません: ' + str(template))
+    validate(data)
+    return template
+
+
 def link_build(root):
     root=Path(root).resolve();output=root/'dist/FRBLaunch';output.mkdir(parents=True,exist_ok=True)
     (output/'launch_home.json').write_text(json.dumps({'launch_home':'../..'})+'\n',encoding='utf-8')
@@ -76,8 +100,14 @@ def link_build(root):
 if __name__=='__main__':
     import sys
     root=Path(__file__).resolve().parents[1]
-    if '--link' in sys.argv:link_build(root)
+    if '--link' in sys.argv:
+        link_build(root)
+    elif '--build' in sys.argv:
+        template = check_build_template(root)
+        print('[BUILD] Launch template validated:', template)
+        print('[BUILD] UserData stays in AppData; no migration or user writes.')
     else:
+        # Legacy in-place migration is still available explicitly.
         backup=prepare(root)
         print('Launch home:',root)
         print('Config:',root/CONFIG)
