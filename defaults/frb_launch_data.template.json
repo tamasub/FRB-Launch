@@ -361,14 +361,14 @@
       "launch_selection_value_field": "value",
       "launch_selection_separator": "; ",
       "launch_selection_result_name": "recipients",
-      "launch_browse_target": "%studio_root%",
+      "launch_browse_target": "%studio_source_root%",
       "launch_context_app": "",
       "launch_context_url_pattern": "",
       "launch_actions": [
         {
           "launch_action_type": "Open",
           "launch_text": "",
-          "launch_target": "%studio_root%",
+          "launch_target": "%studio_source_root%",
           "launch_program": "",
           "launch_arguments": [],
           "launch_working_directory": "",
@@ -1853,13 +1853,13 @@
       "launch_selection_value_field": "",
       "launch_selection_separator": "",
       "launch_selection_result_name": "",
-      "launch_browse_target": "%launch_home%",
+      "launch_browse_target": "%launch_source_root%",
       "launch_context_app": "",
       "launch_context_url_pattern": "",
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "%launch_home%"
+          "launch_target": "%launch_source_root%"
         }
       ]
     },
@@ -2032,11 +2032,11 @@
           "launch_action_type": "Run",
           "launch_text": "",
           "launch_target": "",
-          "launch_program": "%studio_root%\\NativeShell\\_publish\\FRBStudio.NativeShell.exe",
+          "launch_program": "%studio_source_root%\\NativeShell\\_publish\\FRBStudio.NativeShell.exe",
           "launch_arguments": [
             "--open-json=%launch_data%"
           ],
-          "launch_working_directory": "%studio_root%",
+          "launch_working_directory": "%studio_source_root%",
           "launch_wait_for_exit": false,
           "launch_timeout_ms": 30000,
           "launch_failure_policy": "stop",
@@ -2146,13 +2146,13 @@
       "launch_selection_value_field": "",
       "launch_selection_separator": "",
       "launch_selection_result_name": "",
-      "launch_browse_target": "%studio_root%\\data\\json",
+      "launch_browse_target": "%studio_source_root%\\data\\json",
       "launch_context_app": "",
       "launch_context_url_pattern": "",
       "launch_actions": [
         {
           "launch_action_type": "Open",
-          "launch_target": "%studio_root%\\data"
+          "launch_target": "%studio_source_root%\\data"
         }
       ]
     },
@@ -4294,6 +4294,24 @@
       "title": "イヤフォン識別子",
       "launch_variable_type": "literal",
       "launch_value": "{0.0.0.00000000}.{69c420db-8723-4604-8f97-3024a8900d9f}",
+      "launch_date_offset_days": 0,
+      "launch_date_format": "",
+      "enabled": true
+    },
+    {
+      "variable_id": "launch_source_root",
+      "title": "Launchソースのフォルダー",
+      "launch_variable_type": "literal",
+      "launch_value": "F:\\FRB_Apps\\FRB_Launch",
+      "launch_date_offset_days": 0,
+      "launch_date_format": "",
+      "enabled": true
+    },
+    {
+      "variable_id": "studio_source_root",
+      "title": "Studioソースのフォルダー",
+      "launch_variable_type": "literal",
+      "launch_value": "F:\\FRB_Apps\\FRB_Studio",
       "launch_date_offset_days": 0,
       "launch_date_format": "",
       "enabled": true

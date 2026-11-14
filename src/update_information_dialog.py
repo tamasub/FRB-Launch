@@ -52,6 +52,7 @@ class UpdateInformationDialog(QDialog):
         self.install_root=Path(install_root).resolve()
         self.launch_home=Path(launch_home).resolve()
         self.sources_path=self.launch_home/'defs'/'update'/'update_sources.json'
+        self.user_sources_path=self.install_root/'UserConfig'/'update_sources.json'
         self.worker=None
         self.updater_feed=None
         self.product_feed=None
@@ -144,7 +145,7 @@ class UpdateInformationDialog(QDialog):
         except (OSError,AttributeError,ValueError):pass
 
     def _context(self):
-        sources=read_sources(self.sources_path)
+        sources=read_sources(self.sources_path, user_path=self.user_sources_path)
         allow_local=bool(sources.get('allow_local_for_test',False))
         return {'sources':sources,'allow_local':allow_local,'install_root':self.install_root}
 

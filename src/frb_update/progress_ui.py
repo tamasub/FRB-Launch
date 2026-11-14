@@ -29,6 +29,22 @@ STAGE_NAMES = {
 }
 
 
+def bar_display(phase, current=None, total=None):
+    """Return (mode, pos) independent of Windows control implementation.
+
+    Do not let final events inherit a previous marquee animation even when
+    the final progress callback supplied no current/total. 1000 means 100%.
+    """
+    if phase == 'completed':
+        return 'value', 1000
+    if phase == 'failed':
+        return 'value', 0
+    if (isinstance(total, (int, float)) and total > 0
+            and isinstance(current, (int, float))):
+        return 'value', max(0, min(1000, round(current * 1000 / total)))
+    return 'marquee', None
+
+
 def show_progress_window(task, *, on_ready=None):
     """Run task(report) once, showing native progress on Windows.
 
@@ -125,7 +141,7 @@ def _win32_progress_window(task, *, on_ready=None):
     WS_OVERLAPPEDWINDOW = 0x00CF0000
     WS_CAPTION_ONLY = WS_OVERLAPPEDWINDOW & ~0x00040000 & ~0x00010000  # no resizing/maximize
 
-    state = {'finished': False, 'result': 1, 'indeterminate': False}
+    state = {'finished': False, 'result': 1, 'bar_mode': None}
     events = queue.Queue()
     widgets = {}
 
@@ -142,22 +158,31 @@ def _win32_progress_window(task, *, on_ready=None):
                 stage_text = STAGE_NAMES.get(phase, phase)
                 set_text(widgets['stage'], stage_text + (f'  {percent}%' if percent is not None else ''))
                 set_text(widgets['detail'], str(message))
-                if determinate:
-                    if state['indeterminate']:
-                        send_message(widgets['bar'], PBM_SETMARQUEE, 0, 0)
-                        state['indeterminate'] = False
-                    position = max(0, min(1000, round(current * 1000 / total)))
-                    send_message(widgets['bar'], PBM_SETPOS, position, 0)
-                elif phase in ('completed', 'failed'):
-                    if state['indeterminate']:
-                        send_message(widgets['bar'], PBM_SETMARQUEE, 0, 0)
-                        state['indeterminate'] = False
-                    send_message(widgets['bar'], PBM_SETPOS, 1000 if phase == 'completed' else 0, 0)
-                elif not state['indeterminate']:
-                    send_message(widgets['bar'], PBM_SETMARQUEE, 1, 45)
-                    state['indeterminate'] = True
+                # Windows progress controls created with PBS_MARQUEE remain
+                # marquee-style even after PBM_SETMARQUEE(False). Use two
+                # separate controls and swap visibility for reliable progress.
+                mode, position = bar_display(phase, current, total)
+                if mode != state['bar_mode']:
+                    if mode == 'value':
+                        send_message(widgets['bar_marquee'], PBM_SETMARQUEE, 0, 0)
+                        show_window(widgets['bar_marquee'], 0)
+                        show_window(widgets['bar_value'], 5)
+                    else:
+                        show_window(widgets['bar_value'], 0)
+                        show_window(widgets['bar_marquee'], 5)
+                        send_message(widgets['bar_marquee'], PBM_SETMARQUEE, 1, 45)
+                    state['bar_mode'] = mode
+                if mode == 'value':
+                    send_message(widgets['bar_value'], PBM_SETPOS, position, 0)
             elif item[0] == 'done':
                 state['finished'] = True
+                # A final success must *look* complete, including the bar.
+                send_message(widgets['bar_marquee'], PBM_SETMARQUEE, 0, 0)
+                show_window(widgets['bar_marquee'], 0)
+                show_window(widgets['bar_value'], 5)
+                send_message(widgets['bar_value'], PBM_SETPOS,
+                             1000 if state['result'] == 0 else 0, 0)
+                state['bar_mode'] = 'value'
                 set_text(widgets['stage'], '更新処理が完了しました' if state['result'] == 0 else '更新できませんでした')
                 set_text(widgets['notice'], '処理が終了しました。結果を確認して閉じてください。')
                 enable(widgets['close'], True)
@@ -210,8 +235,15 @@ def _win32_progress_window(task, *, on_ready=None):
     # current Windows theme rather than requiring a separate bundled UI stack.
     widgets['title'] = child('STATIC', 'FRB Updater', 0, 22, 18, 460, 28)
     widgets['stage'] = child('STATIC', '更新の準備をしています...', 0, 22, 53, 460, 24)
-    widgets['bar'] = child('msctls_progress32', '', PBS_MARQUEE, 22, 86, 452, 24)
-    send_message(widgets['bar'], PBM_SETRANGE32, 0, 1000)
+    widgets['bar_marquee'] = child('msctls_progress32', '', PBS_MARQUEE,
+                                   22, 86, 452, 24)
+    widgets['bar_value'] = child('msctls_progress32', '', 0, 22, 86, 452, 24)
+    send_message(widgets['bar_value'], PBM_SETRANGE32, 0, 1000)
+    # Start with the indeterminate bar only. Never mutate its marquee style
+    # to fake a determinate control: two native widgets avoid style issues.
+    show_window(widgets['bar_value'], 0)
+    send_message(widgets['bar_marquee'], PBM_SETMARQUEE, 1, 45)
+    state['bar_mode'] = 'marquee'
     widgets['detail'] = child('STATIC', 'Launcher が終了するまで確認しています', 0,
                               22, 122, 450, 48)
     widgets['notice'] = child('STATIC', '※更新中はLaunchやStudioを起動しないでください。', 0,

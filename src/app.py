@@ -114,6 +114,7 @@ from launch_diagnostics import make_logger, wifi_transcript_arguments
 from log_retention import cleanup as cleanup_diagnostics
 from logging.handlers import RotatingFileHandler
 from runtime_paths import launch_home, bundled_studio_root
+from source_studio_path import editor_studio_root
 from launch_config_path import ensure_launch_config
 from launch_data_reset import reset_launch_data
 from interaction_modes import read_dismiss_on_outside, read_folder_open_mode, is_double_click_folder
@@ -12056,7 +12057,8 @@ class Launcher(QWidget):
         """Open the authored Launch DataJSON.  UI never edits the JSON itself."""
         if not self.data:
             return
-        studio_root = self.expander().values.get('studio_root', '')
+        studio_root = editor_studio_root(
+            self.data, self.expander().values.get('studio_root', ''))
         exe = Path(studio_root) / 'NativeShell' / '_publish' / 'FRBStudio.NativeShell.exe'
         if not exe.is_file():
             self.error('Studioくんの実行ファイルが見つかりません: ' + str(exe)

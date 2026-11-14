@@ -5,6 +5,6 @@ metadata, deliberately separate from the user-editable Launch menu JSON.
 """
 
 APP_NAME = 'FRB Launch'
-APP_VERSION = '0.9.1'
+APP_VERSION = '0.9.2'
 APP_PROJECT = 'FRB Project'
 APP_ABOUT_TEXT = f'{APP_NAME}\nVersion {APP_VERSION}\n{APP_PROJECT}'

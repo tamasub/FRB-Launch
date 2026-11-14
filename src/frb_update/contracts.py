@@ -122,8 +122,51 @@ def read_feed(url: str, schema: str, *, allow_local=False) -> dict:
         raise UpdateError('更新情報のファイルサイズが不正です')
     return payload
 
-def read_sources(path: Path) -> dict:
-    raw = json.loads(Path(path).read_text('utf-8-sig'))
-    if raw.get('schema') != 'frb-update-sources-v1':
-        raise UpdateError('更新元設定のスキーマが不正です')
+def _read_sources_file(path: Path) -> dict:
+    try:
+        raw = json.loads(Path(path).read_text('utf-8-sig'))
+    except (OSError, ValueError) as exc:
+        raise UpdateError('更新元設定を読み込めません: ' + str(path)) from exc
+    if not isinstance(raw, dict) or raw.get('schema') != 'frb-update-sources-v1':
+        raise UpdateError('更新元設定のスキーマが不正です: ' + str(path))
+    for key in ('updater_feed_url', 'product_feed_url'):
+        if not isinstance(raw.get(key), str):
+            raise UpdateError('更新元設定のURL形式が不正です: ' + key)
+    if type(raw.get('allow_local_for_test')) is not bool:
+        raise UpdateError('更新元設定のローカル試験フラグが不正です')
     return raw
+
+
+def read_sources(path: Path, *, user_path: Path | None = None) -> dict:
+    """Read update endpoints, preferring user-owned persistence outside System.
+
+    A legacy installation stores URLs in System/defs/update/update_sources.json,
+    which gets replaced by an official package. On the first successful read,
+    migrate *configured* URLs to UserConfig. This happens while Launch is
+    running, before it starts the Updater. UserConfig is excluded from the
+    updater's managed system inventory and is never overwritten by updates.
+    """
+    path = Path(path)
+    if user_path is None:
+        return _read_sources_file(path)
+    user_path = Path(user_path)
+    if user_path.is_symlink() or user_path.parent.is_symlink():
+        raise UpdateError('更新元設定のUserConfigにシンボリックリンクは使えません')
+    if user_path.exists():
+        if not user_path.is_file():
+            raise UpdateError('更新元設定の保存先がファイルではありません')
+        return _read_sources_file(user_path)
+
+    sources = _read_sources_file(path)
+    if sources['updater_feed_url'] and sources['product_feed_url']:
+        # Preserve the exact verified user configuration; do not silently
+        # synthesize URLs for public distributions from a local test folder.
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(sources, ensure_ascii=False, indent=2) + '\n'
+        tmp = user_path.with_name(user_path.name + '.migrating')
+        try:
+            tmp.write_text(payload, encoding='utf-8')
+            tmp.replace(user_path)
+        finally:
+            tmp.unlink(missing_ok=True)
+    return sources
