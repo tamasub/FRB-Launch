@@ -19,6 +19,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtCore import QFileInfo
 from remote_confirmation import RemoteConfirmation
 from app_version import APP_VERSION, APP_ABOUT_TEXT
+from update_information_dialog import UpdateInformationDialog
 from remote_text_dialog import RemoteTextDialog
 from remote_context_wheel import RemoteContextWheel
 from rod_foreground import foreground_owned_by_process
@@ -47,6 +48,7 @@ from registered_url_route import registered_embedded_url
 from launch_url_dialog import LaunchURLRegistrationDialog
 from webview_settings import read_webview_settings
 from launch_option_runtime import effective_options_path
+from launch_user_settings import ensure_user_settings
 from search_history import SearchHistory, normalize_keyword
 from session_search_history import SessionSearchHistory, SESSION_HISTORY
 from search_history_categories import SearchHistoryCategories, UNCATEGORIZED
@@ -113,6 +115,7 @@ from log_retention import cleanup as cleanup_diagnostics
 from logging.handlers import RotatingFileHandler
 from runtime_paths import launch_home, bundled_studio_root
 from launch_config_path import ensure_launch_config
+from launch_data_reset import reset_launch_data
 from interaction_modes import read_dismiss_on_outside, read_folder_open_mode, is_double_click_folder
 from pointer_warp_policy import (read_pointer_warp_enabled, should_show_pointer_warp_notice,
                                  NOTICE_DISMISSED_KEY)
@@ -165,8 +168,10 @@ def apply_scrollbar_theme(view, background='#202b29'):
 
 ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[1]
 LAUNCH_HOME = launch_home(ROOT)
-CONFIG = ensure_launch_config(LAUNCH_HOME)
 STATE = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'FRBLaunch'
+# Data JSON is user-owned; the ViewDef stays Launch-owned.
+os.environ['FRB_LAUNCH_HOME'] = str(LAUNCH_HOME)
+CONFIG = ensure_launch_config(LAUNCH_HOME, user_root=STATE / 'UserData')
 STATE.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(handlers=[RotatingFileHandler(STATE / 'error.log', maxBytes=1024*1024,
                                                   backupCount=2, encoding='utf-8')],
@@ -176,7 +181,9 @@ logging.basicConfig(handlers=[RotatingFileHandler(STATE / 'error.log', maxBytes=
 DIAG = make_logger(STATE)
 LOG_RETENTION_OPTIONS = LAUNCH_HOME / 'config' / 'log_retention_options.json'
 CONTEXT_MENU_OPTIONS = LAUNCH_HOME / 'config' / 'context_menu_options.json'
-GIT_COMMIT_OPTIONS = LAUNCH_HOME / 'config' / 'git_commit_options.json'
+GIT_COMMIT_OPTIONS = ensure_user_settings(
+    LAUNCH_HOME / 'config' / 'git_commit_options.json',
+    STATE / 'UserConfig' / 'git_commit_options.json')
 
 
 def prune_diagnostics():
@@ -3390,6 +3397,8 @@ class Launcher(QWidget):
         self.theme_option_settings_action = self.theme_menu.addAction('オプション設定...')
         self.theme_option_settings_action.triggered.connect(self.open_option_settings)
         self.theme_menu.addSeparator()
+        self.theme_update_action = self.theme_menu.addAction('バージョンアップ情報...')
+        self.theme_update_action.triggered.connect(self.show_update_information)
         self.theme_about_action = self.theme_menu.addAction('バージョン情報...')
         self.theme_about_action.triggered.connect(self.show_version_information)
         self.tabs = FocusPageTabBar(); self.tabs.setExpanding(False); self.tabs.setDrawBase(False)
@@ -3593,6 +3602,7 @@ class Launcher(QWidget):
         traymenu = QMenu(self)
         traymenu.addAction('開く', self.summon)
         traymenu.addAction('設定フォルダーを開く', lambda:self.open_target(str(CONFIG.parent)))
+        traymenu.addAction('設定ファイルの初期化...', self.reset_launch_settings)
         traymenu.addAction('アプリ一覧を更新', self.refresh_apps)
         traymenu.addAction('アプリ一覧JSONを開く', lambda:self.open_target(str(STATE/'apps_cache.json')))
         traymenu.addSeparator()
@@ -3813,6 +3823,52 @@ class Launcher(QWidget):
                 position.setY(anchor.mapToGlobal(QPoint(0, -height - 3)).y())
             position.setY(max(area.top(), min(position.y(), area.bottom() - height + 1)))
         self.theme_menu.popup(position)
+
+    def show_update_information(self, checked=False):
+        """Open a separate, compact version/update dialog after hiding Settings."""
+        if getattr(self, '_update_information_pending', False):
+            return
+        self._update_information_pending = True
+        try:
+            self.theme_menu.close()
+            for child in self.theme_menu.findChildren(QMenu):
+                if child.isVisible():
+                    child.close()
+            self.theme_menu.hide()
+            QTimer.singleShot(0, self._show_update_information_after_menu_close)
+        except Exception:
+            self._update_information_pending = False
+            raise
+
+    def _show_update_information_after_menu_close(self):
+        try:
+            # Hybrid Settings is a Qt.Tool QMenu; repeat closing on the next
+            # event turn, just as the existing Option Settings launcher does.
+            for child in self.theme_menu.findChildren(QMenu):
+                if child.isVisible():
+                    child.close()
+                    child.hide()
+            self.theme_menu.close()
+            self.theme_menu.hide()
+            self.theme_menu.setActiveAction(None)
+            wheel = getattr(self, '_remote_context_wheel', None)
+            if wheel is not None and getattr(wheel, 'root', None) is self.theme_menu:
+                wheel.stop()
+            existing = getattr(self, '_update_information_dialog', None)
+            if existing is not None and existing.isVisible():
+                existing.raise_()
+                existing.activateWindow()
+                return
+            install_root = (Path(sys.executable).resolve().parent
+                            if getattr(sys, 'frozen', False) else LAUNCH_HOME)
+            dialog = UpdateInformationDialog(LAUNCH_HOME, install_root,
+                                             APP_VERSION, self.color_theme, self)
+            self._update_information_dialog = dialog
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+        finally:
+            self._update_information_pending = False
 
     def show_version_information(self, checked=False):
         """Close the hybrid Settings menu *before* opening About.
@@ -11970,6 +12026,31 @@ class Launcher(QWidget):
         finally:
             self._option_settings_pending = False
 
+    def reset_launch_settings(self):
+        """Tray-only explicit reset; the existing backup BAT owns backup."""
+        answer = self.ask_remote_confirmation(
+            'FRB Launch 設定ファイルの初期化',
+            'メニュー、Page、変数、選択候補を含む frb_launch_data.json を\n'
+            '同梱テンプレートの内容へ戻します。\n'
+            'AppDataのstate.ini・UserConfig・WebViewプロファイルは変更しません。\n'
+            '既存バックアップBATで退避できた場合にだけ初期化します。\n\n'
+            '初期化を実行しますか？', warning=True)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            archive = reset_launch_data(LAUNCH_HOME, STATE)
+        except Exception as exc:
+            self.show_launch_notice(QMessageBox.Icon.Warning,
+                                    '設定ファイルの初期化に失敗',
+                                    'User設定は初期化していません。\n' + str(exc))
+            return
+        self.show_launch_notice(QMessageBox.Icon.Information,
+                                'FRB Launch 設定初期化',
+                                '初期化しました。次回起動から反映されます。\n'
+                                'バックアップ: ' + str(archive) + '\n\n'
+                                '終了後、Launchを再起動してください。')
+        self.quit()
+
     def launch_configuration_studio(self, *, item_id=None, new_category=False,
                                     page_properties=False, page_id=None):
         """Open the authored Launch DataJSON.  UI never edits the JSON itself."""
@@ -11982,6 +12063,7 @@ class Launcher(QWidget):
                        + '\n新Studioフォルダーで cmd_compile_NativeShell.bat を実行してください。')
             return
         args = ['--open-json=' + str(CONFIG),
+                '--launch-home=' + str(Path(LAUNCH_HOME).resolve()),
                 '--launch-view-def=' + str((Path(LAUNCH_HOME) / 'defs' / 'launch' /
                                           'frb_launch_maintenance_view_def_v0_1.json').resolve())]
         target_page_id = str(page_id if page_id is not None else self.page_id)

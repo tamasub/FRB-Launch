@@ -138,6 +138,18 @@ function Add-UserSettingsAndLogs {
                     )
                     $script:entryCount++
                 }
+            } elseif ($child.Name -ieq 'UserData') {
+                # Authoritative FRB Launch document. No other folder contents
+                # (including temporary files) are eligible for this backup.
+                $launchData = Join-Path $child.FullName 'frb_launch_data.json'
+                if (Test-Path -LiteralPath $launchData -PathType Leaf) {
+                    [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                        $Destination, $launchData,
+                        'user_data/UserData/frb_launch_data.json',
+                        [System.IO.Compression.CompressionLevel]::Optimal
+                    )
+                    $script:entryCount++
+                }
             } elseif ($child.Name -ieq '_Backups' -or $child.Name -ieq 'web_profile') {
                 Write-Host ('[INFO] Backup/runtime/browser directory excluded: user_data/' +
                     $child.Name)
@@ -195,9 +207,6 @@ try {
     }
     $configDir = Join-Path $root 'config'
     $requiredJson = Join-Path $configDir 'frb_launch_data.json'
-    if (-not (Test-Path -LiteralPath $requiredJson -PathType Leaf)) {
-        throw "Cannot find Launch settings JSON: $requiredJson"
-    }
 
     # Keep backups out of the user's home directory; never copy _Backups back
     # into itself (the allowlist never recurses into that directory).
@@ -206,6 +215,11 @@ try {
         throw 'Cannot resolve LocalApplicationData.'
     }
     $userDataDir = Join-Path $localAppData 'FRBLaunch'
+    $requiredUserJson = Join-Path $userDataDir 'UserData\frb_launch_data.json'
+    if (-not (Test-Path -LiteralPath $requiredUserJson -PathType Leaf) -and
+        -not (Test-Path -LiteralPath $requiredJson -PathType Leaf)) {
+        throw "Cannot find Launch settings JSON: $requiredUserJson"
+    }
     $outDir = Join-Path $userDataDir '_Backups'
     [void](New-Item -ItemType Directory -Force -Path $outDir)
 

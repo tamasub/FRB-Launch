@@ -36,7 +36,10 @@ def _validate_json_bytes(contents, source):
         raise ValueError(f'Launch設定JSONのルートがオブジェクトではありません: {source}')
 
 
-def ensure_launch_config(home):
+def ensure_launch_config(home, *, user_root=None):
+    if user_root is not None:
+        return ensure_user_launch_config(home, user_root)
+
     """Return the canonical config; preserve a pre-existing legacy user's file.
 
     A full ZIP may already contain the new sample JSON next to the user's old
@@ -74,3 +77,50 @@ def ensure_launch_config(home):
     _validate_json_bytes(canonical.read_bytes(), canonical)
     marker.write_text('Canonical FRB Launch config filename enabled.\n', encoding='utf-8')
     return canonical
+
+
+# FRB Studio Family: User-owned Data JSON, independent of the installed program.
+# The shipped template is an exact snapshot of the approved latest config. It
+# is used only when neither an existing User JSON nor a legacy User JSON exists.
+USER_DATA_DIR = 'UserData'
+TEMPLATE_RELATIVE = Path('defaults') / 'frb_launch_data.template.json'
+
+
+def ensure_user_launch_config(home, user_root):
+    """Install the *current* user data once; never sync or overwrite it.
+
+    Priority: existing AppData JSON > existing Launch config > template.
+    Keep the original Launch/config JSON unchanged as a legacy recovery copy.
+    All Studio and Launch writes must use the returned AppData path.
+    """
+    root = Path(home).resolve()
+    dest = Path(user_root).resolve() / CONFIG_NAME
+    if dest.exists():
+        if not dest.is_file():
+            raise RuntimeError('User Launch設定はファイルではありません: ' + str(dest))
+        _validate_json_bytes(dest.read_bytes(), dest)
+        return dest
+    legacy = root / 'config' / LEGACY_CONFIG_NAME
+    canonical = root / 'config' / CONFIG_NAME
+    template = root / TEMPLATE_RELATIVE
+    # The existing migration marker, when present, disambiguates an obsolete
+    # legacy filename from the actual canonical user document.
+    marker = root / 'config' / MIGRATION_MARKER
+    source = (legacy if legacy.is_file() and not marker.is_file() else
+              canonical if canonical.is_file() else
+              legacy if legacy.is_file() else template)
+    if not source.is_file():
+        raise RuntimeError('Launch初期データが見つかりません: ' + str(template))
+    content = source.read_bytes()
+    _validate_json_bytes(content, source)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Exclusive creation. On concurrent startup the first successful writer
+    # wins, and a second process must never replace a user-edited document.
+    try:
+        with dest.open('xb') as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+    except FileExistsError:
+        _validate_json_bytes(dest.read_bytes(), dest)
+    return dest

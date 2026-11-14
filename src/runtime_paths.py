@@ -11,7 +11,8 @@ def launch_home(binary_root):
     relative=json.loads(marker.read_text(encoding='utf-8'))['launch_home']
     home=(root/relative).resolve()
     config_dir = home / 'config'
-    if not any((config_dir / name).is_file() for name in (CONFIG_NAME, LEGACY_CONFIG_NAME)):
+    if not (any((config_dir / name).is_file() for name in (CONFIG_NAME, LEGACY_CONFIG_NAME))
+            or (home / 'defaults' / 'frb_launch_data.template.json').is_file()):
         raise RuntimeError('Launch設定が見つかりません: '+str(config_dir / CONFIG_NAME))
     return home
 

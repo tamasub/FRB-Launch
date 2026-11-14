@@ -24,8 +24,17 @@ VIEW_DEF = 'launch/frb_launch_maintenance_view_def_v0_1.json'
 
 
 def launch_view_def_path(config_path):
-    """One authoritative Launch-owned ViewDef, independent of Studio's defs."""
+    """Launch owns its ViewDef even when the user JSON lives in AppData.
+
+    A Launch process binds FRB_LAUNCH_HOME at startup. Legacy source-root
+    fixtures under config/ remain supported, without scanning Studio folders.
+    """
     filename = Path(config_path).resolve()
+    if filename.parent.name.casefold() == 'userdata' and filename.parent.parent.name.casefold() == 'frblaunch':
+        home = os.environ.get('FRB_LAUNCH_HOME', '').strip()
+        if not home:
+            raise RegistrationError('Launch正本ViewDefの所有元が未指定です: FRB_LAUNCH_HOME')
+        return Path(home).resolve() / 'defs' / VIEW_DEF
     return filename.parent.parent / 'defs' / VIEW_DEF
 VIEW_ID = 'items_view'
 SECTION_ID = 'items'

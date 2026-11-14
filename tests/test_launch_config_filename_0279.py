@@ -114,7 +114,7 @@ def test_first_build_preserves_editable_old_dist_even_if_new_sample_present(tmp_
 
 def test_source_references_and_studio_open_follow_canonical_file():
     app = (ROOT/'src/app.py').read_text('utf-8')
-    assert 'CONFIG = ensure_launch_config(LAUNCH_HOME)' in app
+    assert "CONFIG = ensure_launch_config(LAUNCH_HOME, user_root=STATE / 'UserData')" in app
     assert "'--open-json=' + str(CONFIG)" in app
     assert "launch_data=str(CONFIG)" in app
     assert CONFIG_NAME in (ROOT/'scripts/Backup-FrbLaunch.ps1').read_text('utf-8')

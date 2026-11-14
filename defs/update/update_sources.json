@@ -1,0 +1,6 @@
+{
+  "schema": "frb-update-sources-v1",
+  "updater_feed_url": "",
+  "product_feed_url": "",
+  "allow_local_for_test": false
+}
