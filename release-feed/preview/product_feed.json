@@ -1,13 +1,13 @@
 {
   "schema": "frb-product-feed-v1",
   "product": "FRBLaunchIntegrated",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "components": {
     "launch": "0.9.3",
     "studio": "0.9.0"
   },
   "notes": "FRB Launch usability and updater improvements",
-  "archive_url": "https://github.com/tamasub/FRB-Launch/releases/download/v0.9.6/FRBLaunch_0.9.6_update.zip",
-  "size": 280929249,
-  "sha256": "a857a1af843f4b4877290ad82f337dfc224f384e58aeff307f2a4b9f560240f0"
+  "archive_url": "https://github.com/tamasub/FRB-Launch/releases/download/v0.9.7/FRBLaunch_0.9.7_update.zip",
+  "size": 280931583,
+  "sha256": "43114fd062b4a08d010b83236cd5383f8c64533d43b0ef625d6eb2e2aff11409"
 }
