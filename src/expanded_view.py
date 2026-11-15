@@ -1727,7 +1727,7 @@ class ExpandedLauncherView(QWidget):
         self.middle_back_lane = _BackLaneWidget(self, self.middle_tree_container)
         self.middle_back_lane.setObjectName('expandedBackLane')
         self.middle_back_lane.setFixedWidth(MIDDLE_BACK_LANE_WIDTH)
-        self.middle_back_lane.setToolTip('クリック：行選択を解除してフォルダー操作／ダブルクリック：上のフォルダーへ／右クリック：フォルダー操作')
+        self.middle_back_lane.setToolTip('クリック：行選択を解除／ダブルクリック：親へ戻る／ぐりぐり：Files List操作／右クリック：フォルダー操作')
         self.middle_back_lane.installEventFilter(self)
         middle_tree_layout.insertWidget(0, self.middle_back_lane)
         self.middle.tree.verticalScrollBar().valueChanged.connect(
@@ -4280,6 +4280,13 @@ class ExpandedLauncherView(QWidget):
             event.accept()
             return True
         if (obj is getattr(self, 'middle_back_lane', None) and
+                event.type() == QEvent.Type.Wheel and
+                self.wheel_middle_from_tonton_lane(event)):
+            # The lane is a separate QWidget: Qt will not deliver its wheel
+            # to the Files List tree without this explicit handoff.
+            event.accept()
+            return True
+        if (obj is getattr(self, 'middle_back_lane', None) and
                 event.type() == QEvent.Type.ContextMenu):
             self.show_lane_new_menu(event.globalPos())
             event.accept()
@@ -4400,6 +4407,28 @@ class ExpandedLauncherView(QWidget):
                 event.accept()
                 return True
         return super().eventFilter(obj, event)
+
+    def wheel_middle_from_tonton_lane(self, event):
+        """Route plain wheel input on the 24px tonton lane to Files List.
+
+        The physical pointer position chooses List as the operation target.
+        Reuse the EXACT tree wheel path (fast hybrid / Remote parity / native
+        WAN), without synthesizing a key, moving the pointer or changing the
+        existing lane click/double-click/drag semantics.
+        """
+        if (not self.isVisible() or self._workspace_mode != 'files' or
+                event.modifiers() != Qt.KeyboardModifier.NoModifier or
+                QApplication.mouseButtons() != Qt.MouseButton.NoButton):
+            return False
+        if not (event.angleDelta().y() or event.pixelDelta().y()):
+            return False
+        self._sync_remote_area_after_mouse_press('directory')
+        self._middle_lane_wheel_active = True
+        try:
+            self.middle.tree.wheelEvent(event)
+        finally:
+            self._middle_lane_wheel_active = False
+        return True
 
     def wheel_middle_fast_hybrid(self, event):
         """Files List: Remoteのノッチ応答 + スクロール優先 + 旧WANの端追従。
@@ -4564,7 +4593,8 @@ class ExpandedLauncherView(QWidget):
             return False
         viewport = tree.viewport()
         cursor_local = viewport.mapFromGlobal(QCursor.pos())
-        if not viewport.rect().contains(cursor_local):
+        lane_wheel = getattr(self, '_middle_lane_wheel_active', False)
+        if not lane_wheel and not viewport.rect().contains(cursor_local):
             if hold is not None:
                 hold.reset()
             return False
@@ -4576,7 +4606,10 @@ class ExpandedLauncherView(QWidget):
         # requested navigation direction even if a scroll/reset invalidates
         # the previous VDI anchor. This doesn't touch the fast scrollbar or
         # the autonomous shuriken animation at all.
-        hovered = tree.itemAt(cursor_local)
+        # The lane lies OUTSIDE the file cells. It has no hovered file row:
+        # use the existing current row rather than looking through the lane
+        # into an unrelated viewport cell.
+        hovered = None if lane_wheel else tree.itemAt(cursor_local)
         cursor_global = QCursor.pos()
         pointer_off = not getattr(getattr(self, 'launcher', None), 'pointer_warp_enabled', True)
         selected = tree.currentItem()
@@ -4640,6 +4673,11 @@ class ExpandedLauncherView(QWidget):
         if not preserve_multi:
             item.setSelected(True)
         tree.setFocus(Qt.FocusReason.MouseFocusReason)
+        if lane_wheel:
+            # Keep the pointer parked on the thin rail, so the next wheel
+            # event still operates Files List rather than a hovered file cell.
+            self._middle_follow_pending = None
+            return True
         if not getattr(getattr(self, 'launcher', None), 'pointer_warp_enabled', True):
             self._middle_vdi_anchor_pos = cursor_global
             return True
