@@ -20,6 +20,8 @@ from PySide6.QtCore import QFileInfo
 from remote_confirmation import RemoteConfirmation
 from app_version import APP_VERSION, APP_ABOUT_TEXT
 from update_information_dialog import UpdateInformationDialog
+from frb_update.contracts import read_sources, version_tuple
+from frb_update.bootstrap import check_feeds
 from remote_text_dialog import RemoteTextDialog
 from remote_context_wheel import RemoteContextWheel
 from rod_foreground import foreground_owned_by_process
@@ -49,6 +51,7 @@ from launch_url_dialog import LaunchURLRegistrationDialog
 from webview_settings import read_webview_settings
 from launch_option_runtime import effective_options_path
 from launch_user_settings import ensure_user_settings
+from launch_state_defaults import ensure_initial_state_ini
 from search_history import SearchHistory, normalize_keyword
 from session_search_history import SessionSearchHistory, SESSION_HISTORY
 from search_history_categories import SearchHistoryCategories, UNCATEGORIZED
@@ -317,6 +320,11 @@ def toolbar_outline_icon(name, theme='light'):
         outline.closeSubpath()
         painter.drawPath(outline)
         painter.drawEllipse(QRectF(cx-3.1, cy-3.1, 6.2, 6.2))
+    elif name == 'info':
+        # Deliberately quiet: a small neutral information mark, not a badge.
+        painter.drawEllipse(QRectF(4, 4, 16, 16))
+        painter.drawPoint(QPointF(12, 8.5))
+        painter.drawLine(QPointF(12, 11.3), QPointF(12, 16.6))
     elif name == 'minimize':
         painter.drawLine(5.9, 17.3, 18.1, 17.3)
     elif name == 'maximize':
@@ -3254,6 +3262,18 @@ class Launcher(QWidget):
         # Move settings next to HOME (left-side operation cluster).
         search_row.removeWidget(self.theme_button)
         nav_layout.addWidget(self.theme_button)
+        self.update_notice_button = QPushButton('', self.nav_toolbar)
+        self.update_notice_button.setObjectName('headerUpdateNotice')
+        self.update_notice_button.setFixedSize(27, 32)
+        self.update_notice_button.setIconSize(QSize(22, 22))
+        self.update_notice_button.setToolTip('新しいバージョンがあります（確認だけ・更新は任意）')
+        self.update_notice_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_notice_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.update_notice_button.clicked.connect(self.show_update_information)
+        nav_layout.addWidget(self.update_notice_button)
+        self.update_notice_button.hide()
+        self._quiet_update_checked = False
+        self.version_notice_found.connect(self._set_update_notice)
         # Inline overlay: left of QLineEdit's native clear (x) and history
         # chevron actions.  Never add it to search_row, which puts it OUTSIDE.
         self.save_history_button = QPushButton('履歴登録', self.search)
@@ -3398,10 +3418,9 @@ class Launcher(QWidget):
         self.theme_option_settings_action = self.theme_menu.addAction('オプション設定...')
         self.theme_option_settings_action.triggered.connect(self.open_option_settings)
         self.theme_menu.addSeparator()
-        self.theme_update_action = self.theme_menu.addAction('バージョンアップ情報...')
+        self.theme_update_action = self.theme_menu.addAction('バージョン情報...')
         self.theme_update_action.triggered.connect(self.show_update_information)
-        self.theme_about_action = self.theme_menu.addAction('バージョン情報...')
-        self.theme_about_action.triggered.connect(self.show_version_information)
+        # The separate About popup duplicated the unified version dialog.
         self.tabs = FocusPageTabBar(); self.tabs.setExpanding(False); self.tabs.setDrawBase(False)
         # Non-grabbing folder columns sometimes leave native keyboard focus on
         # the Page tabs; it must still be possible to start an IME composition.
@@ -3795,6 +3814,7 @@ class Launcher(QWidget):
         self.search_glyph.setIcon(toolbar_outline_icon('search', theme_family(self.color_theme)))
         self.theme_button.setText('')
         self.theme_button.setIcon(toolbar_outline_icon('settings', theme_family(self.color_theme)))
+        self.update_notice_button.setIcon(toolbar_outline_icon('info', theme_family(self.color_theme)))
         icon_name = 'restore' if self.windowState() & Qt.WindowState.WindowMaximized else 'maximize'
         self.minimize_button.setIcon(toolbar_outline_icon('minimize', theme_family(self.color_theme)))
         self.maximize_button.setIcon(toolbar_outline_icon(icon_name, theme_family(self.color_theme)))
@@ -3824,6 +3844,47 @@ class Launcher(QWidget):
                 position.setY(anchor.mapToGlobal(QPoint(0, -height - 3)).y())
             position.setY(max(area.top(), min(position.y(), area.bottom() - height + 1)))
         self.theme_menu.popup(position)
+
+    # No toast, no flash, no update start: only a small passive header mark.
+    version_notice_found = Signal(bool)
+
+    def _set_update_notice(self, available):
+        self.update_notice_button.setVisible(bool(available))
+
+    def check_updates_quietly(self):
+        if self._quiet_update_checked:
+            return
+        self._quiet_update_checked = True
+        install_root = (Path(sys.executable).resolve().parent
+                        if getattr(sys, 'frozen', False) else LAUNCH_HOME)
+        state_path = install_root / 'installed_release.json'
+        if not state_path.is_file():
+            return  # Author/developer builds are not an installed release.
+        try:
+            current = json.loads(state_path.read_text('utf-8-sig'))
+            current_version = current['version']
+            version_tuple(current_version)
+            sources = read_sources(LAUNCH_HOME / 'defs/update/update_sources.json',
+                                   user_path=install_root / 'UserConfig/update_sources.json')
+            if not sources.get('updater_feed_url') or not sources.get('product_feed_url'):
+                return
+            allow_local = bool(sources.get('allow_local_for_test', False))
+        except Exception:
+            # Invalid or missing feed configuration never blocks Launch startup.
+            return
+
+        def examine():
+            try:
+                _updater, product = check_feeds(sources['updater_feed_url'],
+                                                sources['product_feed_url'],
+                                                allow_local=allow_local)
+                newer = version_tuple(product['version']) > version_tuple(current_version)
+                self.version_notice_found.emit(newer)
+            except Exception:
+                # Network failure is silent; a manual refresh remains available.
+                pass
+
+        threading.Thread(target=examine, name='FRB-update-check', daemon=True).start()
 
     def show_update_information(self, checked=False):
         """Open a separate, compact version/update dialog after hiding Settings."""
@@ -3865,6 +3926,7 @@ class Launcher(QWidget):
             dialog = UpdateInformationDialog(LAUNCH_HOME, install_root,
                                              APP_VERSION, self.color_theme, self)
             self._update_information_dialog = dialog
+            dialog.checked_newer.connect(self._set_update_notice)
             dialog.show()
             dialog.raise_()
             dialog.activateWindow()
@@ -7488,6 +7550,11 @@ class Launcher(QWidget):
                ('#587261', '#1a2927', '#e5ebf3')))
         self.update_history_chevron()
         self.update_header_icons()
+        self.update_notice_button.setStyleSheet(
+            'QPushButton#headerUpdateNotice {border:0;background:transparent;'
+            'padding:0;border-radius:13px;} '
+            'QPushButton#headerUpdateNotice:hover {background:%s;}'
+            % ('#d8e9dc' if light else '#39554a'))
         self.update_header_tab_width()
         # The global QWidget theme used to paint a pale rectangle behind the
         # brand, despite the titlebar having its own darker green background.
@@ -8947,10 +9014,10 @@ class Launcher(QWidget):
             view.rename_selected_middle_item()
 
     def refresh_current_middle_folder(self):
-        """F5 re-reads the displayed folder without changing Page or focus."""
+        """F5 uses the Files reload button's state-preserving operation."""
         view = self.expanded_view
         if view.isVisible():
-            view.refresh_current_directory()
+            view.refresh_files_view()
 
     def switch_page(self, index):
         if index>=self.tabs.count():return
@@ -13628,6 +13695,8 @@ def main():
     QLocalServer.removeServer(name)
     server=QLocalServer()
     if not server.listen(name):raise RuntimeError(server.errorString())
+    # First install only: seed menu preferences; never reset an existing user state.
+    ensure_initial_state_ini(LAUNCH_HOME / 'defaults' / 'state.ini', STATE / 'state.ini')
     window=Launcher()
     # Prime Qt WebEngine before any launcher window is shown.  Unlike a
     # delayed on-screen warm-up, this avoids shifting the first-use flash
@@ -13636,6 +13705,7 @@ def main():
     # Independent of the main window's initial hidden/tray state. Do not
     # show the notice again within this process unless explicitly requested.
     QTimer.singleShot(1500, window.maybe_show_pointer_warp_notice)
+    QTimer.singleShot(2200, window.check_updates_quietly)
     # CLaunch-style: double-click empty desktop wallpaper to open the launcher.
     # Keep a strong reference for the whole Qt event loop and release on exit.
     # Desktop double-click support is optional: a Windows API/COM error must

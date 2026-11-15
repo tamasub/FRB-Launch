@@ -54,6 +54,10 @@ rem A missing QAction foreground (0272 blank grey menu regression) fails closed.
 if errorlevel 1 goto fail
 .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --windowed --onedir --name FRBLaunch --collect-all tzdata --icon "assets\frb_launch.ico" --add-data "assets;assets" --add-data "experiments\frb_japanese_input;experiments/frb_japanese_input" src\app.py
 if errorlevel 1 goto fail
+rem Preserve PySide6 DLL search directories in file-only portable/update archives.
+rem A directory-only Qt dependency would otherwise vanish when ZIPs are created.
+.venv\Scripts\python.exe scripts\ensure_qt_runtime_directories.py --dist dist\FRBLaunch
+if errorlevel 1 goto fail
 xcopy /E /I /Y defs dist\FRBLaunch\defs
 if errorlevel 1 goto fail
 .venv\Scripts\python.exe src\prepare_launch_home.py --link

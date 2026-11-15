@@ -18,6 +18,9 @@ LAUNCH_ID = '3602dda2-b6e9-4a04-859e-56de69037470'
 STUDIO_ID = 'studio_dir'
 STUDIO_DATA_ID = 'f0628e81-c03f-4573-820c-4b56f8dcbe37'
 STUDIO_COMMAND_ID = 'a9bf171f-68ba-46a9-a742-b47b7e529957'
+ZIP_LAUNCH_IDS = {'launch_source_zip', '410f2fb3-fc02-471f-8d45-a338e6096461',
+                  '7b24abcd-77ef-49c4-8fc6-bbc49c2729a8'}
+ZIP_STUDIO_ID = 'zip_studio'
 VAR_DEFINITIONS = (
     ('launch_source_root', 'Launchソースのフォルダー'),
     ('studio_source_root', 'Studioソースのフォルダー'),
@@ -48,6 +51,29 @@ def plan_repair(data: dict, launch_root: str, studio_root: str):
     }
     for row in data['items']:
         ident = row.get('item_id')
+        if ident in ZIP_LAUNCH_IDS:
+            for action in row.get('launch_actions', ()):
+                if action.get('launch_action_type') == 'Open' and (
+                        action.get('launch_target') == '%launch_home%\\_make_launch_zip.bat'
+                        or str(action.get('launch_target', '')).lower() ==
+                        r'f:\frb_update_test\frblaunch\_make_launch_zip.bat'):
+                    action['launch_target'] = '%launch_source_root%\\_make_launch_zip.bat'
+                    changes.append(ident + ': ZIP作成先をLaunchソースに固定')
+        elif ident == ZIP_STUDIO_ID:
+            for action in row.get('launch_actions', ()):
+                if action.get('launch_action_type') != 'Run':
+                    continue
+                original = action.get('launch_arguments', [])
+                if isinstance(original, list):
+                    updated = [arg.replace('%studio_root%\\cmd_make_FRBStudio_App_zip_v2.bat',
+                                           '%studio_source_root%\\cmd_make_FRBStudio_App_zip_v2.bat')
+                               if isinstance(arg, str) else arg for arg in original]
+                    if updated != original:
+                        action['launch_arguments'] = updated
+                        changes.append(ident + ': ZIP実行先をStudioソースに固定')
+                if action.get('launch_working_directory') == '%studio_root%':
+                    action['launch_working_directory'] = '%studio_source_root%'
+                    changes.append(ident + ': ZIP作業フォルダーをStudioソースに固定')
         if ident in wanted:
             expected, old = wanted[ident]
             original = row.get('launch_browse_target', '')

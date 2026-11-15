@@ -126,6 +126,9 @@ OFFで起動すると、設定場所を案内するバルーン風通知が表�
 
 ## 設定について
 
+歯車メニューの初回設定は `defaults/state.ini` から変更できます。初回起動時に `%LOCALAPPDATA%\FRBLaunch\state.ini` が存在しない場合だけ、テンプレートに書かれた対象キーを反映します。未指定キーにはプログラム既定値を使用し、既存のUser側設定は上書きしません。設定可能なキーと検証手順は `docs/FRBLaunch_FirstInstall_StateIni_20261115.md` を参照してください。
+
+
 運用設定JSONは `config/frb_launch_data.json` です。データ形式のバージョンはJSON内の `launch_format_version` で管理します。旧名からの移行手順は `docs/FRBLaunch_0279_ConfigFilenameStable_20261112.md` を参照。
 
 

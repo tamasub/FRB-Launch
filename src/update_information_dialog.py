@@ -42,9 +42,10 @@ class UpdateWorker(QThread):
             self.failed.emit(str(exc))
 
 class UpdateInformationDialog(QDialog):
+    checked_newer = Signal(bool)
     def __init__(self,launch_home:Path,install_root:Path,launch_version:str,theme:str,parent=None):
         super().__init__(parent)
-        self.setWindowTitle('FRB Launch — バージョンアップ情報')
+        self.setWindowTitle('FRB Launch — バージョン情報')
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
         self.setModal(False)
         self.setMinimumWidth(380)
@@ -58,6 +59,8 @@ class UpdateInformationDialog(QDialog):
         self.product_feed=None
         self.config=None
         self.busy=False
+        self._active_mode=None
+        self._auto_checked=False
         self._waiting_for_ui=False
         self._updater_process=None
         self._updater_ready_file=None
@@ -72,21 +75,26 @@ class UpdateInformationDialog(QDialog):
                 self.current=json.loads(state_file.read_text('utf-8-sig'))
             except (OSError,ValueError):pass
         lay=QVBoxLayout(self);lay.setSpacing(8);lay.setContentsMargins(13,12,13,12)
-        heading=QLabel('FRB Launch  バージョンアップ情報')
+        heading=QLabel('FRB Launch  バージョン情報')
         heading.setObjectName('updateHeading')
         lay.addWidget(heading)
         self.installed=QLabel('統合版: '+(self.current['version'] if self.current else '未登録（開発版）'))
         self.launch_component=QLabel('Launch: '+launch_version)
         self.studio_component=QLabel('Studio: '+str((self.current or {}).get('components',{}).get('studio','未登録')))
-        for widget in (self.installed,self.launch_component,self.studio_component):lay.addWidget(widget)
+        for widget in (self.installed,self.launch_component,self.studio_component):
+            widget.setObjectName('updateVersionValue')
+            lay.addWidget(widget)
         line=QFrame();line.setFrameShape(QFrame.Shape.HLine);lay.addWidget(line)
         self.latest=QLabel('最新版: 未確認')
+        self.latest.setObjectName('updateVersionValue')
         lay.addWidget(self.latest)
         self.latest_components=QLabel('最新版コンポーネント: 未確認')
+        self.latest_components.setObjectName('updateVersionValue')
         lay.addWidget(self.latest_components)
         self.notes=QLabel('更新はユーザーの指示でのみ開始します。')
+        self.notes.setObjectName('updateVersionNotes')
         self.notes.setWordWrap(True);lay.addWidget(self.notes)
-        self.message=QLabel('「最新版を確認」で配布情報を取得します。')
+        self.message=QLabel('更新情報を確認しています...')
         self.message.setWordWrap(True);self.message.setObjectName('updateStatus')
         lay.addWidget(self.message)
         self.last_result=QLabel('前回の更新結果: まだありません。')
@@ -113,18 +121,20 @@ class UpdateInformationDialog(QDialog):
         self.close_btn.clicked.connect(self.close)
         self._dark=str(theme).lower() not in ('light','system_light')
         dark=self._dark
-        fg='#e6e7e7' if dark else '#25292b'
+        fg='#e6e7e7' if dark else '#22362d'
         bg='#172126' if dark else '#f8fafb'
         border='#52666a' if dark else '#cbd2d7'
-        field='#26373c' if dark else '#eef1f3'
-        self.setStyleSheet(f'''QDialog {{background:{bg};color:{fg};font-size:12px;}}
+        field='#26373c' if dark else '#edf4ee'
+        self.setStyleSheet(f'''QDialog {{background:{bg};color:{fg};font-family:"Yu Gothic UI";font-size:13px;}}
             QLabel {{color:{fg};}}
-            QLabel#updateHeading {{font-weight:600;font-size:15px;}}
-            QLabel#updateStatus {{color:{'#c0d0d1' if dark else '#48545b'};}}
+            QLabel#updateHeading {{color:{'#edf4f0' if dark else '#203c2d'};font-weight:600;font-size:15px;}}
+            QLabel#updateVersionValue {{color:{'#edf3ed' if dark else '#234231'};background:{'#273c36' if dark else '#e3f0e7'};font-weight:500;padding:2px 4px;}}
+            QLabel#updateVersionNotes {{color:{'#e2ebe5' if dark else '#345443'};}}
+            QLabel#updateStatus {{color:{'#c0d0d1' if dark else '#243d30'};font-weight:600;}}
             QLabel#lastUpdateResult {{color:{'#dfb199' if dark else '#8d4e26'};}}
             QPushButton {{color:{fg};background:{field};border:1px solid {border};
                border-radius:4px;min-height:24px;padding:2px 9px;}}
-            QPushButton:disabled {{color:#888888;}}
+            QPushButton:disabled {{color:{'#798c86' if dark else '#6c8178'};}}
             QPushButton:hover {{border-color:#83aba9;}}
             QFrame {{color:{border};}}''')
 
@@ -143,6 +153,11 @@ class UpdateInformationDialog(QDialog):
             setter(hwnd,35,ctypes.byref(caption),ctypes.sizeof(caption))
             setter(hwnd,36,ctypes.byref(fore),ctypes.sizeof(fore))
         except (OSError,AttributeError,ValueError):pass
+        # Opening the information window is itself a request to read the latest
+        # release metadata. It never authorizes installing an update.
+        if not self._auto_checked:
+            self._auto_checked=True
+            QTimer.singleShot(0, self.check_latest)
 
     def _context(self):
         sources=read_sources(self.sources_path, user_path=self.user_sources_path)
@@ -150,6 +165,9 @@ class UpdateInformationDialog(QDialog):
         return {'sources':sources,'allow_local':allow_local,'install_root':self.install_root}
 
     def _run(self,mode,context):
+        if self.busy or self._waiting_for_ui:
+            return
+        self._active_mode=mode
         self.busy=True
         self.check.setEnabled(False);self.apply.setEnabled(False)
         self.close_btn.setEnabled(False)
@@ -179,6 +197,7 @@ class UpdateInformationDialog(QDialog):
             newer=not self.current or version_tuple(product['version'])>version_tuple(self.current['version'])
         except (KeyError,ValueError,UpdateError):newer=False
         self.message.setText('更新可能です。' if newer else '最新版を使用しています。')
+        self.checked_newer.emit(bool(newer))
         recovery_required = pending_recovery(self.install_root)
         self.apply.setEnabled(bool(newer and self._can_apply() and not recovery_required))
         if recovery_required:
@@ -265,7 +284,9 @@ class UpdateInformationDialog(QDialog):
                 self.apply.setEnabled(False)
 
     def _failed(self,message):
-        self.message.setText('更新処理を開始できません: '+message)
+        lead = ('更新情報を取得できません: ' if self._active_mode == 'check'
+                else '更新処理を開始できません: ')
+        self.message.setText(lead + message)
 
     def _finished(self):
         if self._waiting_for_ui:

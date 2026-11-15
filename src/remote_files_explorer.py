@@ -1030,6 +1030,33 @@ class RemoteFilesExplorer(QWidget):
         QTimer.singleShot(0, self._position_root_drop_hint)
         return len(roots)
 
+    def refresh_open_directories(self):
+        """Reload Exp's open physical branches while retaining the tree state.
+
+        Refresh the outermost expanded physical folder in each visible branch;
+        refresh_directory_branch already restores its opened descendants by
+        path.  A virtual Page has no disk directory, so descend past it to
+        any linked physical folders.  Closed branches remain lazily loaded.
+        """
+        paths = []
+        def visit(parent):
+            for index in range(parent.rowCount()):
+                item = parent.child(index)
+                if item is None or not self.tree.isExpanded(item.index()):
+                    continue
+                info = item.data(_DATA_ROLE) or {}
+                path = info.get('path')
+                if path and not info.get('pc') and os.path.isdir(path):
+                    paths.append(str(path))
+                    # This branch's expanded descendants are restored at once.
+                    continue
+                visit(item)
+        visit(self.model.invisibleRootItem())
+        changed = False
+        for path in paths:
+            changed = self.refresh_directory_branch(path) or changed
+        return changed
+
     def refresh_directory_branch(self, directory):
         """Reload a physical folder WITHOUT losing expanded descendants.
 

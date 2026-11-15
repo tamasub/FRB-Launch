@@ -1727,7 +1727,7 @@ class ExpandedLauncherView(QWidget):
         self.middle_back_lane = _BackLaneWidget(self, self.middle_tree_container)
         self.middle_back_lane.setObjectName('expandedBackLane')
         self.middle_back_lane.setFixedWidth(MIDDLE_BACK_LANE_WIDTH)
-        self.middle_back_lane.setToolTip('ダブルクリック：上のフォルダーへ／右クリック：フォルダー操作')
+        self.middle_back_lane.setToolTip('クリック：行選択を解除してフォルダー操作／ダブルクリック：上のフォルダーへ／右クリック：フォルダー操作')
         self.middle_back_lane.installEventFilter(self)
         middle_tree_layout.insertWidget(0, self.middle_back_lane)
         self.middle.tree.verticalScrollBar().valueChanged.connect(
@@ -1801,6 +1801,21 @@ class ExpandedLauncherView(QWidget):
         # The parent-directory button belongs immediately LEFT of the path.
         shared_layout.insertWidget(shared_layout.indexOf(self.address_bar), self.middle.back)
         self.middle.back.show()
+        # Browser-style Reload lives immediately RIGHT of Up.  Refreshing is
+        # not navigation: the current Files location and Exp disclosures stay.
+        self.files_refresh_button = QToolButton(self.shared_header)
+        self.files_refresh_button.setObjectName('expandedFilesRefresh')
+        self.files_refresh_button.setFixedSize(30, 29)
+        self.files_refresh_button.setIconSize(QSize(19, 19))
+        self.files_refresh_button.setIcon(browser_navigation_icon(
+            'reload', theme_family(self.launcher.color_theme)))
+        self.files_refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.files_refresh_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.files_refresh_button.setToolTip(
+            '最新の表示に更新（F5）\nFiles Expの展開状態・Files Listの位置は維持')
+        self.files_refresh_button.clicked.connect(self.refresh_files_view)
+        shared_layout.insertWidget(shared_layout.indexOf(self.address_bar),
+                                   self.files_refresh_button)
         # Unlike mouse-only Back, Wheel Tab must visibly LAND with keyboard
         # focus on this button. The other pane Back buttons stay unchanged.
         self.middle.back.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -2120,6 +2135,8 @@ class ExpandedLauncherView(QWidget):
         height, pad = (23, 1) if tight else (29, 3)
         self.density_button.setText('')
         self.density_button.setIcon(density_lines_icon(theme_family(theme)))
+        self.files_refresh_button.setIcon(browser_navigation_icon(
+            'reload', theme_family(theme)))
         self.files_history_button.setIcon(_files_history_icon(theme))
         self.middle_search_history_button.setIcon(_files_list_keyword_history_icon(theme))
         self.bookmark_close_button.setIcon(browser_navigation_icon(
@@ -2229,6 +2246,10 @@ class ExpandedLauncherView(QWidget):
                 color:{text};border-radius:7px;padding:0;}}
             QPushButton#expandedBack:hover {{background:{hover};border-radius:7px;}}
             QPushButton#expandedBack:pressed {{background:{hover};border-radius:7px;}}
+            QToolButton#expandedFilesRefresh {{background:{bg};border:1px solid {border};
+                border-radius:7px;padding:0;}}
+            QToolButton#expandedFilesRefresh:hover {{background:{hover};}}
+            QToolButton#expandedFilesRefresh:pressed {{background:{hover};}}
             QWidget#expandedMiddleSearchBar {{background:{bg};border:0;border-bottom:1px solid {border};}}
             QWidget#expandedMiddleSearchBar[operatingActive="true"] {{background:{operating_bg};}}
             QFrame#filesListTitleBox {{background:{'#f8fcf9' if light else '#395247'};
@@ -2995,7 +3016,7 @@ class ExpandedLauncherView(QWidget):
         self._record_directory_location()
         self.launcher._nav_update_buttons()
         changed = getattr(self.launcher, 'on_files_directory_changed', None)
-        if callable(changed):
+        if callable(changed) and not getattr(self, '_in_place_files_refresh', False):
             changed(self.current_directory())
 
     def _restore_directory_history(self, entry):
@@ -3315,6 +3336,55 @@ class ExpandedLauncherView(QWidget):
         item = tree.currentItem()
         return bool(item is not None and self.begin_inline_rename(item))
 
+    def refresh_files_view(self):
+        """Reload visible Exp branches and List without navigating elsewhere.
+
+        The toolbar button and F5 share this action.  Exp refreshes only open
+        physical folders; no reset_to_roots(), re-navigation or JSON rewrite.
+        """
+        if not self.isVisible() or self._workspace_mode != 'files':
+            return False
+        # A pending inline Rename must not be destroyed by re-rendering List.
+        if self.middle.tree.state() == QAbstractItemView.State.EditingState:
+            return False
+        # refresh_middle() ordinarily synchronizes Exp to a navigation event.
+        # This command does NOT navigate; keep Exp's exact disclosure state.
+        previous = getattr(self, '_in_place_files_refresh', False)
+        self._in_place_files_refresh = True
+        try:
+            explorer = getattr(self, 'embedded_files_exp', None)
+            if explorer is not None:
+                explorer.refresh_open_directories()
+            if getattr(self, '_virtual_directory_node', None) is not None:
+                # A virtual Launch page has no physical directory to enumerate.
+                # Re-render its in-memory items without moving the list cursor.
+                tree = self.middle.tree
+                current = tree.currentItem()
+                old_row = self.row_data(current) if current else None
+                old_title = old_row.get('title') if old_row else None
+                selected = {self.row_data(item).get('title')
+                            for item in tree.selectedItems() if self.row_data(item)}
+                scroll = tree.verticalScrollBar().value()
+                horizontal = tree.horizontalScrollBar().value()
+                self.refresh_middle()
+                tree.clearSelection()
+                for index in range(tree.topLevelItemCount()):
+                    item = tree.topLevelItem(index)
+                    row = self.row_data(item)
+                    if not row:
+                        continue
+                    if row.get('title') == old_title:
+                        tree.setCurrentItem(item)
+                    if row.get('title') in selected:
+                        item.setSelected(True)
+                tree.verticalScrollBar().setValue(scroll)
+                tree.horizontalScrollBar().setValue(horizontal)
+                return True
+            return self.refresh_current_directory()
+
+        finally:
+            self._in_place_files_refresh = previous
+
     def refresh_current_directory(self):
         """F5: re-read filesystem entries while preserving selection/scroll.
 
@@ -3333,6 +3403,9 @@ class ExpandedLauncherView(QWidget):
         current_row = self.row_data(current) if current else None
         current_name = current_row.get('title') if current_row else None
         scroll = tree.verticalScrollBar().value()
+        horizontal_bar = (tree.horizontalScrollBar()
+                          if hasattr(tree, 'horizontalScrollBar') else None)
+        horizontal = horizontal_bar.value() if horizontal_bar is not None else None
         self.refresh_middle()
         tree.clearSelection()
         restored_current = None
@@ -3352,6 +3425,8 @@ class ExpandedLauncherView(QWidget):
             if row and row.get('title') in selected_names:
                 item.setSelected(True)
         tree.verticalScrollBar().setValue(scroll)
+        if horizontal is not None:
+            tree.horizontalScrollBar().setValue(horizontal)
         return True
 
     def begin_context_inline_rename(self, item):
@@ -3991,10 +4066,37 @@ class ExpandedLauncherView(QWidget):
                 event.accept()
                 return True
         if lane:
+            # The tonton lane is not a file cell.  Single click makes the
+            # *current directory* the operation target, while retaining the
+            # previous row as an unfilled/passive green outline.  A separate
+            # double click still navigates to the parent directory above.
+            if event.type() == QEvent.Type.MouseButtonPress:
+                clear_row = getattr(self, 'clear_middle_row_for_folder_operation', None)
+                if callable(clear_row):
+                    clear_row()
             # This is an independent QWidget, not an editable item cell.
             event.accept()
             return True
         return False
+
+    def clear_middle_row_for_folder_operation(self):
+        """A single tonton-lane click selects the folder, not a List row.
+
+        Match _SeparatedFileTree's blank-click contract: do not erase its
+        remembered currentItem (passive outline), navigate, or select a new
+        first row.  In particular set the deliberate flag BEFORE clearSelection
+        so the asynchronous current-row repair cannot reselect the old row.
+        """
+        tree = self.middle.tree
+        tree.deliberate_blank_selection = True
+        tree.clearSelection()
+        tree.setFocus(Qt.FocusReason.MouseFocusReason)
+        if callable(tree.blank_clicked):
+            tree.blank_clicked()
+        else:
+            self._sync_remote_area_after_mouse_press('directory')
+        tree.viewport().update()
+        self._queue_files_selection_status()
 
     def set_files_operating_area(self, area):
         """Show the controller's true target on BOTH column titles and rows.

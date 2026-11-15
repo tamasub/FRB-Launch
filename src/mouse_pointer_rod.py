@@ -14,6 +14,8 @@ from PySide6.QtGui import QColor, QCursor, QPainter, QPen, QFont
 from PySide6.QtWidgets import QApplication, QFrame, QWidget, QMenu
 
 from rod_foreground import foreground_owned_by_process
+from rod_occlusion import rod_area_uncovered
+import time
 from mouse_pointer_rod_model import (
     DEFAULT_DIRECTION, DEFAULT_LENGTH, NORMAL_WHEEL_STEP_PX,
     FAST_WHEEL_STEP_PX, direction_from_pointer, length_after_wheel,
@@ -205,6 +207,9 @@ class MousePointerRodPad(QFrame):
         self._overlay = None
         self._aim_hovering = False
         self._aim_visible = False
+        self._occlusion_checked_at = 0.0
+        self._occlusion_clear = False
+        self._occlusion_geometry = None
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
         self._hover_timer.timeout.connect(self._show_after_hover)
@@ -403,7 +408,9 @@ class MousePointerRodPad(QFrame):
         Compute in pad-local coordinates to avoid virtual desktop/DPI offsets.
         The OS pointer is only warped when SMART mode is explicitly enabled.
         """
-        if not steps or not self._cursor_on_blue():
+        area_check = getattr(self, '_operating_area_uncovered', None)
+        if (not steps or not self._cursor_on_blue() or
+                (callable(area_check) and not area_check(force=True))):
             return
         from mouse_pointer_rod_smart_model import smart_vertical_step
         from mouse_pointer_rod_smart_cursor import move_smart_cursor
@@ -450,15 +457,48 @@ class MousePointerRodPad(QFrame):
             return QApplication.applicationState() == Qt.ApplicationState.ApplicationActive
         return owned
 
+    def _operating_area_uncovered(self, *, force=False):
+        """The WHOLE blue control area must be visible, not only the cursor.
+
+        Cache frequent hover/mouse-move checks for 60ms; all actions (wheel,
+        clicks, native injected clicks) recheck the real Win32 z-order.
+        """
+        if not self.isVisible():
+            return False
+        top_left = self.mapToGlobal(QPoint(0, 0))
+        bottom_right = self.mapToGlobal(QPoint(self.width(), self.height()))
+        rect = (top_left.x(), top_left.y(), bottom_right.x(), bottom_right.y())
+        now = time.monotonic()
+        if (not force and rect == self._occlusion_geometry and
+                now - self._occlusion_checked_at < 0.06):
+            return self._occlusion_clear
+        self._occlusion_geometry = rect
+        self._occlusion_checked_at = now
+        # Our own input-transparent desktop-wide guide is not an obstruction,
+        # even on Qt/Windows combinations that omit WS_EX_TRANSPARENT.
+        ignored = (() if self._overlay is None else (int(self._overlay.winId()),))
+        owner = self.window()
+        client_start = self.mapTo(owner, QPoint(0, 0))
+        client_end = self.mapTo(owner, QPoint(self.width(), self.height()))
+        native_rect = (client_start.x(), client_start.y(),
+                       client_end.x(), client_end.y())
+        visible = rod_area_uncovered(
+            int(owner.winId()), rect, ignore_hwnds=ignored,
+            pad_client_rect=native_rect,
+            owner_qt_size=(owner.width(), owner.height()))
+        self._occlusion_clear = (visible if visible is not None else True)
+        return self._occlusion_clear
+
     def _watch_foreground(self):
-        if not self._launch_has_foreground():
+        if not self._launch_has_foreground() or not self._operating_area_uncovered(force=True):
             self._cancel_pending_native_click()
             self._stop_aiming()
 
     def _cursor_on_blue(self):
         return (self._enabled and self.isVisible() and
                 self._launch_has_foreground() and
-                self._in_blue(self.mapFromGlobal(QCursor.pos())))
+                self._in_blue(self.mapFromGlobal(QCursor.pos())) and
+                self._operating_area_uncovered())
 
     def _sync_hover(self):
         """Start one delay per blue entry; do not restart on every move."""
@@ -518,6 +558,11 @@ class MousePointerRodPad(QFrame):
 
     def mouseMoveEvent(self, event):
         if self._enabled:
+            check_area = getattr(self, '_operating_area_uncovered', None)
+            if callable(check_area) and not check_area():
+                self._stop_aiming()
+                event.accept()
+                return
             if getattr(self, '_native_warp_guard', False):
                 event.accept()
                 return
@@ -559,7 +604,10 @@ class MousePointerRodPad(QFrame):
 
     def _dispatch_tip_action(self, action):
         foreground_check = getattr(self, '_launch_has_foreground', None)
-        if not self._enabled or (callable(foreground_check) and not foreground_check()):
+        check_area = getattr(self, '_operating_area_uncovered', None)
+        if (not self._enabled or
+                (callable(foreground_check) and not foreground_check()) or
+                (callable(check_area) and not check_area(force=True))):
             return False
         remote = self.parentWidget()
         launcher = remote.parent() if remote is not None else None
@@ -579,7 +627,8 @@ class MousePointerRodPad(QFrame):
         """
         if action not in ('select', 'double'):
             return False
-        if not self._cursor_on_blue():
+        check_area = getattr(self, '_operating_area_uncovered', None)
+        if not self._cursor_on_blue() or (callable(check_area) and not check_area(force=True)):
             return False
         tip_x, tip_y = self.tip_global() if target_override is None else target_override
         target = QPoint(round(tip_x), round(tip_y))
@@ -656,7 +705,8 @@ class MousePointerRodPad(QFrame):
             should_select = (not self._wheel_during_press and
                              self.rect().contains(event.position().toPoint()) and
                              (self._wheel_pad is None or not self._wheel_pad.geometry().contains(event.position().toPoint())))
-            if should_select:
+            check_area = getattr(self, '_operating_area_uncovered', None)
+            if should_select and (not callable(check_area) or check_area(force=True)):
                 if getattr(self, '_windows_click_mode', False):
                     if self._double_pending:
                         self._cancel_pending_native_click()
@@ -686,6 +736,13 @@ class MousePointerRodPad(QFrame):
         event.accept()
 
     def wheelEvent(self, event):
+        check_cursor = getattr(self, '_cursor_on_blue', None)
+        check_area = getattr(self, '_operating_area_uncovered', None)
+        if ((callable(check_cursor) and not check_cursor()) or
+                (callable(check_area) and not check_area(force=True))):
+            self._stop_aiming()
+            event.accept()
+            return
         # Only the blue region owns length adjustment. Keep high-resolution
         # wheel deltas across events, as the native ぐりぐり pad already does.
         angle = event.angleDelta().y()

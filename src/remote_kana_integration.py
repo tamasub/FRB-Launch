@@ -11,7 +11,9 @@ import sys
 from PySide6.QtCore import QPoint, QTimer, Qt
 from PySide6.QtWidgets import QApplication
 
-from remote_kana_target import RemoteKanaTarget, widget_is_text_target
+from remote_kana_target import (
+    RemoteKanaTarget, UnicodeWin32, widget_is_text_target
+)
 
 
 class RemoteKanaIntegration:
@@ -20,6 +22,12 @@ class RemoteKanaIntegration:
         self.window = None
         self.target = None
         self._focus_tracking_connected = False
+        self._external_focus_api = None
+        # A kana window has its own IME focus. Track intentionally focused
+        # external editors *while it stays open* without activating anything.
+        self._external_focus_timer = QTimer()
+        self._external_focus_timer.setInterval(65)
+        self._external_focus_timer.timeout.connect(self._poll_external_focus)
 
     def _on_focus_changed(self, old, new):
         """Follow a deliberately focused Launch input without closing FRBかな.
@@ -42,6 +50,42 @@ class RemoteKanaIntegration:
             self.target.release_inline_editor()
         self.target = RemoteKanaTarget.from_widget(new)
         self.window.send_button.setToolTip('送信先: ' + self.target.label)
+
+    def _replace_target(self, target):
+        if self.target is not None:
+            self.target.release_inline_editor()
+        self.target = target
+        if self.window is not None:
+            label = target.label if target is not None else '未選択：入力欄を選んでください'
+            self.window.send_button.setToolTip('送信先: ' + label)
+
+    def _poll_external_focus(self):
+        """Follow the current external Windows editor after kana was opened.
+
+        Never treat the IME's own editor as a destination.  If a different
+        external window has no focused input HWND, clear an old external target
+        instead of silently sending text to the previous application.
+        """
+        if (sys.platform != 'win32' or self.window is None or
+                not self.window.isVisible()):
+            return
+        try:
+            if self._external_focus_api is None:
+                self._external_focus_api = UnicodeWin32()
+            api = self._external_focus_api
+            if api.foreground_is_ours():
+                return
+            focused = api.focused()
+        except (OSError, RuntimeError, ValueError, AttributeError):
+            focused = None  # Never trust an old external target after failure.
+        if focused is None:
+            if self.target is not None and self.target.external is not None:
+                self._replace_target(None)
+            return
+        previous = self.target.external if self.target is not None else None
+        if previous == focused:
+            return
+        self._replace_target(RemoteKanaTarget(external=focused, api=api))
 
     def _create_window(self):
         if self.window is not None:
@@ -122,6 +166,7 @@ class RemoteKanaIntegration:
         # Promote the non-focusing Remote first, then its focusable IME Tool.
         self.launcher.remote_window.set_kana_visible(True)
         window.show()
+        self._external_focus_timer.start()
         window.raise_()
         self.reposition()
         # _fit_outer_frame runs after the show and changes geometry.
@@ -183,6 +228,7 @@ class RemoteKanaIntegration:
             self.window.send_button.setToolTip('送信先未選択：入力欄を選んでください')
 
     def _mark_hidden(self):
+        self._external_focus_timer.stop()
         # Re-enable native delegate focus-out when the companion closes.
         # Leave the inline rename text/editor untouched: Enter/Escape in the
         # original Files List still control actual filesystem renaming.
@@ -216,7 +262,7 @@ class RemoteKanaIntegration:
         if self.window is None:
             return
         if self.target is None or not self.target.can_send():
-            self.window.mark_sent(False, '送信先なし。入力欄を選んでRemoteかなを開き直してください')
+            self.window.mark_sent(False, '送信先なし。入力欄を選んでください')
             return
         try:
             if self.target.external is None:
@@ -227,15 +273,18 @@ class RemoteKanaIntegration:
                 # Qt/Windows need a turn for the foreground switch to settle.
                 if not self.target.api.restore(self.target.external):
                     raise RuntimeError('送信先ウィンドウを復帰できません')
-                QTimer.singleShot(110, lambda value=text: self._finish_external_send(value))
+                QTimer.singleShot(
+                    110, lambda value=text, selected=self.target:
+                    self._finish_external_send(value, selected))
         except Exception as exc:
             self.window.mark_sent(False, f'送信中止: {exc}')
 
-    def _finish_external_send(self, text):
+    def _finish_external_send(self, text, selected=None):
         if self.window is None:
             return
         try:
-            if self.target is None or self.target.external is None:
+            if (self.target is None or self.target.external is None or
+                    (selected is not None and self.target is not selected)):
                 raise RuntimeError('送信先が変更されました')
             if not self.target.api.matches(self.target.external):
                 raise RuntimeError('送信先のフォーカスが一致しません。誤送信防止のため中止')

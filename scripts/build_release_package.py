@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from frb_update.contracts import safe_relative, sha256_file, version_tuple
 from frb_update.updater_core import PACKAGE_SCHEMA, MAX_RELEASE_MANIFEST_SIZE
+from ensure_qt_runtime_directories import ensure_qt_runtime_directories
 
 BLOCKED_NAMES={'.git','.venv','.venv_backup','__pycache__','node_modules','build','app_zip','backups','updater','userdata','userconfig','.pytest_cache'}
 BLOCKED_SUFFIXES={'.pyc','.pyo','.zip','.log','.bak'}
@@ -63,6 +64,10 @@ def selectable(path: Path, rel: str):
 
 def collect_files(launch_dist: Path, studio_runtime: Path, launch_source: Path, *, node_exe=None, node_license=None):
     verify_pyinstaller_runtime(launch_dist)
+    # Qt-for-Python checks these directories during import. Explicit marker
+    # files survive both ZIP builders AND the file-only Update manifest.
+    # Legacy mock builds without PySide6 remain valid test fixtures.
+    ensure_qt_runtime_directories(launch_dist, create=False, require_qt=False)
     result={}
     for base,prefix in ((launch_dist,''),(studio_runtime,'Studio')):
         if not base.is_dir():raise ValueError(f'ビルド済みディレクトリがありません: {base}')

@@ -1,0 +1,18 @@
+cd F:\FRB_Apps\FRB_Launch
+
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\release_FRBLaunch_GitHub.ps1 `
+  -Version 0.9.8 `
+  -PrepareOnly
+  
+ 
+
+cd F:\FRB_Apps\FRB_Launch
+
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\release_FRBLaunch_GitHub.ps1 -Version 0.9.8 -PublishOnly
+
+
+PUBLISH v0.9.8
+
+

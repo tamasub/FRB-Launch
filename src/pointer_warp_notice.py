@@ -24,7 +24,7 @@ class PointerWarpNotice(QWidget):
                 border-radius:12px; }
             QLabel { color:#213b30; background:transparent; border:0; }
             QLabel#pointerWarpNoticeHeading { font-size:13px; font-weight:700; }
-            QLabel#pointerWarpNoticeDetails { font-size:12px; }
+            QLabel#pointerWarpNoticeIntro, QLabel#pointerWarpNoticeDetails { font-size:12px; }
             QPushButton { border:1px solid #9eb9ab; border-radius:7px;
                 background:#ffffff; color:#234b3c; padding:6px 9px; }
             QPushButton#pointerWarpNoticeSettings { background:#27795e;
@@ -51,6 +51,15 @@ class PointerWarpNotice(QWidget):
         close.clicked.connect(self.close)
         header.addWidget(close)
         layout.addLayout(header)
+        intro = QLabel(
+            'FRB Launchは、デスクトップの空白部分を'
+            '<span style="color:#145c3d; font-weight:700;">'
+            'ダブルクリックすると表示'
+            '</span>されます。', card)
+        intro.setObjectName('pointerWarpNoticeIntro')
+        intro.setTextFormat(Qt.TextFormat.RichText)
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
         message = QLabel('マウスポインター自動移動は現在OFFです。\n'
                          '使いたい場合は、設定 → マウスポインター自動移動 → ON。\n'
                          '仮想環境などではOFFのまま使えます。', card)

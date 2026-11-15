@@ -11,8 +11,12 @@ import json
 import os
 import time
 from pathlib import Path
+from uuid import uuid4
 
 ACTIVATION_TIMEOUT_SECONDS = 45
+# The 0.9.5 Launch writes .go non-atomically. A worker may observe an empty
+# file between creation and closing. Tolerate that tiny window, not forever.
+PARTIAL_MARKER_GRACE_SECONDS = 1.5
 
 
 def publish_state(path: Path, status: str, message: str = '') -> None:
@@ -31,20 +35,41 @@ def activation_path(ready_path: Path) -> Path:
 
 
 def activate(ready_path: Path) -> None:
-    """Launch invokes only after it observed the native window's ready state."""
+    """Publish the approval only after its complete bytes are on disk.
+
+    Write-then-rename prevents another process from seeing an empty or
+    partially written .go file. Each ready file is a unique per-click path.
+    """
     go = activation_path(ready_path)
-    go.write_text('start\n', encoding='ascii')
+    temp = go.with_name(go.name + '.' + uuid4().hex + '.tmp')
+    try:
+        temp.write_text('start\n', encoding='ascii')
+        os.replace(temp, go)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def wait_for_activation(ready_path: Path, timeout: float = ACTIVATION_TIMEOUT_SECONDS) -> None:
     """Worker does no updating until Launch has explicitly released the gate."""
     go = activation_path(ready_path)
     deadline = time.monotonic() + timeout
+    invalid_since = None
     while time.monotonic() < deadline:
         if go.is_file():
-            if go.read_text(encoding='ascii').strip() != 'start':
+            try:
+                approved = go.read_text(encoding='ascii').strip() == 'start'
+            except (OSError, UnicodeError):
+                # A legacy sender may still have the file open for writing.
+                approved = False
+            if approved:
+                go.unlink(missing_ok=True)
+                return
+            now = time.monotonic()
+            if invalid_since is None:
+                invalid_since = now
+            if now - invalid_since >= PARTIAL_MARKER_GRACE_SECONDS:
                 raise RuntimeError('Updater起動許可データが不正です')
-            go.unlink(missing_ok=True)
-            return
+        else:
+            invalid_since = None
         time.sleep(.1)
     raise TimeoutError('Launchからの更新開始許可を受信できませんでした。Systemは変更していません。')

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import contextlib
+import hashlib
 import shutil
 import stat
 import tempfile
@@ -188,14 +189,51 @@ def _atomic_restore_file(source: Path, target: Path):
         temporary.unlink(missing_ok=True)
 
 
+
+def legacy_backup_root(root: Path) -> Path:
+    """Original backup directory, preserved for rollback of older updates."""
+    root = Path(root).resolve()
+    return root.parent / ('.' + root.name + '_update_backups')
+
+
+def backup_root(root: Path) -> Path:
+    """Per-install update backups in the user's LocalAppData on Windows.
+
+    A stable hash prevents two installs with the same folder name from sharing
+    journals. On non-Windows test hosts without LOCALAPPDATA, retain the prior
+    location to keep temporary test fixtures self-contained.
+    """
+    root = Path(root).resolve()
+    localappdata = os.environ.get('LOCALAPPDATA')
+    if not localappdata:
+        if os.name == 'nt':
+            raise UpdateError('LOCALAPPDATAが取得できないため、安全なバックアップ先を決定できません')
+        return legacy_backup_root(root)
+    identifier = hashlib.sha256(str(root).casefold().encode('utf-8')).hexdigest()[:16]
+    return Path(localappdata).resolve() / 'FRBLaunch' / 'UpdateBackups' / (root.name + '_' + identifier)
+
+
+def backup_roots_for_recovery(root: Path) -> tuple[Path, ...]:
+    """Read both old and new layouts; never silently drop a pending Journal."""
+    legacy = legacy_backup_root(root)
+    modern = backup_root(root)
+    return (legacy,) if modern == legacy else (legacy, modern)
+
+
+def iter_backup_journals(root: Path):
+    for backups in backup_roots_for_recovery(root):
+        if backups.is_dir():
+            for folder in sorted(backups.iterdir()):
+                if folder.is_dir():
+                    journal = folder / 'journal.json'
+                    if journal.is_file():
+                        yield folder, journal
+
+
 def pending_recovery(root: Path) -> bool:
     """True if rollback remains incomplete; app restart would lock its files."""
     root = Path(root).resolve()
-    backups = root.parent / ('.' + root.name + '_update_backups')
-    for folder in backups.glob('*') if backups.is_dir() else ():
-        journal = folder / 'journal.json'
-        if not journal.is_file():
-            continue
+    for folder, journal in iter_backup_journals(root):
         try:
             if json.loads(journal.read_text('utf-8')).get('phase') == 'applying':
                 return True
@@ -236,14 +274,11 @@ def _restore(root: Path, folder: Path, *, progress=None):
 
 
 def recover_interrupted(root: Path, *, progress=None):
-    backups = root.parent / ('.'+root.name+'_update_backups')
-    for folder in sorted(backups.glob('*')) if backups.is_dir() else ():
-        journal = folder / 'journal.json'
-        if journal.is_file():
-            obj=json.loads(journal.read_text('utf-8'))
-            if obj['phase']=='applying':
-                _progress(progress,'rollback',f'中断Journalを復旧: {folder.name}')
-                _restore(root,folder,progress=progress)
+    for folder, journal in iter_backup_journals(root):
+        obj = json.loads(journal.read_text('utf-8'))
+        if obj.get('phase') == 'applying':
+            _progress(progress, 'rollback', f'中断Journalを復旧: {folder.name}')
+            _restore(root, folder, progress=progress)
 
 
 def install_zip(archive: Path, install_root: Path, *, expected_version: str | None = None,
@@ -265,8 +300,16 @@ def install_zip(archive: Path, install_root: Path, *, expected_version: str | No
     old_files=set(_files(old)) if old else set()
     touched=sorted(set(new_files) | (old_files-set(new_files)))
     for name in touched: _no_reparse(root,safe_relative(name))
-    backups = root.parent / ('.'+root.name+'_update_backups')
-    backups.mkdir(parents=True,exist_ok=True)
+    backups = backup_root(root)
+    backups.mkdir(parents=True, exist_ok=True)
+    # New Windows backups use LocalAppData, often on C: even when the app is
+    # installed on F:. Fail before writing a Journal if that volume is too full.
+    backup_bytes = sum((root / safe_relative(name)).stat().st_size for name in touched
+                       if (root / safe_relative(name)).is_file())
+    free_bytes = shutil.disk_usage(backups).free
+    if free_bytes < backup_bytes + 32 * 1024 * 1024:
+        raise UpdateError('バックアップ先の空き容量が不足しています: '
+                          + str(backups) + f' (必要約{backup_bytes:,} bytes + 32 MiB)')
     folder = backups/(time.strftime('%Y%m%d_%H%M%S')+'_'+uuid.uuid4().hex[:8])
     folder.mkdir()
     journal={'schema':'frb-update-journal-v1','phase':'preparing',

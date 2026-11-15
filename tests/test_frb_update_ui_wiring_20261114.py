@@ -5,10 +5,10 @@ ROOT=Path(__file__).resolve().parents[1]
 app=(ROOT/'src/app.py').read_text('utf-8')
 ui=(ROOT/'src/update_information_dialog.py').read_text('utf-8')
 
-def test_update_action_is_separate_from_legacy_about_and_nonmodal():
-    assert "addAction('バージョンアップ情報...')" in app
+def test_unified_version_dialog_is_nonmodal():
+    assert "addAction('バージョン情報...')" in app
     assert "self.theme_update_action.triggered.connect(self.show_update_information)" in app
-    assert "self.theme_about_action.triggered.connect(self.show_version_information)" in app
+    assert "self.theme_about_action = self.theme_menu.addAction" not in app
     assert 'dialog.show()' in app
     assert 'dialog.exec()' not in app
     assert 'self.setModal(False)' in ui

@@ -19,11 +19,11 @@ STAGE_NAMES = {
     'download': '更新ファイルの取得',
     'verify': '更新ファイルの検証',
     'backup': '旧Systemのバックアップ',
-    'stage': '新Systemの展開',
-    'apply': '新Systemの適用',
+    'stage': '更新ファイルの展開（準備）',
+    'apply': 'インストール先への反映',
     'rollback': '旧Systemへの復旧',
     'restart': 'Launch再起動',
-    'verify_installed': '適用後の整合性検証',
+    'verify_installed': '反映後の整合性確認',
     'completed': '完了',
     'failed': '更新失敗',
 }
@@ -123,6 +123,10 @@ def _win32_progress_window(task, *, on_ready=None):
     module_handle = api(kernel32, 'GetModuleHandleW', HINSTANCE, [LPCWSTR])
     init_controls = api(comctl32, 'InitCommonControlsEx', wintypes.BOOL,
                         [ctypes.POINTER(INITCOMMONCONTROLSEX)])
+    create_font = api(ctypes.WinDLL('gdi32', use_last_error=True), 'CreateFontW', wintypes.HANDLE,
+                      [ctypes.c_int] * 13 + [LPCWSTR])
+    delete_object = api(ctypes.WinDLL('gdi32', use_last_error=True), 'DeleteObject',
+                        wintypes.BOOL, [wintypes.HANDLE])
     show_window = api(user32, 'ShowWindow', wintypes.BOOL, [HWND, ctypes.c_int])
     update_window = api(user32, 'UpdateWindow', wintypes.BOOL, [HWND])
     get_message = api(user32, 'GetMessageW', wintypes.BOOL,
@@ -132,6 +136,7 @@ def _win32_progress_window(task, *, on_ready=None):
     dispatch = api(user32, 'DispatchMessageW', LRESULT, [ctypes.POINTER(MSG)])
 
     WM_TIMER, WM_CLOSE, WM_DESTROY, WM_COMMAND = 0x0113, 0x0010, 0x0002, 0x0111
+    WM_SETFONT = 0x0030
     WM_USER = 0x0400
     PBM_SETRANGE32, PBM_SETPOS, PBM_SETMARQUEE = WM_USER + 6, WM_USER + 2, WM_USER + 10
     PBS_MARQUEE = 0x08
@@ -142,6 +147,7 @@ def _win32_progress_window(task, *, on_ready=None):
     WS_CAPTION_ONLY = WS_OVERLAPPEDWINDOW & ~0x00040000 & ~0x00010000  # no resizing/maximize
 
     state = {'finished': False, 'result': 1, 'bar_mode': None}
+    fonts = []
     events = queue.Queue()
     widgets = {}
 
@@ -202,6 +208,8 @@ def _win32_progress_window(task, *, on_ready=None):
             return 0  # Never close the UI while update/rollback is active.
         if msg == WM_DESTROY:
             kill_timer(hwnd, 1)
+            for handle in fonts:
+                delete_object(handle)
             post_quit(0)
             return 0
         return default_proc(hwnd, msg, wparam, lparam)
@@ -231,10 +239,16 @@ def _win32_progress_window(task, *, on_ready=None):
             raise ctypes.WinError(ctypes.get_last_error())
         return control
 
-    # The system's own fonts, contrast and high-DPI handling follow the user's
-    # current Windows theme rather than requiring a separate bundled UI stack.
-    widgets['title'] = child('STATIC', 'FRB Updater', 0, 22, 18, 460, 28)
-    widgets['stage'] = child('STATIC', '更新の準備をしています...', 0, 22, 53, 460, 24)
+    # Match the Launch UI font without loading Qt/Tcl in this independent EXE.
+    # The font handles are retained until WM_DESTROY (Win32 WM_SETFONT rule).
+    def set_launch_font(control, height=-16, weight=400):
+        handle = create_font(height, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 0, 0, 'Yu Gothic UI')
+        if handle:
+            fonts.append(handle)
+            send_message(control, WM_SETFONT, handle, 1)
+
+    widgets['title'] = child('STATIC', 'FRB Updater', 0, 22, 18, 452, 28)
+    widgets['stage'] = child('STATIC', '更新の準備をしています...', 0, 22, 53, 452, 24)
     widgets['bar_marquee'] = child('msctls_progress32', '', PBS_MARQUEE,
                                    22, 86, 452, 24)
     widgets['bar_value'] = child('msctls_progress32', '', 0, 22, 86, 452, 24)
@@ -245,10 +259,13 @@ def _win32_progress_window(task, *, on_ready=None):
     send_message(widgets['bar_marquee'], PBM_SETMARQUEE, 1, 45)
     state['bar_mode'] = 'marquee'
     widgets['detail'] = child('STATIC', 'Launcher が終了するまで確認しています', 0,
-                              22, 122, 450, 48)
+                              22, 122, 452, 48)
     widgets['notice'] = child('STATIC', '※更新中はLaunchやStudioを起動しないでください。', 0,
-                              22, 181, 455, 24)
-    widgets['close'] = child('BUTTON', '閉じる', 0, 375, 216, 100, 29, 1001)
+                              22, 181, 452, 24)
+    widgets['close'] = child('BUTTON', '閉じる', 0, 374, 216, 100, 29, 1001)
+    for key in ('title', 'stage', 'detail', 'notice', 'close'):
+        set_launch_font(widgets[key], -18 if key == 'title' else -16,
+                        600 if key == 'title' else 400)
     enable(widgets['close'], False)
     # ShowWindow's *first* call can be overridden by inherited STARTUPINFO.
     # Reassert visibility and z-order when launched from a tray/background app.
