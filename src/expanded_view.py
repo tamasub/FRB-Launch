@@ -1657,8 +1657,9 @@ class ExpandedLauncherView(QWidget):
         self.middle_search_history_menu = _NonGrabbingHistoryMenu(
             self.middle_search_history_button)
         self.middle_search_history_menu.setObjectName('filesListSearchHistoryMenu')
-        self.middle_search_history_menu.installEventFilter(self)
+        # Initialize menu state before activating its event filter.
         self._middle_search_history_keyword_actions = []
+        self.middle_search_history_menu.installEventFilter(self)
         # Tool QMenus do not rely on a native popup dismissal. Explicitly
         # close after a selection (including a nested delete-history action).
         self.middle_search_history_menu.triggered.connect(
@@ -2799,7 +2800,11 @@ class ExpandedLauncherView(QWidget):
         """Ctrl+H jumps to Files List history; Down opens existing QMenu."""
         if not self.isVisible() or self._workspace_mode != 'files':
             return False
-        self.middle_search_history_button.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        button = getattr(self, 'middle_search_history_button', None)
+        # The global event filter can receive keys during QWidget.__init__.
+        if button is None or getattr(self, 'middle_search_history_menu', None) is None:
+            return False
+        button.setFocus(Qt.FocusReason.ShortcutFocusReason)
         return True
 
     def handle_middle_search_history_key(self, obj, event):
@@ -2811,11 +2816,15 @@ class ExpandedLauncherView(QWidget):
         same explicit action cursor.  Only saved keywords enter this cursor:
         register/remove commands still work using the original mouse menu.
         """
-        button = self.middle_search_history_button
-        menu = self.middle_search_history_menu
+        # This handler is reached by the *application-wide* event filter,
+        # including while __init__ is still creating the history button.
+        # Never read menu/actions until the complete control is available.
         if (event.type() != QEvent.Type.KeyPress or
-                event.modifiers() != Qt.KeyboardModifier.NoModifier or
-                obj not in (button, menu)):
+                event.modifiers() != Qt.KeyboardModifier.NoModifier):
+            return False
+        button = getattr(self, 'middle_search_history_button', None)
+        menu = getattr(self, 'middle_search_history_menu', None)
+        if button is None or menu is None or obj not in (button, menu):
             return False
         key = event.key()
         if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
@@ -4443,7 +4452,10 @@ class ExpandedLauncherView(QWidget):
             self.focus_middle_search_history()
             event.accept()
             return True
+        # A global event can arrive between creating the history button and
+        # assigning its QMenu in __init__. Do not enter the key adapter early.
         if (getattr(self, 'middle_search_history_button', None) is not None
+                and getattr(self, 'middle_search_history_menu', None) is not None
                 and self.handle_middle_search_history_key(obj, event)):
             return True
         if (event.type() == QEvent.Type.KeyPress and self.isVisible()

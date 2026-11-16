@@ -106,7 +106,8 @@ def test_ctrl_h_focus_targets_local_search_without_changing_other_histories():
                            'focus_middle_search_history', {'Qt': Qt})
     button = FakeButton()
     view = NS(isVisible=lambda: True, _workspace_mode='files',
-              middle_search_history_button=button)
+              middle_search_history_button=button,
+              middle_search_history_menu=FakeMenu())  # Fully initialized history
     assert focus(view) is True
     assert button.focus_calls == [FocusReason.ShortcutFocusReason]
     view._workspace_mode = 'other'
