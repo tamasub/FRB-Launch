@@ -6996,8 +6996,10 @@ class Launcher(QWidget):
                     'UP' if key == Qt.Key.Key_Up else 'DOWN'))
             if key in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
                 return True  # Do not page/ascend during a flight.
-            if key == Qt.Key.Key_Escape:
-                pad._settle()  # Explicit, visible-row landing.
+            if key in (Qt.Key.Key_Escape, Qt.Key.Key_Space):
+                # Space is a deliberate keyboard landing, exactly like Esc.
+                # Outside an active List flight, normal Space behavior stays intact.
+                pad._settle()
                 return True
             return False
         if not (page_up or page_down):
@@ -9908,6 +9910,12 @@ class Launcher(QWidget):
             # embedded first column is enabled.
             self.remote_focus_area('files_exp' if panel is not None else
                                    ('directory' if self.files_root_hidden_mode else 'files'))
+            # The controller highlight alone is not Qt keyboard focus. HOME
+            # must leave a real caret/selection in the FIRST Exp row so the
+            # very next Down immediately moves through folders.
+            if (panel is not None and panel.isVisible()
+                    and getattr(panel, 'tree', None) is not None):
+                panel.tree.setFocus(Qt.FocusReason.ShortcutFocusReason)
             # HOME from either the main toolbar or Remote returns the floating
             # controller to the BOTTOM of the 1.5-column lane, not its old
             # saved/dragged location. Do not reopen a Remote closed with ×.
@@ -11578,6 +11586,14 @@ class Launcher(QWidget):
 
     def expanded_focus_key(self, obj, event):
         """Tab switches areas; arrows are deliberately NOT area traversal."""
+        # The Files workbench has its own six-stop focus ring. The global Qt
+        # filter normally catches it first; this is a safe fallback for
+        # widgets which dispatch to Launcher's legacy object filter directly.
+        view = self.expanded_view
+        if (view.isVisible() and getattr(view, '_workspace_mode', None) == 'files'):
+            files_keys = getattr(view, 'keyboard_files_shortcuts', None)
+            if callable(files_keys) and files_keys(obj, event):
+                return True
         area = self.expanded_focus_area(obj)
         if area is None:
             return False

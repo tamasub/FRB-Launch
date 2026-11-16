@@ -51,7 +51,7 @@ def keyboard_handler():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Launcher')
     method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
                   and n.name == 'shuriken_keyboard_list_key')
-    qt = NS(Key=NS(Key_Up=1, Key_Down=2, Key_PageUp=3, Key_PageDown=4, Key_Escape=5))
+    qt = NS(Key=NS(Key_Up=1, Key_Down=2, Key_PageUp=3, Key_PageDown=4, Key_Escape=5, Key_Space=6))
     namespace = {'Qt': qt, 'shuriken_trace': lambda *a, **kw: None}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[])),
                  'shuriken_key_dispatch', 'exec'), namespace)

@@ -1547,7 +1547,8 @@ class ExpandedLauncherView(QWidget):
         self.favorite_dropdown.setText('')
         self.favorite_dropdown.setIcon(combo_chevron_icon(self.launcher.color_theme))
         self.favorite_dropdown.setToolTip('作業フォルダーのお気に入り一覧')
-        self.favorite_dropdown.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        # Both Ctrl+G and the Files Tab ring must land here by keyboard.
+        self.favorite_dropdown.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.favorite_dropdown.setCursor(Qt.CursorShape.PointingHandCursor)
         self.favorite_dropdown.installEventFilter(self)
         self.favorite_dropdown.clicked.connect(self.toggle_directory_favorites)
@@ -2824,12 +2825,13 @@ class ExpandedLauncherView(QWidget):
             return False
         button = getattr(self, 'middle_search_history_button', None)
         menu = getattr(self, 'middle_search_history_menu', None)
-        if button is None or menu is None or obj not in (button, menu):
+        editor = getattr(self, 'middle_search', None)
+        if button is None or menu is None or obj not in (button, menu, editor):
             return False
         key = event.key()
         if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
             if not menu.isVisible():
-                if key == Qt.Key.Key_Down and obj is button:
+                if key == Qt.Key.Key_Down and obj in (button, editor):
                     self.toggle_middle_search_history_menu()
                     # Opening is NOT the first selection step, matching
                     # the main search's Down/Down behavior.
@@ -2869,7 +2871,8 @@ class ExpandedLauncherView(QWidget):
         if key == Qt.Key.Key_Escape:
             if menu.isVisible():
                 menu.hide()
-                button.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                (editor if obj is editor else button).setFocus(
+                    Qt.FocusReason.ShortcutFocusReason)
                 event.accept()
                 return True
             return False
@@ -3279,7 +3282,9 @@ class ExpandedLauncherView(QWidget):
         self.favorite_save.setText('🩶' if registered else '💛')
         self.favorite_save.setToolTip('お気に入り登録済み' if registered else '今のフォルダーをお気に入りに登録')
         self.favorite_save.setEnabled(bool(target))
-        self.favorite_dropdown.setEnabled(bool(self.folder_favorites.paths))
+        # Keep the breadcrumb in the keyboard Tab ring even with 0 saved
+        # folders. Down then safely does nothing until history is registered.
+        self.favorite_dropdown.setEnabled(True)
         self.favorite_dropdown.setToolTip(
             f'お気に入りフォルダーを選択（{len(self.folder_favorites.paths)}件）')
 
@@ -4442,7 +4447,146 @@ class ExpandedLauncherView(QWidget):
         if destination != pointer:
             QCursor.setPos(destination)
 
+    def _files_keyboard_focus_area(self, obj):
+        """One stable focus ring for the Files UI, independent of old Pages.
+
+        Popups are included as aliases of their opener, so Tab keeps working
+        after Down has opened a history menu. Inline rename editors are not
+        mapped: they retain normal text editing and tab semantics.
+        """
+        if not isinstance(obj, QWidget):
+            return None
+        exp = getattr(self, 'embedded_files_exp', None)
+        if exp is not None and obj in (exp.tree, exp.tree.viewport()):
+            return 'exp'
+        remote_exp = getattr(getattr(self.launcher, 'remote_window', None),
+                             'files_exp_panel', None)
+        if remote_exp is not None and obj in (remote_exp.tree, remote_exp.tree.viewport()):
+            return 'exp'
+        middle = getattr(self, 'middle', None)
+        if middle is not None and obj in (middle.tree, middle.tree.viewport()):
+            return 'list'
+        if obj in (getattr(self, 'middle_search', None),
+                   getattr(self, 'middle_search_history_button', None),
+                   getattr(self, 'middle_search_history_menu', None)):
+            return 'folder_search'
+        if obj in (getattr(self, 'favorite_dropdown', None),
+                   getattr(self, 'favorite_choices', None),
+                   getattr(getattr(self, 'favorite_choices', None), 'viewport', lambda: None)(),
+                   getattr(getattr(self, 'address_bar', None), 'editor', None)):
+            return 'breadcrumb'
+        launcher = self.launcher
+        if obj in (getattr(launcher, 'search', None),
+                   getattr(launcher, 'history_choices', None),
+                   getattr(getattr(launcher, 'history_choices', None), 'viewport', lambda: None)(),
+                   getattr(launcher, 'history_filter', None)):
+            return 'main_search'
+        if obj is getattr(self, 'browser_mode_tab', None):
+            return 'browser'
+        # Files is intentionally NOT a stop; a mouse-focused Files tab can
+        # still Tab forward to Browser without joining the focus ring.
+        if obj is getattr(self, 'files_mode_tab', None):
+            return 'main_search'
+        if obj in getattr(self, 'root_buttons', ()) or obj in getattr(
+                self, 'workspace_page_buttons', ()):
+            return 'browser'  # A legacy Page opener joins at Exp, not Pages.
+        return None
+
+    def _focus_files_keyboard_area(self, area):
+        """Switch real Qt focus and List/Exp logical operating target."""
+        launcher = self.launcher
+        if area == 'exp':
+            exp = getattr(self, 'embedded_files_exp', None)
+            if exp is None or not exp.isVisible():
+                exp = getattr(getattr(launcher, 'remote_window', None),
+                              'files_exp_panel', None)
+            if exp is not None and exp.isVisible():
+                tree = exp.tree
+                if not tree.currentIndex().isValid() and exp.model.rowCount():
+                    exp.select_first_root_for_home()  # Skip optional separator.
+                tree.setFocus(Qt.FocusReason.TabFocusReason)
+                launcher.set_files_operating_target('files_exp')
+            else:
+                # Older split layouts still have a first-column controller.
+                self.focus_panel(self.left)
+        elif area == 'list':
+            self.focus_panel(self.middle)
+            launcher.set_files_operating_target('directory')
+        elif area == 'folder_search':
+            self.middle_search.setFocus(Qt.FocusReason.TabFocusReason)
+        elif area == 'breadcrumb':
+            self.favorite_dropdown.setFocus(Qt.FocusReason.TabFocusReason)
+        elif area == 'main_search':
+            launcher.search.setFocus(Qt.FocusReason.TabFocusReason)
+        elif area == 'browser':
+            self.browser_mode_tab.setFocus(Qt.FocusReason.TabFocusReason)
+
+    def keyboard_files_shortcuts(self, obj, event):
+        """Files keyboard contract: Home, Ctrl+I and six-stop Tab ring.
+
+        This is installed at the application level, so it also receives keys
+        from the embedded Exp QTreeView, which is not a child of Launcher's
+        classic event-filter source list. No synthetic key replay is needed.
+        """
+        if (event.type() != QEvent.Type.KeyPress or not self.isVisible()
+                or not isinstance(obj, QWidget)
+                or QApplication.activeModalWidget() is not None):
+            return False
+        launcher = self.launcher
+        exp = getattr(self, 'embedded_files_exp', None)
+        owned = obj.window() in (launcher, getattr(launcher, 'remote_window', None))
+        if exp is not None and obj in (exp.tree, exp.tree.viewport()):
+            owned = True
+        # Tool-style history QMenus have their own transient window; their
+        # identity still belongs to this Files focus ring.
+        if self._files_keyboard_focus_area(obj) is not None:
+            owned = True
+        if not owned:
+            return False
+        key, mods = event.key(), event.modifiers()
+        if mods == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_I:
+            if not hasattr(launcher, 'theme_menu'):
+                return False  # QApplication filters can see startup events.
+            launcher.open_option_settings()
+        elif mods == Qt.KeyboardModifier.NoModifier and key == Qt.Key.Key_Home:
+            launcher.stop_auto_shuriken_on_list_click()
+            launcher.navigate_home()
+        elif (getattr(self, '_workspace_mode', None) == 'files'
+              and key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab)
+              and mods in (Qt.KeyboardModifier.NoModifier,
+                           Qt.KeyboardModifier.ShiftModifier)):
+            area = self._files_keyboard_focus_area(obj)
+            if area is None:
+                return False
+            order = ('exp', 'list', 'folder_search', 'breadcrumb',
+                     'main_search', 'browser')
+            delta = -1 if key == Qt.Key.Key_Backtab or mods == Qt.KeyboardModifier.ShiftModifier else 1
+            target = order[(order.index(area) + delta) % len(order)]
+            # Dismiss non-grabbing popup menus rather than leaving keyboard
+            # focus stranded in a hidden window after changing areas.
+            if getattr(self, 'middle_search_history_menu', None) is not None:
+                self.middle_search_history_menu.hide()
+            if getattr(self, 'favorite_popup', None) is not None and self.favorite_popup.isVisible():
+                self.hide_favorite_popup()
+            popup = getattr(launcher, 'history_popup', None)
+            if popup is not None and popup.isVisible():
+                launcher.hide_history_popup()
+            if area == 'list':
+                launcher.stop_auto_shuriken_on_list_click()
+            self._focus_files_keyboard_area(target)
+        elif (getattr(self, '_workspace_mode', None) == 'files'
+              and obj is getattr(self, 'browser_mode_tab', None)
+              and mods == Qt.KeyboardModifier.NoModifier
+              and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter)):
+            self.browser_mode_tab.click()  # The existing Browser button action.
+        else:
+            return False
+        event.accept()
+        return True
+
     def eventFilter(self, obj, event):
+        if self.keyboard_files_shortcuts(obj, event):
+            return True
         if (event.type() == QEvent.Type.KeyPress and self.isVisible()
                 and self._workspace_mode == 'files'
                 and event.modifiers() == Qt.KeyboardModifier.ControlModifier
