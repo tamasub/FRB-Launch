@@ -98,7 +98,7 @@ FRB Launchは、**普通に使える「正統派」**と、少し変わった操
 
 ### おまけ③：小さな丸ボタンでExpとListを操作する
 
-　　<img width="400" height="300" alt="image" src="https://github.com/user-attachments/assets/907d72e2-af39-42fb-afba-c574ca0771dc" />
+　　<img width="400" height="300" alt="image" src="https://github.com/user-attachments/assets/46166568-37c3-43c6-95c6-8446a962ae63" />
 
 
 丸ボタンの**左半分にポインターを置くとFiles Exp、右半分ならFiles List**が操作対象になります。ボタンの上でホイールを回して対象を選び、クリック・ダブルクリック・右クリックと組み合わせて操作できます。
