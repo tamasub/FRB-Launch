@@ -1,0 +1,6 @@
+{
+  "schema": "frb-update-sources-v1",
+  "updater_feed_url": "https://raw.githubusercontent.com/tamasub/FRB-Launch/main/release-feed/preview/updater_feed.json",
+  "product_feed_url": "https://raw.githubusercontent.com/tamasub/FRB-Launch/main/release-feed/preview/product_feed.json",
+  "allow_local_for_test": false
+}

@@ -198,7 +198,7 @@ JSONを手書きする必要はありません。配布版に含まれる**FRB S
 
 新しい版が公開された場合、更新情報を確認し、**ユーザーが明示的に操作して更新する方式**です。自動的な強制更新ではありません。
 
-- [リリース一覧](https://github.com/tamasub/FRB-Launch/releases)
+- [FRB Launch リリース一覧](https://github.com/tamasub/FRB-Launch/releases)
 - 更新前には、メニューJSONやユーザー設定など、大切なデータのバックアップをおすすめします。
 
 ### 終了・アンインストール
