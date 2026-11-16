@@ -93,11 +93,12 @@ def test_git_unrelated_click_changes_wheel_target_not_the_commit_result():
     assert adapter.background_click('dialog') is True
     assert adapter.input_mode == 'buttons'
     assert adapter.selected == 'Cancel'
+    assert adapter.remote_has_selected is False  # Stage change is not a user choice.
     assert ok.click.call_count == 0 and cancel.click.call_count == 0
     adapter.remote_command('DOWN')
     assert adapter.selected == 'OK'
-    adapter.background_click('launch')
-    assert adapter.selected == 'OK'  # An additional background click never resets user-selected OK.
+    assert adapter.background_click('launch') is False  # Armed: guard dispatches CLICK.
+    assert adapter.selected == 'OK'  # The second click must not reset to Cancel.
     assert ok.click.call_count == 0 and cancel.click.call_count == 0
     adapter.focus_combo()  # Native selector click restores first stage.
     assert adapter.input_mode == 'choice'
@@ -122,10 +123,9 @@ def test_actual_app_input_guard_uses_unrelated_click_only_for_focus_switch():
     assert all(b.click.call_count == 0 for b in dialog_buttons)
     assert guard.eventFilter(viewport, event(module.QEvent.Type.Wheel))
     assert adapter.selected == 'OK'
-    send_click(module, guard, viewport)  # Still no accidental Git commit.
-    assert all(b.click.call_count == 0 for b in dialog_buttons)
-    adapter.remote_command('CLICK')
-    dialog_buttons[0].click.assert_called_once()  # The chosen OK remains active; still requires explicit CLICK.
+    send_click(module, guard, viewport)  # Explicit wheel selection + next click commits.
+    dialog_buttons[0].click.assert_called_once()
+    dialog_buttons[1].click.assert_not_called()
 
 
 def test_git_uses_shared_dialog_contract_and_native_editing():

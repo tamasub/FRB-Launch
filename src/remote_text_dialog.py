@@ -90,24 +90,37 @@ class RemoteTextDialog:
     def focus_buttons(self):
         """Switch Git wheel target once; never reset an existing OK selection.
 
-        The first unrelated click leaves Cancel as the safe default. After
-        switching to button mode, further background clicks do not change
-        the selected button or activate either button. Native OK/Cancel
-        mouse clicks are handled directly by Qt in ConfirmationInputGuard.
+        The first unrelated click only switches stages and visibly selects
+        Cancel as a safe default; it must NOT arm click-to-commit. A deliberate
+        wheel/arrow choice in button mode arms confirmation by the next click.
+        Native OK/Cancel mouse clicks stay handled directly by Qt.
         """
         if self.selection_combo is None:
             return False
         if self.input_mode != 'buttons':
             self.input_mode = 'buttons'
-            self.choose(self._reject_key)  # Safe only on the transition.
+            self.choose(self._reject_key)  # Safe visual default on transition.
+            # choose() marks a selection explicit. The initial Cancel focus is
+            # NOT a user choice: do not let a second unarmed click accept it.
+            self.remote_has_selected = False
         return True
 
     def background_click(self, source):
-        """Git prompt's unrelated clicks change/keep target, never accept."""
+        """Git clicks: first switches stage, next confirms an explicit choice.
+
+        Called once per complete background click by ConfirmationInputGuard.
+        Returning True consumes the click (stage switch or unarmed click).
+        Returning False dispatches CLICK on the currently selected button.
+        Native button clicks do not pass through this method.
+        """
         if self.selection_combo is None:
             return False
-        self.focus_buttons()
-        return True
+        if self.input_mode != 'buttons':
+            self.focus_buttons()
+            return True
+        # No wheel/arrow choice since stage switch? Never commit or cancel by
+        # a random second click. Once chosen, preserve that choice verbatim.
+        return not self.remote_has_selected
 
     def cycle_combo(self, direction):
         """Wheel anywhere selects real, explicit repository entries (not hint)."""
@@ -157,9 +170,11 @@ class RemoteTextDialog:
         elif command == 'CLOSE':
             self.selection.click(self._reject_key)
         elif command in ('ENTER', 'CLICK', 'DOUBLE_CLICK'):
-            # Never discard an explicit wheel-selected Cancel. On initial
-            # Remote-centre click, use the dialog's semantic accept button.
-            target = self.selected if self.remote_has_selected else self._accept_key
+            # Git has a two-stage chooser: the visible Cancel is its safe
+            # default. Other dialogs retain their historic initial OK action.
+            # An explicit wheel-selected OK/Cancel ALWAYS wins.
+            target = (self.selected if self.remote_has_selected or
+                      self.selection_combo is not None else self._accept_key)
             self.selection.click(target)
         return True  # No Remote action falls through to underlying Launch.
 
