@@ -29,6 +29,7 @@ from shuriken_model import configured_entries
 from shuriken_scroll_handoff import handoff_current_at_scroll_stop
 from shuriken_trace import trace as shuriken_trace, bar_state as shuriken_bar_state
 from guriguri_shuriken_auto import WheelShurikenGate, AUTO_SHURIKEN_ENABLED
+from keyboard_shuriken_gate import PageKeyShurikenGate
 from file_drag import ExternalFileDragTree, begin_file_copy_drag
 from file_drag_paths import file_path_for_drag
 from file_icon_policy import icon_lookup
@@ -3057,6 +3058,7 @@ class Launcher(QWidget):
         self._remote_15_alignment_pending = False
         self.remote_window = None
         self._shuriken_wheel_gate = WheelShurikenGate()
+        self._shuriken_keyboard_gate = PageKeyShurikenGate()
         self._remote_area = None
         # Sole operating target for the two Files columns. Search popups and
         # filesystem refreshes must NOT silently change this value.
@@ -6966,8 +6968,74 @@ class Launcher(QWidget):
                        direction=direction)
         return started
 
+    def shuriken_keyboard_list_key(self, key, event, pane):
+        """4 Page taps launch the same shuriken engine as the physical wheel.
+
+        While flying, Up/Down are wheel notches (travel=accelerate,
+        opposite=brake); Page keys cannot trigger folder traversal. Escape
+        deliberately lands on the visible row. All changes are List-only.
+        """
+        view = self.expanded_view
+        tree = pane.tree
+        gate = getattr(self, '_shuriken_keyboard_gate', None)
+        if gate is None:
+            return False  # Defensive for early construction/test adapters.
+        context = (id(tree), view.current_directory(),
+                   id(getattr(view, '_virtual_directory_node', None)))
+        page_up = key == Qt.Key.Key_PageUp
+        page_down = key == Qt.Key.Key_PageDown
+        if not (page_up or page_down):
+            gate.reset()  # Consecutive Page presses only.
+        remote = getattr(self, 'remote_window', None)
+        pad = getattr(remote, 'scroll_pad', None) if remote is not None else None
+        if pad is not None and pad._flight is not None:
+            if pad._flight_target is not tree:
+                return False
+            if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                return bool(pad.wheel_while_flying(
+                    'UP' if key == Qt.Key.Key_Up else 'DOWN'))
+            if key in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
+                return True  # Do not page/ascend during a flight.
+            if key == Qt.Key.Key_Escape:
+                pad._settle()  # Explicit, visible-row landing.
+                return True
+            return False
+        if not (page_up or page_down):
+            return False
+        if self.auto_shuriken_scroll_files_list_target() is not tree:
+            gate.reset()
+            return False
+        # Preserve the existing single PageUp at the FIRST row -> parent.
+        # If a burst began further down, suppress parent navigation when Qt
+        # reaches the first row *mid-gesture* (even before the fourth press).
+        first = next((tree.topLevelItem(i) for i in range(tree.topLevelItemCount())
+                      if view.row_data(tree.topLevelItem(i)) is not None), None)
+        at_first = first is not None and tree.currentItem() is first
+        pending = gate.pending(context=context)
+        if page_up and at_first and not pending:
+            gate.reset()
+            return False
+        direction = 1 if page_up else -1
+        fired = gate.feed(direction, context=context,
+                          auto_repeat=bool(getattr(event, 'isAutoRepeat', lambda: False)()))
+        if fired:
+            remote = self.ensure_remote_window()  # Hidden Remote is supported.
+            started = bool(remote.scroll_pad.start_from_wheel(fired, source='keyboard'))
+            shuriken_trace('keyboard_page_launch', direction=fired, started=started)
+            # Even at the edge, the fourth press must not become an accidental
+            # folder hop; the unchanged scrollbar simply has no flight room.
+            return True
+        if page_up and at_first:
+            return True  # A continuing burst never goes up a folder.
+        return False  # Normal Qt PageUp/PageDown until press #4.
+
     def stop_auto_shuriken_on_list_click(self):
         """Clicking a file brakes the automatic flight BEFORE Qt activates it."""
+        # A click also ends an unfinished 4-tap gesture; the next Page press
+        # must start its own clean sequence in the newly selected context.
+        gate = getattr(self, '_shuriken_keyboard_gate', None)
+        if gate is not None:
+            gate.reset()
         remote = self.remote_window
         pad = getattr(remote, 'scroll_pad', None) if remote is not None else None
         if (pad is not None and getattr(pad, '_auto_wheel_flight', False)
@@ -11652,6 +11720,7 @@ class Launcher(QWidget):
                 (getattr(pane.tree, '_rename_enter_guard', False) or
                  (hasattr(pane.tree, 'state') and
                   pane.tree.state() == QAbstractItemView.State.EditingState))):
+            self._shuriken_keyboard_gate.reset()
             return False
         if self.page_key(event):
             event.accept()
@@ -11680,8 +11749,15 @@ class Launcher(QWidget):
             event.accept()
             return True
         if event.modifiers() != Qt.KeyboardModifier.NoModifier:
+            if pane is self.expanded_view.middle:
+                self._shuriken_keyboard_gate.reset()
             return False
         view = self.expanded_view
+        keyboard_shuriken = getattr(self, 'shuriken_keyboard_list_key', None)
+        if (pane is view.middle and callable(keyboard_shuriken)
+                and keyboard_shuriken(key, event, pane)):
+            event.accept()
+            return True
         if key == getattr(Qt.Key, 'Key_Delete', None) and pane is view.middle:
             self.delete_expanded_selected_paths()
             event.accept()

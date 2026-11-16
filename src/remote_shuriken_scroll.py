@@ -120,7 +120,7 @@ class ShurikenScrollPad(QFrame):
 
     def _target(self):
         provider = self.target_provider
-        if self._auto_wheel_flight and self._auto_wheel_source == 'list':
+        if self._auto_wheel_flight and self._auto_wheel_source in ('list', 'keyboard'):
             provider = self.auto_target_provider
         return provider() if callable(provider) else None
 

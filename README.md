@@ -224,6 +224,10 @@ FRB Launchは、**「昨日の日付を入力するのが面倒だった」**と
 - [Zenn：マウスを動かしたくなくて、リモコンが生まれた話](https://zenn.dev/frb_tamasub/articles/ai-collaboration08-frb-launch-remote-experience)
 - [GitHub：FRB Launch リリース一覧](https://github.com/tamasub/FRB-Launch/releases)
 
+
+- [【重要資料】主な機能一覧 14選＋おまけ3つ](./docs/FRB_Launch.htm)
+
+
 ### FRBとは？
 
 **FRB = Fishing Rod Benchmark**。釣り竿の「感度」を振動から捉え、比較できるようにする個人研究から始まった名前です。
