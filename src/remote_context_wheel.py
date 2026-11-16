@@ -232,14 +232,12 @@ class RemoteContextWheel(QObject):
             self._restore_wheel_selection()
 
     def _hit(self, global_pos):
-        """Recognize only the ぐりぐり pad; the arrow buttons were retired."""
-        remote = getattr(self.launcher, 'remote_window', None)
-        if remote is None or not remote.isVisible():
-            return None
-        for name, widget in (('CLICK', getattr(remote, 'pad', None)),):
-            if widget is not None and widget.isVisible():
-                if widget.rect().contains(widget.mapFromGlobal(global_pos)):
-                    return name
+        """Floating／埋込みどちらのぐりぐりボタンも同じメニュー操作面。"""
+        active_pad = getattr(self.launcher, '_active_remote_wheel_pad', None)
+        pad = active_pad() if callable(active_pad) else None
+        if pad is not None and pad.isVisible():
+            if pad.rect().contains(pad.mapFromGlobal(global_pos)):
+                return 'CLICK'
         return None
 
     def _menu_under_pointer(self, global_pos):
@@ -395,10 +393,13 @@ class RemoteContextWheel(QObject):
                 self._consume_menu_wheel(event)
                 return True
             if target == 'pad':
-                # The pad retains its own Ctrl-opacity and accumulation rules.
-                self.launcher.remote_window.pad.wheelEvent(event)
-                event.accept()
-                return True
+                # 丸レールでも既存Remoteでも、操作中の実Padにだけ配送。
+                active_pad = getattr(self.launcher, '_active_remote_wheel_pad', None)
+                pad = active_pad() if callable(active_pad) else None
+                if pad is not None:
+                    pad.wheelEvent(event)
+                    event.accept()
+                    return True
             return False
         hit = self._hit(point)
         if hit is None:

@@ -4,8 +4,8 @@ Mouse actions emit semantic commands.  No SendKeys, synthetic key presses or
 cross-process keyboard injection are involved.
 """
 
-from PySide6.QtCore import Qt, QEvent, Signal, QPoint, QRect, QRectF, QSize, QTimer
-from PySide6.QtGui import QPainter, QPen, QColor, QFont, QPixmap, QIcon
+from PySide6.QtCore import Qt, QEvent, Signal, QPoint, QPointF, QRect, QRectF, QSize, QTimer, QElapsedTimer
+from PySide6.QtGui import QPainter, QPen, QColor, QFont, QPixmap, QIcon, QCursor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                 QLabel, QFrame, QApplication, QMenu)
 from remote_navigation import popup_at_hotspot
@@ -338,6 +338,190 @@ class WheelPad(QFrame):
             self._drag_start_pos = None
             self._dragged = False
             super().mouseReleaseEvent(event)
+
+
+class RoundRailWheelPad(WheelPad):
+    """Files内に埋め込む丸いぐりぐり。独立Remoteは一切変更しない。
+
+    カーソルのある半円が操作対象。ホイールとクリックは既存の
+    WheelPadの意味コマンドを再利用し、長押しの対象選択だけ無効化する。
+    """
+
+    side_changed = Signal(str)
+    double_click_released = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent, compact=True)
+        # 一回り大きく。List行のアイコンを避ける位置調整は親Viewが担当。
+        self.setFixedSize(60, 60)
+        self.setMouseTracking(True)
+        self.target_switch_allowed = lambda: False
+        self._press_clock = QElapsedTimer()
+        self._hover_side = None
+        self._circle_fill = QColor('#e7f4ee')
+        self._circle_outline = QColor('#519d78')
+        self._circle_ink = QColor('#155c3f')
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+        # 既存Remoteの「🔘」を円の中心へ。元のlayoutラベルは隠し、
+        # アイコンだけ独立した子ラベルにして、左右のマウス判定を妨げない。
+        for label in self.findChildren(QLabel):
+            label.hide()
+        self._center_glyph = QLabel('🔘', self)
+        self._center_glyph.setObjectName('railWheelCenterGlyph')
+        self._center_glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._center_glyph.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._center_glyph.setStyleSheet('background: transparent; border: none;')
+        glyph_font = QFont(self.font())
+        glyph_font.setPixelSize(16)
+        self._center_glyph.setFont(glyph_font)
+        self._center_glyph.setGeometry(19, 20, 22, 22)
+        self._center_glyph.raise_()
+        self.setToolTip('左半分：Files Exp／右半分：Files List\n'
+                        'ぐりぐり：行移動／クリック：操作／長押し：無効')
+
+    def set_circle_theme(self, fill, outline, ink):
+        self._circle_fill = QColor(fill)
+        self._circle_outline = QColor(outline)
+        self._circle_ink = QColor(ink)
+        self.update()
+
+    def _side_from_event(self, event):
+        position = event.position()
+        if not self.rect().contains(position.toPoint()):
+            return
+        from rail_wheel_model import rail_target_from_x
+        target = rail_target_from_x(position.x(), self.width())
+        if target != self._hover_side:
+            # 部分ノッチを反対側へ渡さない。左右は独立した操作面。
+            self._angle_remainder = 0
+            self._pixel_remainder = 0
+            self._hover_side = target
+            self.update()
+        # 外側でExp/Listが切り替わる場合もあるため、イベントごとに通知。
+        # 親側で現在値を確認し、無駄な再描画は抑止する。
+        self.side_changed.emit(target)
+
+    def enterEvent(self, event):
+        position = self.mapFromGlobal(QCursor.pos())
+        if self.rect().contains(position):
+            from rail_wheel_model import rail_target_from_x
+            target = rail_target_from_x(position.x(), self.width())
+            self._hover_side = target
+            self.side_changed.emit(target)
+            self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_side = None
+        self.update()
+        super().leaveEvent(event)
+
+    def wheelEvent(self, event):
+        self._side_from_event(event)
+        super().wheelEvent(event)
+
+    def contextMenuEvent(self, event):
+        # Windowsは右ボタンrelease後にContextMenuイベントも配送する。
+        # WheelPad.mouseReleaseEventの意味コマンドが唯一の開く入口。
+        # ここで親にイベントを伝播すると同じ右クリックが二重起動する。
+        event.accept()
+
+    def mousePressEvent(self, event):
+        self._side_from_event(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_clock.start()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self._side_from_event(event)
+        super().mouseMoveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        self._side_from_event(event)
+        self._press_clock.invalidate()
+        super().mouseDoubleClickEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        double_release = (event.button() == Qt.MouseButton.LeftButton
+                          and self._ignore_double_release)
+        # Double-clickの押下時にExp→Listへ確定済み。2回目のリリース時に
+        # 左半円の旧ターゲットを再通知するとListがExpへ戻ってしまう。
+        if not double_release:
+            self._side_from_event(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            from rail_wheel_model import rail_long_press_consumed
+            long_held = (self._press_clock.isValid() and
+                         rail_long_press_consumed(self._press_clock.elapsed(),
+                                                  self.TARGET_MENU_HOLD_MS))
+            self._press_clock.invalidate()
+            if long_held and not self._ignore_double_release:
+                # 長押しはポップアップもクリック確定も発生させない。
+                self._hide_target_menu()
+                self._pressed = False
+                self._drag_start_pos = None
+                self._dragged = False
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
+        if double_release:
+            # 2回目のボタンを離した後にのみ、右半円への自動移動を許可。
+            # ダブルクリック押下中にQCursorを動かすとQtの暗黙grabと競合する。
+            self.double_click_released.emit()
+
+    def paintEvent(self, event):
+        # QtのQSS border-radius＋ピクセル単位の楕円マスクだと外枠が欠ける。
+        # 円弧／線を全て内側（外周から2px）へ描き、抗エイリアスを有効化。
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            bounds = QRectF(2.0, 2.0, self.width() - 4.0, self.height() - 4.0)
+            outline = (self._circle_ink if self._hover_side else self._circle_outline)
+            painter.setPen(QPen(outline, 2.0))
+            painter.setBrush(self._circle_fill)
+            painter.drawEllipse(bounds)
+
+            center_x = self.width() / 2.0
+            # 中央の点線は絵文字の下で途切れさせる。実際の左右ヒット判定は
+            # 円のx中央で継続し、絵文字ラベルはマウスイベントを透過する。
+            separator = QColor(self._circle_ink)
+            separator.setAlpha(140)
+            painter.setPen(QPen(separator, 1.0, Qt.PenStyle.DotLine,
+                                Qt.PenCapStyle.RoundCap))
+            painter.drawLine(QPointF(center_x, 42.0), QPointF(center_x, 52.0))
+
+            painter.setPen(self._circle_ink)
+            font = QFont(self.font())
+            font.setPixelSize(9)
+            font.setWeight(QFont.Weight.DemiBold)
+            painter.setFont(font)
+            painter.drawText(QRectF(5.0, 8.0, self.width() - 10.0, 14.0),
+                             Qt.AlignmentFlag.AlignCenter, 'ぐりぐり')
+            # 操作対象を示す半透明の大きな●。中央🔘(16px)より
+            # 少し小さい直径14pxを、Exp/List文字の背後に描く。
+            # 描画順が重要：背景● → 文字。文字が常に前面に残る。
+            if self._hover_side:
+                marker = QColor(self._circle_ink)
+                marker.setAlpha(100)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(marker)
+                marker_x = 18.0 if self._hover_side == 'files_exp' else 42.0
+                painter.drawEllipse(QPointF(marker_x, 44.0), 7.0, 7.0)
+
+            # 円の下側は細くなるため、Exp/Listを中央寄りへ配置する。
+            # 60px円の輪郭からはみ出さず、背景●の上に文字を重ねる。
+            font.setPixelSize(10)
+            font.setWeight(QFont.Weight.DemiBold)
+            painter.setFont(font)
+            painter.setPen(self._circle_ink)
+            painter.drawText(QRectF(8.0, 37.0, 20.0, 14.0),
+                             Qt.AlignmentFlag.AlignCenter, 'Exp')
+            painter.drawText(QRectF(32.0, 37.0, 20.0, 14.0),
+                             Qt.AlignmentFlag.AlignCenter, 'List')
+        finally:
+            painter.end()
 
 
 class RemoteWheelButton(QPushButton):

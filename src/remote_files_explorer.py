@@ -1327,6 +1327,20 @@ class RemoteFilesExplorer(QWidget):
         self._activate_index(index)
         return True
 
+    def remote_toggle_current(self):
+        """丸いぐりぐりレールのExpクリック専用：開閉を交互に切替。"""
+        index = self.tree.currentIndex()
+        if not index.isValid():
+            return False
+        if self.tree.isExpanded(index):
+            # 開いているフォルダーのクリックは閉じるだけ。親へ戻らない。
+            self._selection_timer.stop()
+            self.tree.collapse(index)
+            self._schedule_tree_state_save()
+            return True
+        # 未展開のときは従来のExpクリック（展開／遷移）をそのまま利用。
+        return self.remote_activate_current()
+
     def remote_branch(self, direction):
         """Right expands, left collapses or selects the visible parent."""
         tree = self.tree

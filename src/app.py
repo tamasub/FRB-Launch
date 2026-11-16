@@ -52,6 +52,7 @@ from webview_settings import read_webview_settings
 from launch_option_runtime import effective_options_path
 from launch_user_settings import ensure_user_settings
 from launch_state_defaults import ensure_initial_state_ini
+from remote_display_policy import normalize_remote_display_mode, mode_is_remote_window
 from search_history import SearchHistory, normalize_keyword
 from session_search_history import SessionSearchHistory, SESSION_HISTORY
 from search_history_categories import SearchHistoryCategories, UNCATEGORIZED
@@ -3015,9 +3016,12 @@ class Launcher(QWidget):
             self.settings.value('dismiss_on_outside_click', 'true'))
         self.folder_open_mode = read_folder_open_mode(
             self.settings.value('folder_open_mode', 'single'))
-        # Opt-in experiment: desktop double-click opens a pointer-side remote.
-        self.remote_on_desktop_double_click = str(self.settings.value(
-            'desktop_remote_enabled', 'false')).lower() in ('true', '1', 'yes', 'on')
+        # 4択リモコン表示。旧state.iniの2フラグは最初の読み込み時に移行する。
+        self.remote_display_mode = normalize_remote_display_mode(
+            self.settings.value('remote_display_mode', None),
+            legacy_enabled=self.settings.value('desktop_remote_enabled', 'false'),
+            legacy_column15=self.settings.value('experiment_remote_15_column', 'false'))
+        self.remote_on_desktop_double_click = mode_is_remote_window(self.remote_display_mode)
         # Public release: historic Page shortcut trio is opt-in, not default.
         self.hide_page_buttons = str(self.settings.value(
             'hide_page_buttons', 'true')).lower() in ('true', '1', 'yes', 'on')
@@ -3029,9 +3033,7 @@ class Launcher(QWidget):
                             'experiment_files_exp_embedded'):
             if self.settings.contains(retired_key):
                 self.settings.remove(retired_key)
-        self.remote_15_mode = str(self.settings.value(
-            'experiment_remote_15_column', 'false')).strip().lower() in (
-                'true', '1', 'yes', 'on')
+        self.remote_15_mode = self.remote_display_mode == 'column15'
         # Opt-in aim-only prototype: never move or click the OS cursor.
         self.mouse_pointer_rod_mode = str(self.settings.value(
             'experiment_mouse_pointer_rod', 'false')).strip().lower() in (
@@ -3352,25 +3354,29 @@ class Launcher(QWidget):
                 lambda checked=False, mode=value: self.set_folder_open_mode(mode))
             self.folder_mode_actions[value] = action
         self.theme_menu.addSeparator()
-        self.remote_mode_action = self.theme_menu.addAction(
-            'デスクトップダブルクリックでリモコンを表示')
-        self.remote_mode_action.setCheckable(True)
-        self.remote_mode_action.setChecked(self.remote_on_desktop_double_click)
-        self.remote_mode_action.triggered.connect(self.set_desktop_remote_enabled)
+        remote_menu = self.theme_menu.addMenu('リモコン表示')
+        self.remote_display_group = QActionGroup(self)
+        self.remote_display_group.setExclusive(True)
+        self.remote_display_actions = {}
+        for value, caption in (
+                ('off', '使用しない'),
+                ('column15', 'リモコンウィンドウ 1.5列へ表示'),
+                ('window', 'リモコンウィンドウ 別Window'),
+                ('wheel', 'ぐりぐりボタンのみ')):
+            action = remote_menu.addAction(caption)
+            action.setCheckable(True)
+            action.setChecked(self.remote_display_mode == value)
+            self.remote_display_group.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, selected=value: self.set_remote_display_mode(selected))
+            self.remote_display_actions[value] = action
         self.hide_page_buttons_action = self.theme_menu.addAction('Pageボタンを非表示')
         self.hide_page_buttons_action.setCheckable(True)
         self.hide_page_buttons_action.setChecked(self.hide_page_buttons)
         self.hide_page_buttons_action.setToolTip(
             'Files・Browserの右横にあるPageショートカットを隠します。Pageデータは削除されません。')
         self.hide_page_buttons_action.triggered.connect(self.set_hide_page_buttons)
-        self.remote_15_action = self.theme_menu.addAction(
-            'リモコンウィンドウを1.5列に表示')
-        self.remote_15_action.setCheckable(True)
-        self.remote_15_action.setChecked(self.remote_15_mode)
-        self.remote_15_action.setToolTip(
-            'Filesの第1列と第2列の間にリモコンの表示場所を確保します。'
-            'リモコンの検索結果選択・実行の動作は変わりません。')
-        self.remote_15_action.triggered.connect(self.set_remote_15_mode)
+        # 旧1.5列の独立トグルは「リモコン表示」4択に統合した。
 
         # Warp Rod is the ONLY public rod family. The old plain-rod engine
         # remains internally for compatibility, but is not a menu option.
@@ -4030,14 +4036,9 @@ class Launcher(QWidget):
         self.update_expanded_visibility()
 
     def set_desktop_remote_enabled(self, checked):
-        """Opt-in, persisted independently from the existing window modes."""
-        self.remote_on_desktop_double_click = bool(checked)
-        self.settings.setValue('desktop_remote_enabled', self.remote_on_desktop_double_click)
-        self.settings.sync()
-        if not self.remote_on_desktop_double_click:
-            self.hide_remote()
-        self.footer.setText('デスクトップリモコン：' +
-                            ('有効（ダブルクリックで表示）' if checked else '無効'))
+        """旧呼び出し元との互換性。新UIは4択から設定する。"""
+        mode = ('column15' if self.remote_15_mode else 'window') if checked else 'off'
+        self.set_remote_display_mode(mode)
 
     def set_files_root_hidden_mode(self, checked):
         """Deprecated caller compatibility: Exp is permanently column 1."""
@@ -4795,31 +4796,57 @@ class Launcher(QWidget):
             'ワープ差し棒：先端X固定で上下追従、実カーソルも青エリア内で追従。'
             if checked else 'ワープ差し棒：OFF（棒の長さ調整に復帰）。')
 
-    def set_remote_15_mode(self, checked):
-        """Reversible overlay experiment; existing Remote commands stay intact."""
-        self.remote_15_mode = bool(checked)
+    def set_remote_display_mode(self, mode):
+        """リモコンの4択表示を切り替える（同時表示させない）。"""
+        mode = normalize_remote_display_mode(mode)
+        previous_15 = self.remote_15_mode
+        self.remote_display_mode = mode
+        self.remote_15_mode = mode == 'column15'
+        self.remote_on_desktop_double_click = mode_is_remote_window(mode)
+        self.settings.setValue('remote_display_mode', mode)
+        # 過去版が開いても設定が破壊されないように互換フラグも同期。
+        self.settings.setValue('desktop_remote_enabled', self.remote_on_desktop_double_click)
         self.settings.setValue('experiment_remote_15_column', self.remote_15_mode)
         self.settings.sync()
-        self.remote_15_action.setChecked(self.remote_15_mode)
+        actions = getattr(self, 'remote_display_actions', None)
+        if actions:
+            actions[mode].setChecked(True)
         view = getattr(self, 'expanded_view', None)
-        if view is not None:
+        if view is not None and previous_15 != self.remote_15_mode:
             view.apply_remote_15_lane_mode()
-        if self.remote_15_mode:
+        # 別Windowと丸ボタンを重ねない。丸ボタンはLaunchの子Widget。
+        if mode in ('off', 'wheel'):
+            self.hide_remote()
+        elif self.remote_15_mode:
             if view is not None and view._workspace_mode == 'browser':
                 self._remote_15_needs_show = False
                 self.hide_remote()
             else:
                 self.queue_remote_15_alignment(show=True)
-        else:
+        elif previous_15:
             remote = getattr(self, 'remote_window', None)
             if remote is not None:
                 remote._remote_15_placement = False
                 saved = self.settings.value('remote_last_position')
                 if isinstance(saved, QPoint):
                     remote.move(saved)
-        self.footer.setText(
-            'Remoteは第1.5列に別Windowで表示します。' if checked
-            else 'リモコン第1.5列表示を解除しました。')
+                if remote.isVisible():
+                    remote.show_at(QCursor.pos())
+        if view is not None:
+            refresh = getattr(view, 'update_rail_wheel_visibility', None)
+            if callable(refresh):
+                refresh()
+        self.footer.setText('リモコン表示：' + {
+            'off': '使用しない',
+            'column15': 'リモコンウィンドウ 1.5列へ表示',
+            'window': 'リモコンウィンドウ 別Window',
+            'wheel': 'ぐりぐりボタンのみ',
+        }[mode])
+
+    def set_remote_15_mode(self, checked):
+        """旧コード／テスト用の互換エントリ。"""
+        self.set_remote_display_mode('column15' if checked else (
+            'window' if self.remote_on_desktop_double_click else 'off'))
 
     def queue_remote_15_alignment(self, *, show=False):
         """Schedule AFTER splitter geometry changes without focus stealing."""
@@ -5696,15 +5723,99 @@ class Launcher(QWidget):
         self._wire_hybrid_context_menu(menu)
         menu.popup(point)
 
+    def _follow_files_column_context_pointer(self, target, origin):
+        """メニューの列切替：丸ボタンONは丸の内部、その他は既存カレント行へ。
+
+        操作対象の切替とは別に、カーソル位置が人間の操作で変わった場合は
+        後追いワープしない。どちらのモードでも疑似クリックは行わない。
+        """
+        if (not getattr(self, 'pointer_warp_enabled', False)
+                or target not in ('files_exp', 'directory')
+                or QApplication.mouseButtons() != Qt.MouseButton.NoButton
+                or QCursor.pos() != origin):
+            return
+        view = getattr(self, 'expanded_view', None)
+        if (view is None or not view.isVisible()
+                or getattr(view, '_workspace_mode', None) != 'files'
+                or getattr(self, '_files_operating_target', None) != target):
+            return
+        # ぐりぐりボタンのみ表示中は、メニューから列を切り替えても
+        # Exp/Listの行までカーソルを飛ばさない。丸の左右半分が操作面。
+        # 非表示・別Window・1.5列モードは従来のカレント行ワープを維持。
+        if getattr(self, 'remote_display_mode', 'off') == 'wheel':
+            pad = getattr(view, 'rail_wheel', None)
+            if pad is None or not pad.isVisible():
+                return  # ボタン非表示なら別の場所へ代替ワープしない。
+            destination = pad.mapToGlobal(QPoint(
+                pad.width() // 4 if target == 'files_exp'
+                else pad.width() * 3 // 4,
+                pad.height() // 2))
+            if QCursor.pos() == origin and destination != origin:
+                QCursor.setPos(destination)
+                # 次のホイールイベント前に論理操作対象も確定させる。
+                select_side = getattr(view, 'rail_wheel_select_side', None)
+                if callable(select_side):
+                    select_side(target)
+            return
+        if target == 'files_exp':
+            panel = self._current_remote_files_exp()
+            tree = getattr(panel, 'tree', None)
+            if tree is None or not tree.isVisible():
+                return
+            index = tree.currentIndex()
+            if not index.isValid():
+                return
+            tree.scrollTo(index, QAbstractItemView.ScrollHint.EnsureVisible)
+            row_bounds = tree.visualRect(index)
+        else:
+            tree = view.middle.tree
+            if not tree.isVisible():
+                return
+            item = tree.currentItem()
+            if item is None:
+                return
+            tree.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+            row_bounds = tree.visualItemRect(item)
+        viewport = tree.viewport()
+        visible_row = row_bounds.intersected(viewport.rect())
+        if not visible_row.isValid() or visible_row.isEmpty():
+            return
+        # Prefer text area over the expand/collapse arrow. Use a visible cell
+        # even for a very narrow Exp column; never jump into the next column.
+        inside_x = visible_row.left() + min(70, max(1, visible_row.width() // 2))
+        destination = viewport.mapToGlobal(QPoint(inside_x, visible_row.center().y()))
+        if QCursor.pos() == origin and destination != origin:
+            QCursor.setPos(destination)
+
+    def _active_remote_wheel_pad(self):
+        """リモコンWindowまたはLaunch内丸ボタンの現在の操作面を返す。"""
+        remote = getattr(self, 'remote_window', None)
+        if remote is not None and remote.isVisible():
+            return remote.pad
+        view = getattr(self, 'expanded_view', None)
+        pad = getattr(view, 'rail_wheel', None) if view is not None else None
+        if (getattr(self, 'remote_display_mode', 'off') == 'wheel'
+                and pad is not None and pad.isVisible()):
+            return pad
+        return None
+
     def remote_context_menu(self):
         """Remote-pad context: prepend navigation and existing history commands.
 
         Only the central pad's CONTEXT_MENU command uses this scope. Native
         pointer right-clicks retain their existing actions and order.
         """
-        remote = getattr(self, 'remote_window', None)
-        if remote is None or not remote.isVisible():
+        pad = self._active_remote_wheel_pad()
+        if pad is None:
             return
+        # 同じ右クリックから開くポップアップは必ず1個。Qt.Toolの古い
+        # 非モーダルQMenuを閉じずに参照だけ上書きすると居残ってしまう。
+        previous = getattr(self, '_launch_context_menu', None)
+        if previous is not None:
+            try:
+                previous.close()
+            except RuntimeError:
+                pass
         self._remote_pad_context_active = True
         self._remote_pad_context_menu = None
         try:
@@ -5713,24 +5824,47 @@ class Launcher(QWidget):
             self._remote_pad_context_active = False
         menu = self._remote_pad_context_menu
         if menu is None:
+            # 選択中のExp/List項目がメニューを生成したなら、それが本体。
+            # これを見落とすと空扱いのフォールバックを二重に開いてしまう。
+            candidate = getattr(self, '_launch_context_menu', None)
+            try:
+                if candidate is not None and candidate.isVisible():
+                    menu = candidate
+            except RuntimeError:
+                pass
+        if menu is None:
             # No selected item: still use the full FRB context-menu object.
             menu = self._create_files_context_menu(self)
             self._prepend_remote_pad_navigation(menu, force=True)
             self._wire_hybrid_context_menu(menu)
-            pad = remote.pad
+            self._launch_context_menu = menu
+            menu.aboutToHide.connect(
+                lambda m=menu: self._forget_launch_context_menu(m))
             menu.popup(pad.mapToGlobal(QPoint(pad.width() + 4, 0)))
         if menu.isVisible():
             self._enable_remote_context_wheel_for_menu(menu)
 
     def _dispatch_files_column_context_navigation(self, menu, target):
-        """Close the originating popup before switching ONLY the active column."""
+        """Switch the logical Files column, then optionally follow its current row.
+
+        This is the ONE dispatch for native Exp/List and Remote context menus.
+        The action never navigates a folder; pointer follow only runs when the
+        user enabled it and has not moved the mouse since choosing the action.
+        """
         wheel = getattr(self, '_remote_context_wheel', None)
         if wheel is not None and wheel.root is menu:
             wheel.stop()
+        origin = QCursor.pos() if getattr(self, 'pointer_warp_enabled', False) else None
         menu.close()
         # No LEFT/RIGHT dispatch here: those are *hierarchy* commands and can
-        # traverse physical folders.  Column switching owns no history entry.
-        QTimer.singleShot(0, lambda: self.remote_focus_area(target))
+        # traverse physical folders. Column switching owns no history entry.
+        def finish():
+            self.remote_focus_area(target)
+            follow = getattr(self, '_follow_files_column_context_pointer', None)
+            if origin is not None and callable(follow):
+                # Delay until the focus/scroll and closing popup have settled.
+                QTimer.singleShot(0, lambda: follow(target, origin))
+        QTimer.singleShot(0, finish)
 
     def _install_files_column_navigation(self, menu, column):
         """One menu presentation/dispatch path shared by all Exp/List sources."""
@@ -5754,10 +5888,9 @@ class Launcher(QWidget):
 
     def _show_remote_target_context_menu(self):
         """Open the selected object's existing menu beside the wheel pad."""
-        remote = getattr(self, 'remote_window', None)
-        if remote is None or not remote.isVisible():
+        pad = self._active_remote_wheel_pad()
+        if pad is None:
             return
-        pad = remote.pad
         pos = pad.mapToGlobal(QPoint(pad.width() + 4, 0))
         web = self.expanded_view
         if (getattr(web, 'web_view_active', lambda: False)() and
@@ -5987,7 +6120,12 @@ class Launcher(QWidget):
             return
         panel = self._current_remote_files_exp()
         if panel is not None:
-            panel.remote_activate_current()
+            toggle = getattr(panel, 'remote_toggle_current', None)
+            if (getattr(self, 'remote_display_mode', 'off') == 'wheel'
+                    and callable(toggle)):
+                toggle()  # 丸ボタンでは開いたExpフォルダーを閉じられる。
+            else:
+                panel.remote_activate_current()
             self.remote_focus_area('files_exp')
 
     def _current_remote_files_exp(self):
@@ -5998,6 +6136,11 @@ class Launcher(QWidget):
         move the operating target.
         """
         view = self.expanded_view
+        # ぐりぐりボタンのみでは独立Remoteが無い。画面に表示中の
+        # Files Exp自身を操作する（幅・選択・開閉状態は既存のまま）。
+        if (getattr(self, 'remote_display_mode', 'off') == 'wheel'
+                and getattr(view, '_workspace_mode', '') == 'files'):
+            return getattr(view, 'embedded_files_exp', None)
         if getattr(self, 'files_exp_embedded_mode', False):
             return getattr(view, 'embedded_files_exp', None)
         remote = getattr(self, 'remote_window', None)

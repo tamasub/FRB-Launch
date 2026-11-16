@@ -1853,6 +1853,23 @@ class ExpandedLauncherView(QWidget):
         self.left.installEventFilter(self)
         self.files_splitter.splitterMoved.connect(
             lambda *_: self._align_files_list_title_width())
+        self.files_splitter.splitterMoved.connect(
+            lambda *_: self.queue_rail_wheel_position())
+        self.files_splitter.installEventFilter(self)
+        # FRB ぐりぐりボタン：Remoteの実物WheelPadを再利用する。
+        # 親はこのFiles画面。別Windowで座標を同期する方式は使わない。
+        from launch_remote import RoundRailWheelPad
+        from PySide6.QtGui import QRegion
+        self.rail_wheel = RoundRailWheelPad(self)
+        self.rail_wheel.setObjectName('railWheelPad')
+        self.rail_wheel.setFixedSize(60, 60)
+        self.rail_wheel.setMask(QRegion(self.rail_wheel.rect(), QRegion.RegionType.Ellipse))
+        self.rail_wheel.command.connect(self.rail_wheel_command)
+        self.rail_wheel.side_changed.connect(self.rail_wheel_select_side)
+        # 2回目のリリース完了後、Qtがボタン状態を更新した次のtickで移動。
+        self.rail_wheel.double_click_released.connect(
+            lambda: QTimer.singleShot(0, self._warp_rail_pointer_to_list))
+        self.rail_wheel.hide()
         QTimer.singleShot(0, self._align_files_list_title_width)
         # Match the Files Exp title's bottom border to the adjacent folder
         # search row's bottom border, regardless of font metrics or DPI.
@@ -2087,10 +2104,122 @@ class ExpandedLauncherView(QWidget):
         self.launcher.settings.sync()
         self.apply_theme(self.launcher.color_theme)
 
+    def rail_wheel_select_side(self, target):
+        """丸の左/右にポインターがあるだけでExp/List操作対象を選択。"""
+        if (getattr(self.launcher, 'remote_display_mode', 'off') != 'wheel'
+                or self._workspace_mode != 'files'
+                or target not in ('files_exp', 'directory')):
+            return
+        if getattr(self.launcher, '_files_operating_target', None) != target:
+            self.launcher.set_files_operating_target(target)
+
+    def rail_wheel_command(self, command):
+        """丸ボタンからも既存Remoteの意味操作を呼ぶ（キーボード偽装なし）。"""
+        if (getattr(self.launcher, 'remote_display_mode', 'off') != 'wheel'
+                or self._workspace_mode != 'files'):
+            return
+        # 半円内のポインター位置によって直前に選択された操作対象を使う。
+        target = getattr(self.launcher, '_files_operating_target', 'directory')
+        if command in ('UP', 'DOWN', 'CLICK', 'DOUBLE_CLICK'):
+            self.launcher._remote_area = target
+        if command == 'DOUBLE_CLICK' and target == 'files_exp':
+            # ダブルクリックの最初のCLICKで予約されたExpアクションを止める。
+            # 自動移動OFFでは右列へ移ってもマウスが左半円に残るため、
+            # Exp半円のダブルクリックそのものを無効にする。
+            pending_click = getattr(self.launcher, '_remote_exp_click_timer', None)
+            if pending_click is not None:
+                pending_click.stop()
+            if not getattr(self.launcher, 'pointer_warp_enabled', True):
+                return
+        self.launcher.remote_command(command)
+        # Exp→List成功時のポインター移動はRoundRailWheelPadの2回目
+        # mouseReleaseEventまで待つ。押下中のカーソル移動は禁止。
+
+    def _warp_rail_pointer_to_list(self):
+        """丸ボタン内だけを移動。リモコンWindowや行の上には飛ばさない。"""
+        pad = getattr(self, 'rail_wheel', None)
+        if (pad is None or not pad.isVisible() or self._workspace_mode != 'files'
+                or getattr(self.launcher, 'remote_display_mode', 'off') != 'wheel'
+                or not getattr(self.launcher, 'pointer_warp_enabled', True)
+                or getattr(self.launcher, '_files_operating_target', None) != 'directory'
+                or QApplication.mouseButtons() != Qt.MouseButton.NoButton):
+            return
+        from PySide6.QtGui import QCursor
+        current = pad.mapFromGlobal(QCursor.pos())
+        # 手動で既に移動した場合には追いかけない（予期せぬワープを防ぐ）。
+        if not pad.rect().contains(current) or current.x() >= pad.width() / 2:
+            return
+        destination = pad.mapToGlobal(QPoint(pad.width() * 3 // 4,
+                                             pad.height() // 2))
+        QCursor.setPos(destination)
+        # QtからのMouseMoveより先に次の操作が届いてもListが操作対象。
+        self.rail_wheel_select_side('directory')
+
+    def queue_rail_wheel_position(self):
+        if getattr(self, '_rail_position_pending', False):
+            return
+        self._rail_position_pending = True
+        QTimer.singleShot(0, self._position_rail_wheel)
+
+    def update_rail_wheel_visibility(self):
+        pad = getattr(self, 'rail_wheel', None)
+        if pad is None:
+            return
+        active = (getattr(self.launcher, 'remote_display_mode', 'off') == 'wheel'
+                  and self._workspace_mode == 'files'
+                  and self.isVisible()
+                  and self.files_splitter.isVisible())
+        if not active:
+            pad.hide()
+            return
+        pad.show()
+        self.queue_rail_wheel_position()
+
+    def _position_rail_wheel(self):
+        self._rail_position_pending = False
+        pad = getattr(self, 'rail_wheel', None)
+        if pad is None:
+            return
+        if (getattr(self.launcher, 'remote_display_mode', 'off') != 'wheel'
+                or self._workspace_mode != 'files'
+                or not self.isVisible() or not self.files_splitter.isVisible()):
+            pad.hide()
+            return
+        # 子Widgetは親Windowの移動に自動追従。分割バーの中央がX基準。
+        handle = self.files_splitter.handle(1)
+        if handle is None or not handle.isVisible():
+            pad.hide()
+            return
+        center = handle.mapTo(self, QPoint(handle.width() // 2,
+                                           handle.height() // 2))
+        # 円を左へ6px寄せ、拡大してもListの先頭アイコンを覆わない。
+        x = max(0, min(self.width() - pad.width(), center.x() - pad.width() // 2 - 6))
+        y = max(0, min(self.height() - pad.height(), center.y() - pad.height() // 2))
+        pad.move(x, y)
+        pad.show()
+        pad.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'rail_wheel'):
+            self.queue_rail_wheel_position()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, 'rail_wheel'):
+            QTimer.singleShot(0, self.update_rail_wheel_visibility)
+
     def apply_theme(self, theme):
         self.embedded_files_exp.apply_theme(theme)
         self.remote_15_lane.setStyleSheet(
             'QFrame#remote15PlacementLane { background: transparent; border: 0; }')
+        pad = getattr(self, 'rail_wheel', None)
+        if pad is not None:
+            is_light = theme_family(theme) == 'light'
+            fill = '#e7f4ee' if is_light else '#24493d'
+            border = '#519d78' if is_light else '#8ccab1'
+            ink = '#155c3f' if is_light else '#e3f7eb'
+            pad.set_circle_theme(fill, border, ink)
         if self.web_view is not None:
             self.web_view.apply_theme(theme)
         colors = theme_palette(theme)
@@ -4243,6 +4372,10 @@ class ExpandedLauncherView(QWidget):
                 and event.type() == QEvent.Type.Resize):
             self._position_middle_empty_label()
             self._position_middle_parent_return_hint()
+        if (obj is getattr(self, 'files_splitter', None) and
+                event.type() in (QEvent.Type.Resize, QEvent.Type.Move,
+                                 QEvent.Type.Show)):
+            self.queue_rail_wheel_position()
         if (obj is getattr(self, 'remote_15_lane', None) and
                 event.type() in (QEvent.Type.Resize, QEvent.Type.Move,
                                  QEvent.Type.Show)):
@@ -5812,6 +5945,7 @@ class ExpandedLauncherView(QWidget):
     def _activate_browser_layout(self):
         """Show Browser + Bookmarks without discarding the Files column state."""
         self._workspace_mode = 'browser'
+        self.update_rail_wheel_visibility()
         self.set_browser_bookmarks_visible(False, persist=False)
         visible = False  # A horizontal bookmark bar now owns navigation.
         if visible:
@@ -5917,6 +6051,7 @@ class ExpandedLauncherView(QWidget):
                 hide_url_favorites()
         self._workspace_mode = 'files'
         self.files_content_stack.setCurrentWidget(self.files_group)
+        self.update_rail_wheel_visibility()
         if getattr(self.launcher, 'files_exp_embedded_mode', False):
             self.left.show()
             self.embedded_files_exp.show()

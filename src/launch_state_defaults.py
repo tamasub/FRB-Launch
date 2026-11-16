@@ -19,13 +19,14 @@ SEED_KEYS = (
     'dismiss_on_outside_click',
     'folder_open_mode',
     'desktop_remote_enabled',
+    'remote_display_mode',
     'hide_page_buttons',
     'experiment_remote_15_column',
     'experiment_mouse_pointer_rod',
     'experiment_mouse_pointer_rod_windows',
     'experiment_mouse_pointer_rod_smart',
 )
-_BOOLEAN_KEYS = set(SEED_KEYS) - {'appearance_theme', 'folder_open_mode'}
+_BOOLEAN_KEYS = set(SEED_KEYS) - {'appearance_theme', 'folder_open_mode', 'remote_display_mode'}
 _TRUE = {'1', 'true', 'yes', 'on'}
 _FALSE = {'0', 'false', 'no', 'off'}
 
@@ -40,6 +41,8 @@ def _normalized_value(key: str, value: str) -> str | None:
     elif key == 'appearance_theme' and normalized in {'light', 'dark'}:
         return normalized
     elif key == 'folder_open_mode' and normalized in {'single', 'double'}:
+        return normalized
+    elif key == 'remote_display_mode' and normalized in {'off', 'column15', 'window', 'wheel'}:
         return normalized
     return None
 
