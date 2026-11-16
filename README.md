@@ -213,8 +213,10 @@ JSONを手書きする必要はありません。配布版に含まれる**FRB S
 
 FRB Launchは、**「昨日の日付を入力するのが面倒だった」**という小さな不満から始まりました。使う→違和感に気づく→AIと試す→また変える。そんな試行錯誤で育てています。
 
-- [Qiita：FRB Launch 独自UI機能14選](https://qiita.com/tamasub/items/659b0b74c5cacbba701f)
+- [Qiita：60pxの円でExp/Listを操る！「ぐりぐりボタンリモコン」をPySide6で作ってみた](https://qiita.com/tamasub/items/488553d484f10e005dcc)
 - [Qiita：独自UI機能14選の種明かし](https://qiita.com/tamasub/items/488553d484f10e005dcc)
+- [Qiita：FRB Launch 独自UI機能14選](https://qiita.com/tamasub/items/659b0b74c5cacbba701f)
+
 - [Zenn：昨日の日付を入力したくなくて、ランチャーを作った話](https://zenn.dev/frb_tamasub/articles/ai-collaboration06-small-success-frb-launch)
 - [Zenn：マウスホイールぐりぐりが魔法になった話](https://zenn.dev/frb_tamasub/articles/ai-collaboration07-frb-launch-wheel-experience)
 - [Zenn：マウスを動かしたくなくて、リモコンが生まれた話](https://zenn.dev/frb_tamasub/articles/ai-collaboration08-frb-launch-remote-experience)
