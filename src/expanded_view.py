@@ -1547,8 +1547,9 @@ class ExpandedLauncherView(QWidget):
         self.favorite_dropdown.setText('')
         self.favorite_dropdown.setIcon(combo_chevron_icon(self.launcher.color_theme))
         self.favorite_dropdown.setToolTip('作業フォルダーのお気に入り一覧')
-        self.favorite_dropdown.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.favorite_dropdown.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.favorite_dropdown.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.favorite_dropdown.installEventFilter(self)
         self.favorite_dropdown.clicked.connect(self.toggle_directory_favorites)
         self.address_bar.attach_history_dropdown(self.favorite_dropdown)
         self.address_bar.attach_favorite_save(self.favorite_save)
@@ -1643,7 +1644,9 @@ class ExpandedLauncherView(QWidget):
         self.middle_search_history_button.setObjectName('expandedMiddleSearchHistoryButton')
         self.middle_search_history_button.setFixedSize(30, 29)
         self.middle_search_history_button.setIconSize(QSize(22, 22))
-        self.middle_search_history_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Programmatic Ctrl+H focus and subsequent arrow-key navigation.
+        self.middle_search_history_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.middle_search_history_button.installEventFilter(self)
         self.middle_search_history_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.middle_search_history_button.setToolTip(
             'Files List検索履歴：現在のキーワードを登録／登録済みキーワードを呼び出し')
@@ -1654,6 +1657,8 @@ class ExpandedLauncherView(QWidget):
         self.middle_search_history_menu = _NonGrabbingHistoryMenu(
             self.middle_search_history_button)
         self.middle_search_history_menu.setObjectName('filesListSearchHistoryMenu')
+        self.middle_search_history_menu.installEventFilter(self)
+        self._middle_search_history_keyword_actions = []
         # Tool QMenus do not rely on a native popup dismissal. Explicitly
         # close after a selection (including a nested delete-history action).
         self.middle_search_history_menu.triggered.connect(
@@ -2790,6 +2795,77 @@ class ExpandedLauncherView(QWidget):
                 return  # Do not close while selecting a '履歴から削除' item.
         menu.hide()
 
+    def focus_middle_search_history(self):
+        """Ctrl+H jumps to Files List history; Down opens existing QMenu."""
+        if not self.isVisible() or self._workspace_mode != 'files':
+            return False
+        self.middle_search_history_button.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        return True
+
+    def handle_middle_search_history_key(self, obj, event):
+        """Keyboard adapter for the existing non-grabbing Files List menu.
+
+        QMenu remains a Tool window, so the Windows pointer rod continues to
+        click and wheel normally.  The button OR the menu may receive focus
+        after popup() depending on the Windows window manager; both use the
+        same explicit action cursor.  Only saved keywords enter this cursor:
+        register/remove commands still work using the original mouse menu.
+        """
+        button = self.middle_search_history_button
+        menu = self.middle_search_history_menu
+        if (event.type() != QEvent.Type.KeyPress or
+                event.modifiers() != Qt.KeyboardModifier.NoModifier or
+                obj not in (button, menu)):
+            return False
+        key = event.key()
+        if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+            if not menu.isVisible():
+                if key == Qt.Key.Key_Down and obj is button:
+                    self.toggle_middle_search_history_menu()
+                    # Opening is NOT the first selection step, matching
+                    # the main search's Down/Down behavior.
+                    if menu.isVisible():
+                        menu.setActiveAction(None)
+                    event.accept()
+                    return True
+                return False
+            actions = self._middle_search_history_keyword_actions
+            if actions:
+                current = menu.activeAction()
+                if current not in actions:
+                    action = actions[0 if key == Qt.Key.Key_Down else -1]
+                else:
+                    index = actions.index(current)
+                    action = actions[(index + (1 if key == Qt.Key.Key_Down else -1)) % len(actions)]
+                menu.setActiveAction(action)
+            event.accept()
+            return True
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if not menu.isVisible():
+                if obj is button:
+                    self.toggle_middle_search_history_menu()
+                    if menu.isVisible():
+                        menu.setActiveAction(None)
+                    event.accept()
+                    return True
+                return False
+            action = menu.activeAction()
+            if action in self._middle_search_history_keyword_actions:
+                action.trigger()  # Calls existing select_middle_search_history.
+                menu.hide()
+            # Enter with no keyword highlighted must not accidentally execute
+            # the separate "register current keyword" menu command.
+            event.accept()
+            return True
+        if key == Qt.Key.Key_Escape:
+            if menu.isVisible():
+                menu.hide()
+                button.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                event.accept()
+                return True
+            return False
+        return False
+
     def toggle_middle_search_history_menu(self):
         """Toggle Files List keyword history without Qt's global popup grab.
 
@@ -2820,6 +2896,9 @@ class ExpandedLauncherView(QWidget):
         """Refresh the left-side button's popup each time it is opened."""
         menu = self.middle_search_history_menu
         menu.clear()
+        # Keep QAction identities: duplicate keyword titles / special menu
+        # commands must never be mistaken for a selectable history row.
+        self._middle_search_history_keyword_actions = []
         current = self.middle_search.text().strip()
         register = menu.addAction('＋  現在のキーワードを履歴に登録')
         register.setEnabled(bool(current))
@@ -2831,6 +2910,7 @@ class ExpandedLauncherView(QWidget):
         else:
             for keyword in self.files_list_search_history.keywords:
                 action = menu.addAction(keyword)
+                self._middle_search_history_keyword_actions.append(action)
                 action.setToolTip(keyword)
                 action.triggered.connect(
                     lambda checked=False, value=keyword: self.select_middle_search_history(value))
@@ -4354,6 +4434,47 @@ class ExpandedLauncherView(QWidget):
             QCursor.setPos(destination)
 
     def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Type.KeyPress and self.isVisible()
+                and self._workspace_mode == 'files'
+                and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+                and event.key() == Qt.Key.Key_H
+                and isinstance(obj, QWidget)
+                and obj.window() in (self.launcher, getattr(self.launcher, 'remote_window', None))):
+            self.focus_middle_search_history()
+            event.accept()
+            return True
+        if (getattr(self, 'middle_search_history_button', None) is not None
+                and self.handle_middle_search_history_key(obj, event)):
+            return True
+        if (event.type() == QEvent.Type.KeyPress and self.isVisible()
+                and self._workspace_mode == 'files'
+                and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+                and event.key() == Qt.Key.Key_G
+                and isinstance(obj, QWidget)
+                and obj.window() in (self.launcher, getattr(self.launcher, 'remote_window', None))):
+            self.favorite_dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            event.accept()
+            return True
+        if (obj is getattr(self, 'favorite_dropdown', None)
+                and event.type() == QEvent.Type.KeyPress
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier):
+            if event.key() == Qt.Key.Key_Down:
+                # Ctrl+G puts focus on the breadcrumb history button. First
+                # Down opens; subsequent Downs belong to the popup tree.
+                if not self.favorite_popup.isVisible():
+                    self.toggle_directory_favorites()
+                else:
+                    self.favorite_choices.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                event.accept()
+                return True
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.toggle_directory_favorites()
+                event.accept()
+                return True
+            if event.key() == Qt.Key.Key_Escape:
+                self.hide_favorite_popup()
+                event.accept()
+                return True
         # The application-wide filter also receives clicks in the blank 1.5
         # lane, which Qt's inline editor does not see while kana holds focus.
         self._dismiss_middle_rename_on_outside_click(obj, event)
@@ -4489,6 +4610,12 @@ class ExpandedLauncherView(QWidget):
         if (hasattr(self, 'favorite_choices') and self.favorite_popup.isVisible()
                 and obj in (self.favorite_choices, self.favorite_choices.viewport())
                 and event.type() == QEvent.Type.KeyPress):
+            if (event.modifiers() == Qt.KeyboardModifier.NoModifier
+                    and event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)):
+                move_tree_selection(self.favorite_choices,
+                                    -1 if event.key() == Qt.Key.Key_Up else 1)
+                event.accept()
+                return True
             if event.key() == Qt.Key.Key_Escape:
                 self.hide_favorite_popup()
                 self.focus_panel(self.middle)

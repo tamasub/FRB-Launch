@@ -32,7 +32,7 @@ def test_middle_left(depth, expected):
 
 @pytest.mark.parametrize('panel,folder,expected', [
     ('files', True, 'enter_directory_panel'), ('files', False, 'execute'),
-    ('directory', True, 'descend'), ('directory', False, 'execute'),
+    ('directory', True, 'context_menu'), ('directory', False, 'context_menu'),
     ('bookmarks', True, 'cascade'), ('bookmarks', False, 'execute'),
 ])
 def test_right_arrow_is_hierarchical(panel, folder, expected):

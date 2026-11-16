@@ -304,6 +304,20 @@ class RemoteContextWheel(QObject):
         if not self.active or not self.root.isVisible():
             return False
         kind = event.type()
+        if (kind == getattr(QEvent.Type, 'KeyPress', None)
+                and getattr(self.root, '_frb_keyboard_opened', False)
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier):
+            keys = {
+                Qt.Key.Key_Up: 'UP', Qt.Key.Key_Down: 'DOWN',
+                Qt.Key.Key_Left: 'LEFT', Qt.Key.Key_Right: 'RIGHT',
+                Qt.Key.Key_Return: 'ENTER', Qt.Key.Key_Enter: 'ENTER',
+                Qt.Key.Key_Escape: 'ESCAPE',
+            }
+            command = keys.get(event.key())
+            if command is not None:
+                self.command(command)
+                event.accept()
+                return True
         # QMenu can receive synthesized hover/move events without physical
         # cursor motion after a wheel-driven selection. Ignore only those;
         # moving the pointer >3px restores normal native mouse behavior.

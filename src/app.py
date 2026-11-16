@@ -2181,7 +2181,8 @@ class RemoteFolderActionsMenu(CascadeMenu):
 
     def _paint_action_chevrons(self, painter):
         actions = (getattr(self, 'folder_list_action', None),
-                   getattr(self, 'new_submenu_action', None))
+                   getattr(self, 'new_submenu_action', None),
+                   getattr(self, 'launch_submenu_action', None))
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         for action in actions:
             if action is None or action not in self.actions():
@@ -2191,7 +2192,8 @@ class RemoteFolderActionsMenu(CascadeMenu):
                 continue
             cx, cy = self.contentsRect().right() - 13, rect.center().y()
             selected = self.activeAction() is action
-            if action is getattr(self, 'new_submenu_action', None):
+            if action in (getattr(self, 'new_submenu_action', None),
+                          getattr(self, 'launch_submenu_action', None)):
                 # Hide Qt's larger *native* submenu arrow. The whole patch is
                 # inside the submenu indicator lane (not the text/icon area).
                 # Match the row's selection/background theme before painting
@@ -5937,7 +5939,21 @@ class Launcher(QWidget):
                 return
             path = panel.remote_current_folder_path() if panel is not None else None
             if path:
-                self.show_files_exp_folder_menu(path, pos)
+                # An authored Files root is also a physical folder. The pad
+                # must preserve its *root identity*, exactly as a pointer
+                # right-click does. A descendant has no authored identity and
+                # must keep the ordinary filesystem-only menu.
+                index = panel.tree.currentIndex()
+                item = (panel.model.itemFromIndex(index)
+                        if index.isValid() else None)
+                identity = None
+                if item is not None and panel.registered_root_identity(item) is not None:
+                    data = item.data(Qt.ItemDataRole.UserRole + 1) or {}
+                    identity = data.get('studio_identity') if isinstance(data, dict) else None
+                if identity:
+                    self.show_files_exp_authored_root_menu(path, identity, pos)
+                else:
+                    self.show_files_exp_folder_menu(path, pos)
                 self.remote_focus_area('files_exp')
             return
         if area == 'directory':
@@ -11326,6 +11342,14 @@ class Launcher(QWidget):
             self.toggle_history_popup()
             event.accept()
             return True
+        if (obj is self.search and not self.history_popup.isVisible()
+                and key == Qt.Key.Key_Down
+                and modifiers == Qt.KeyboardModifier.NoModifier):
+            # First Down opens history without moving the search result list.
+            # Following Downs reuse the same visible-row navigation below.
+            self.show_history_popup()
+            event.accept()
+            return True
         if obj is self.search and self.history_popup.isVisible() and modifiers == Qt.KeyboardModifier.NoModifier:
             if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
                 visible = self.history_visible_rows()
@@ -11662,6 +11686,19 @@ class Launcher(QWidget):
             self.delete_expanded_selected_paths()
             event.accept()
             return True
+        if key == getattr(Qt.Key, 'Key_PageUp', None) and pane is view.middle:
+            # Native PageUp reaches the first row on the first press. Press
+            # it AGAIN at the first row to ascend the physical/virtual folder
+            # hierarchy, using the existing protected go_up() route.
+            tree_widget = pane.tree
+            first = next((tree_widget.topLevelItem(i)
+                          for i in range(tree_widget.topLevelItemCount())
+                          if view.row_data(tree_widget.topLevelItem(i)) is not None), None)
+            if first is not None and tree_widget.currentItem() is first:
+                view.go_up(keep_middle_focus=True)
+                event.accept()
+                return True
+            return False  # Qt's real PageUp scrolling/selection.
         if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
             selected = move_tree_selection(pane.tree, -1 if key == Qt.Key.Key_Up else 1)
             if selected is not None and pane is view.left:
@@ -11699,21 +11736,31 @@ class Launcher(QWidget):
             # The top-left Back button alone navigates visit history.
         elif key == Qt.Key.Key_Right:
             item = pane.tree.currentItem()
-            if item is not None:
+            if pane is view.middle:
+                # List-only: Right is a keyboard right-click, NOT Enter.
+                # Use the pointer context menu's exact resolver/actions,
+                # including multi-select and inline rename.
+                if item is not None and view.row_data(item) is not None:
+                    rect = pane.tree.visualItemRect(item)
+                    point = rect.center()
+                    position = pane.tree.viewport().mapToGlobal(point)
+                    view.context_menu(pane, point, global_pos=position)
+                    context = getattr(self, '_launch_context_menu', None)
+                    if context is not None and context.isVisible():
+                        context._frb_keyboard_opened = True
+            elif item is not None:
                 row = view.row_data(item)
-                is_folder = row.get('item_kind') in ('category', 'directory')
-                name = ('files' if pane is view.left else
-                        'directory' if pane is view.middle else 'bookmarks')
-                action = row_right_action(name, is_folder)
-                if action == 'enter_directory_panel':
-                    view.choose_files(item, 0)
-                    view.focus_panel(view.middle)
-                elif action == 'descend':
-                    view.navigate_middle(row)
-                elif action == 'cascade':
-                    view.open_cascade(row, pane.tree, item)
-                else:
-                    view.launcher.activate(row)
+                if row is not None:
+                    is_folder = row.get('item_kind') in ('category', 'directory')
+                    name = 'files' if pane is view.left else 'bookmarks'
+                    action = row_right_action(name, is_folder)
+                    if action == 'enter_directory_panel':
+                        view.choose_files(item, 0)
+                        view.focus_panel(view.middle)
+                    elif action == 'cascade':
+                        view.open_cascade(row, pane.tree, item)
+                    else:
+                        view.launcher.activate(row)
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             item = pane.tree.currentItem()
             if item is not None:
@@ -12016,6 +12063,14 @@ class Launcher(QWidget):
                                   self.activate_after_mouse_release(r,fg))
                 event.accept()
                 return True
+        if (event.type() == QEvent.Type.KeyPress and hasattr(self, 'expanded_view')
+                and self.expanded_view.isVisible()
+                and self.expanded_view._workspace_mode == 'files'
+                and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+                and event.key() == Qt.Key.Key_G):
+            self.expanded_view.favorite_dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            event.accept()
+            return True
         if event.type() == QEvent.Type.KeyPress and hasattr(self, 'expanded_view'):
             view = self.expanded_view
             expanded_sources = (view.root_buttons + [view.address_bar.editor] + [pane.tree for pane in
@@ -12062,6 +12117,23 @@ class Launcher(QWidget):
             return super().eventFilter(obj,event)
         if event.type()==QEvent.Type.KeyPress:
             k=event.key();ctrl=bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            if (ctrl and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+                    and k == Qt.Key.Key_H and self.expanded_view.isVisible()
+                    and self.expanded_view._workspace_mode == 'files'):
+                # Ctrl+H targets the LOCAL Files List keyword history, not
+                # global search (Ctrl+F) or breadcrumb folders (Ctrl+G).
+                self.expanded_view.focus_middle_search_history()
+                event.accept()
+                return True
+            if (ctrl and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+                    and k == Qt.Key.Key_G and self.expanded_view.isVisible()
+                    and self.expanded_view._workspace_mode == 'files'):
+                # The breadcrumb dropdown owns the saved *folder* history;
+                # global keyword history is a separate Ctrl+F/search surface.
+                dropdown = self.expanded_view.favorite_dropdown
+                dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                event.accept()
+                return True
             if ctrl and k in (Qt.Key.Key_C, Qt.Key.Key_X, Qt.Key.Key_V):
                 # Non-grabbing Qt.Tool cascades can leave focus on the main
                 # tree. Only an *actually focused* search field owns text
@@ -12701,6 +12773,7 @@ class Launcher(QWidget):
             if registration_row:
                 menu.addSeparator()
                 launch_sub = menu.addMenu('Launch Menu')
+                menu.launch_submenu_action = launch_sub.menuAction()
                 launch_sub.setIcon(context_action_icon('new_category'))
                 # Files roots are directory leaves; Add creates a sibling in
                 # their authored category, never a child beneath directory.

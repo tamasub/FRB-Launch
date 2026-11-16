@@ -34,11 +34,11 @@ def middle_back_target(depth):
 
 
 def row_right_action(panel, is_folder):
-    """Map the Right arrow to navigation, not an accidental Enter action."""
+    """Exp/Bookmarks keep hierarchy; List Right requests the context menu."""
     if panel == 'files':
         return 'enter_directory_panel' if is_folder else 'execute'
     if panel == 'directory':
-        return 'descend' if is_folder else 'execute'
+        return 'context_menu'  # List: both folders and files, never execute
     if panel == 'bookmarks':
         return 'cascade' if is_folder else 'execute'
     raise ValueError(f'unknown expanded panel: {panel}')

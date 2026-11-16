@@ -70,6 +70,8 @@ def test_footer_short_lived_messages_and_constant_navigation_hint():
 
 def test_chevron_from_menu_outer_right_edge_not_label_length():
     painter = method(APP, 'RemoteFolderActionsMenu', 'paintEvent')
-    assert 'self.contentsRect().right() - 13' in painter
-    assert 'rect.right() - 15' not in painter
-    assert 'painter.fillPath(arrow, color)' in painter
+    chevrons = method(APP, 'RemoteFolderActionsMenu', '_paint_action_chevrons')
+    assert 'self._paint_action_chevrons(painter)' in painter
+    assert 'self.contentsRect().right() - 13' in chevrons
+    assert 'rect.right() - 15' not in chevrons
+    assert 'painter.fillPath(arrow, color)' in chevrons
