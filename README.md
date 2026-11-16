@@ -225,7 +225,7 @@ FRB Launchは、**「昨日の日付を入力するのが面倒だった」**と
 - [GitHub：FRB Launch リリース一覧](https://github.com/tamasub/FRB-Launch/releases)
 
 
-- [【重要資料】主な機能一覧 14選＋おまけ3つ](./docs/FRB_Launch.htm)
+- [【重要資料】主な機能一覧 14選＋おまけ3つ](https://tamasub.github.io/FRB-Launch/)
 
 
 ### FRBとは？
