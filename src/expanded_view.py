@@ -4547,7 +4547,9 @@ class ExpandedLauncherView(QWidget):
         if mods == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_I:
             if not hasattr(launcher, 'theme_menu'):
                 return False  # QApplication filters can see startup events.
-            launcher.open_option_settings()
+            # Match the header gear button: show its existing settings menu,
+            # not the separate 'オプション設定...' dialog inside that menu.
+            launcher.open_theme_menu()
         elif mods == Qt.KeyboardModifier.NoModifier and key == Qt.Key.Key_Home:
             launcher.stop_auto_shuriken_on_list_click()
             launcher.navigate_home()

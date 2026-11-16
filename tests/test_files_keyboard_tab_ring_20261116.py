@@ -62,7 +62,8 @@ def scenario():
     launcher = Widget('launcher')
     launcher.search = Widget('global-search', launcher)
     launcher.theme_menu = object()
-    launcher.open_option_settings = lambda: calls.append('settings')
+    launcher.open_theme_menu = lambda: calls.append('settings-menu')
+    launcher.open_option_settings = lambda: calls.append('options-dialog')
     launcher.navigate_home = lambda: calls.append('home')
     launcher.set_files_operating_target = lambda value: calls.append(('area', value))
     launcher.stop_auto_shuriken_on_list_click = lambda: calls.append('settle')
@@ -146,7 +147,7 @@ def test_folder_search_focus_keeps_editable_field_and_down_handler():
     assert code(view, view.middle_search, ev) and menu.visible
 
 
-def test_home_and_ctrl_i_are_same_buttons_from_exp_list_search():
+def test_home_and_ctrl_i_show_the_gear_menu_from_exp_list_search():
     view, calls, widgets = scenario()
     for widget in widgets:
         assert view.keyboard_files_shortcuts(widget, Event(Key.Key_Home))
@@ -154,7 +155,8 @@ def test_home_and_ctrl_i_are_same_buttons_from_exp_list_search():
             Event(Key.Key_I, Qt.KeyboardModifier.ControlModifier))
     assert calls.count('home') == len(widgets)
     assert calls.count('settle') == len(widgets)
-    assert calls.count('settings') == len(widgets)
+    assert calls.count('settings-menu') == len(widgets)
+    assert 'options-dialog' not in calls
     assert not view.keyboard_files_shortcuts(widgets[2], Event(Key.Key_I)), 'bare I is editable'
 
 
