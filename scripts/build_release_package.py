@@ -92,6 +92,15 @@ def collect_files(launch_dist: Path, studio_runtime: Path, launch_source: Path, 
             if not f.is_file():continue
             key=f.relative_to(launch_source).as_posix()
             if selectable(f,key):result[key]=f
+    # Include only README files at the Launch source root (case-insensitive),
+    # e.g. README.md and README_Vector_v0.9.11.txt.  Both the portable and
+    # updater ZIPs use this same inventory, so they receive identical docs.
+    # Do not recurse into docs/ or include backup ZIP/log files.
+    for f in sorted(launch_source.iterdir(), key=lambda p: p.name.casefold()):
+        if not f.is_file() or not f.name.casefold().startswith('readme'):
+            continue
+        if selectable(f, f.name):
+            result[f.name] = f
     # Node.js is a runtime dependency, not a reason to ship the same binary twice.
     # Prefer the copy already present under Studio or the Launch dist directory.
     node_target = ('runtime/node/node.exe' if 'runtime/node/node.exe' in result else

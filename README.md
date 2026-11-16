@@ -111,8 +111,10 @@ FRB Launchは、**普通に使える「正統派」**と、少し変わった操
 
 この方式はFRB Launch内のFiles画面向けです。**Windows標準のエクスプローラーや他のアプリを丸ボタンから一律に操作できる、という意味ではありません。**
 
-**[開発の舞台裏：14選の種明かし（Qiita）](https://qiita.com/tamasub/items/488553d484f10e005dcc)**  
-**[v0.9.11 の配布ページ（GitHub）](https://github.com/tamasub/FRB-Launch/releases/tag/v0.9.11)**
+**[▶開発の舞台裏：14選の種明かし（Qiita）](https://qiita.com/tamasub/items/488553d484f10e005dcc)**  
+**[▶v0.9.11 の配布ページ（GitHub）](https://github.com/tamasub/FRB-Launch/releases/tag/v0.9.11)**
+**[▶【重要資料】主な機能一覧 14選＋おまけ3つ](https://tamasub.github.io/FRB-Launch/docs/FRB_Launch.htm)**
+
 
 ※フリック・手裏剣・ワープ差し棒など、実験的な機能も含みます。快適さや操作速度が一般的な方法より優れていることを保証するものではありません。「世界標準規格」はFRB研究所の遊び心を込めた提案名であり、公的な認定を示すものではありません。
 
