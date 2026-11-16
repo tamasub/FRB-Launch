@@ -88,15 +88,22 @@ class RemoteTextDialog:
         return True
 
     def focus_buttons(self):
-        """An unrelated click changes target; it must NEVER commit Git."""
+        """Switch Git wheel target once; never reset an existing OK selection.
+
+        The first unrelated click leaves Cancel as the safe default. After
+        switching to button mode, further background clicks do not change
+        the selected button or activate either button. Native OK/Cancel
+        mouse clicks are handled directly by Qt in ConfirmationInputGuard.
+        """
         if self.selection_combo is None:
             return False
-        self.input_mode = 'buttons'
-        self.choose(self._reject_key)  # Safe default: Cancel before OK.
+        if self.input_mode != 'buttons':
+            self.input_mode = 'buttons'
+            self.choose(self._reject_key)  # Safe only on the transition.
         return True
 
     def background_click(self, source):
-        """Git prompt's background is a focus switch, not an accept button."""
+        """Git prompt's unrelated clicks change/keep target, never accept."""
         if self.selection_combo is None:
             return False
         self.focus_buttons()

@@ -102,7 +102,7 @@ class ConfirmationInputGuard(QObject):
         while current is not None:
             try:
                 if any(current.inherits(name) for name in (
-                        'QAbstractButton', 'QLineEdit', 'QTextEdit',
+                        'QAbstractButton', 'QDialogButtonBox', 'QLineEdit', 'QTextEdit',
                         'QPlainTextEdit', 'QAbstractSlider', 'QComboBox')):
                     return True
             except (AttributeError, RuntimeError, TypeError):
@@ -111,6 +111,31 @@ class ConfirmationInputGuard(QObject):
                 break
             parent = getattr(current, 'parentWidget', None)
             current = parent() if callable(parent) else None
+        return False
+
+    def _pointer_over_dialog_action(self, event):
+        """Do not reinterpret an actual OK/Cancel click as a background click.
+
+        The application-wide filter can sometimes see a parent/box event
+        instead of a QPushButton event. Use the real action button rectangle
+        as a second guard. The button remains fully native: this method NEVER
+        synthesizes a click, changes selection, or approves a Git operation.
+        """
+        point = self._point(event)
+        receiver = self.wheel_receiver
+        if point is None or receiver is None:
+            return False
+        buttons = getattr(receiver, 'buttons', None)
+        if not isinstance(buttons, dict):
+            return False
+        for button in buttons.values():
+            try:
+                if (button is not None and button.isVisible()
+                        and button.isEnabled()
+                        and button.rect().contains(button.mapFromGlobal(point))):
+                    return True
+            except (AttributeError, RuntimeError, TypeError):
+                continue
         return False
 
     def _native_wheel_control(self, obj):
@@ -218,7 +243,10 @@ class ConfirmationInputGuard(QObject):
             if kind in (QEvent.Type.MouseButtonPress,
                         QEvent.Type.MouseButtonRelease,
                         QEvent.Type.MouseButtonDblClick):
-                if self._native_dialog_control(obj):
+                if (self._native_dialog_control(obj)
+                        or self._pointer_over_dialog_action(event)):
+                    # A real OK/Cancel click always wins over the background
+                    # focus switch, even when Qt reports a parent widget.
                     # Clicking a Git chooser restores repository-wheel mode.
                     chooser = getattr(self.wheel_receiver, 'selection_combo', None)
                     if (chooser is not None and kind == QEvent.Type.MouseButtonPress
