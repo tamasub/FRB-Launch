@@ -47,7 +47,12 @@ FRB Launchは、**Windows 11向けの無料ランチャー**です。毎日使�
 **メニューへの登録は、ドラッグ＆ドロップでもかんたん！**
 
 - **エクスプローラーから**フォルダーやファイルをFRB Launchのメニューへドロップすると、メニューアイテムとして追加できます。
+
+  <img width="300" height="200" alt="image" src="https://github.com/user-attachments/assets/d43eaeab-bb9b-4b09-8ff5-965a96350799" />
+
 - **Chrome／Edgeから**WebページのURLをドラッグしてFRB Launchのメニューへドロップすると、URLのメニューアイテムとして追加できます。
+
+　<img width="300" height="200" alt="image" src="https://github.com/user-attachments/assets/56baae66-ed22-46b2-a898-61141e7386ee" />
 
 ファイルの保存場所やURLそのものを移動する必要はありません。よく使うものへの入口を、Launch側に作れます。
 
