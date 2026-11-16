@@ -21,10 +21,15 @@ class RemoteTextDialog:
 
     FOCUS_BUTTON_STYLE = DialogButtonSelection.FOCUS_BUTTON_STYLE
 
-    def __init__(self, launcher, dialog, editor, buttons):
+    def __init__(self, launcher, dialog, editor, buttons, *, selection_combo=None):
         self.launcher = launcher
         self.dialog = dialog
         self.editor = editor
+        # Optional two-stage selector: repository first, action buttons after
+        # a deliberate background click. Ordinary text dialogs stay unchanged.
+        self.selection_combo = selection_combo
+        self.input_mode = 'choice' if selection_combo is not None else 'buttons'
+        self.background_click_enabled = selection_combo is not None
         # Discover every QDialogButtonBox button. New dialogs need zero
         # per-dialog wheel/Remote wiring, including forms with custom buttons.
         self.buttons = {}
@@ -72,6 +77,48 @@ class RemoteTextDialog:
         for _ in range(min(abs(steps), 5)):
             self.remote_command('UP' if steps > 0 else 'DOWN')
 
+    def focus_combo(self):
+        """A real click on the chooser restores wheel-to-repository mode."""
+        if self.selection_combo is None:
+            return False
+        self.input_mode = 'choice'
+        self.remote_has_selected = False
+        # The stage is visible via the actual QComboBox focus and its caption.
+        self.selection_combo.setFocus(Qt.FocusReason.TabFocusReason)
+        return True
+
+    def focus_buttons(self):
+        """An unrelated click changes target; it must NEVER commit Git."""
+        if self.selection_combo is None:
+            return False
+        self.input_mode = 'buttons'
+        self.choose(self._reject_key)  # Safe default: Cancel before OK.
+        return True
+
+    def background_click(self, source):
+        """Git prompt's background is a focus switch, not an accept button."""
+        if self.selection_combo is None:
+            return False
+        self.focus_buttons()
+        return True
+
+    def cycle_combo(self, direction):
+        """Wheel anywhere selects real, explicit repository entries (not hint)."""
+        combo = self.selection_combo
+        if combo is None or combo.count() <= 1:
+            return
+        index = combo.currentIndex()
+        count = combo.count()
+        # Index zero is always '選択してください...' (never a Git target).
+        if index < 1:
+            index = 0 if direction > 0 else 1
+        combo.setCurrentIndex(1 + (index - 1 + direction) % (count - 1))
+        combo.setFocus(Qt.FocusReason.TabFocusReason)
+        remote = getattr(self.launcher, 'remote_window', None)
+        label = getattr(remote, 'area_label', None)
+        if remote is not None and remote.isVisible() and label is not None:
+            label.setText('コミット先：' + combo.currentText())
+
     def choose(self, name):
         if not self.selection.choose(name, focus_reason=Qt.FocusReason.TabFocusReason):
             return
@@ -83,6 +130,15 @@ class RemoteTextDialog:
             label.setText('入力確定：' + name)
 
     def remote_command(self, command):
+        if self.input_mode == 'choice':
+            if command in ('UP', 'DOWN'):
+                self.cycle_combo(-1 if command == 'UP' else 1)
+            elif command in ('LEFT', 'RIGHT', 'ENTER', 'CLICK', 'DOUBLE_CLICK'):
+                # Choice stage must not commit: switch to explicit buttons.
+                self.focus_buttons()
+            elif command == 'CLOSE':
+                self.selection.click(self._reject_key)
+            return True
         if command in ('UP', 'DOWN'):
             names = list(self.buttons)
             pos = names.index(self.selected)
@@ -120,7 +176,9 @@ class RemoteTextDialog:
             self.dialog.show()
             self.dialog.raise_()
             self.dialog.activateWindow()
-            if self.editor is not None:
+            if self.selection_combo is not None:
+                self.focus_combo()  # Git always starts on repository selection.
+            elif self.editor is not None:
                 self.editor.setFocus(Qt.FocusReason.OtherFocusReason)
             if remote is not None and remote.isVisible():
                 QTimer.singleShot(0, remote.raise_)

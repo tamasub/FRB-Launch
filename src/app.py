@@ -3292,6 +3292,10 @@ class Launcher(QWidget):
         self.save_history_button.clicked.connect(lambda checked=False: self.remember_search())
         self.layout_search_inner_controls()
         self.theme_menu = QMenu(self)
+        # Settings is a non-grabbing Qt.Tool QMenu. Route real keyboard arrows
+        # through the SAME RemoteContextWheel runner used by ぐりぐり; Qt's
+        # native keyboard QMenu focus cannot be assumed for a Tool window.
+        self.theme_menu._frb_keyboard_opened = True
         self._wire_hybrid_context_menu(self.theme_menu, context=False)
         heading = self.theme_menu.addAction('外観テーマ')
         heading.setEnabled(False)
@@ -8621,7 +8625,7 @@ class Launcher(QWidget):
 
     # Launch-owned button dialogs share ONE input guard, regardless of Remote
     # visibility or whether the originating action came from Exp or List.
-    def run_launch_button_dialog(self, dialog, buttons=None, editor=None):
+    def run_launch_button_dialog(self, dialog, buttons=None, editor=None, *, wheel_combo=None):
         # Every newly-created Launch QDialog with a button box uses this one
         # entrance. No feature-specific Remote code or visibility tests.
         if buttons is None:
@@ -8631,7 +8635,8 @@ class Launcher(QWidget):
         if (getattr(self, '_remote_text_dialog', None) is not None or
                 getattr(self, '_remote_confirmation', None) is not None):
             raise RuntimeError('別のLaunchダイアログが操作中です')
-        adapter = RemoteTextDialog(self, dialog, editor, buttons)
+        adapter = RemoteTextDialog(
+            self, dialog, editor, buttons, selection_combo=wheel_combo)
         self._remote_text_dialog = adapter
         self._filesystem_dialog_depth = getattr(self, '_filesystem_dialog_depth', 0) + 1
         try:
@@ -13727,7 +13732,8 @@ class Launcher(QWidget):
             form.addWidget(actions)
             dialog.setMinimumWidth(680)
             dialog.resize(720, dialog.sizeHint().height())
-            accepted = self.run_launch_button_dialog(dialog, actions, repository_selector)
+            accepted = self.run_launch_button_dialog(
+                dialog, actions, repository_selector, wheel_combo=repository_selector)
             if not accepted:
                 return
             chosen_id = repository_selector.currentData()

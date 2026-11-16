@@ -162,10 +162,13 @@ class ConfirmationInputGuard(QObject):
                     and monotonic() - pending[3] <= self.CLICK_MAX_HOLD_SECONDS
                     and self._within_click_slop(
                         pending[2], self._point(event), self.CLICK_MAX_DRIFT_PX)
-                    and (source == 'pad' or self._list_click_armed())):
+                    and (source == 'pad' or self._list_click_armed()
+                         or getattr(self.wheel_receiver, 'background_click_enabled', False))):
                 receiver = self.wheel_receiver
                 if receiver is not None:
-                    receiver.remote_command('CLICK')
+                    switch = getattr(receiver, 'background_click', None)
+                    if not (callable(switch) and switch(source)):
+                        receiver.remote_command('CLICK')
         event.accept()
         return True
 
@@ -201,7 +204,12 @@ class ConfirmationInputGuard(QObject):
             # Events received *on the question itself* must therefore be a
             # first-class input route, not handed to a passive QMessageBox.
             if kind == QEvent.Type.Wheel and self._native_wheel_control(obj):
-                return False  # Icon combobox/description editor keep native wheel.
+                # Git's repository selector uses one wheel contract everywhere,
+                # including over its own closed QComboBox. Other combos and
+                # long-message editors retain their native wheel behavior.
+                chooser = getattr(self.wheel_receiver, 'selection_combo', None)
+                if chooser is None or not (obj is chooser or chooser.isAncestorOf(obj)):
+                    return False
             if kind == QEvent.Type.Wheel and self.wheel_receiver is not None:
                 self._click_press = None  # Wheel-during-press cannot arm a click.
                 self.wheel_receiver.background_wheel(event)
@@ -211,6 +219,11 @@ class ConfirmationInputGuard(QObject):
                         QEvent.Type.MouseButtonRelease,
                         QEvent.Type.MouseButtonDblClick):
                 if self._native_dialog_control(obj):
+                    # Clicking a Git chooser restores repository-wheel mode.
+                    chooser = getattr(self.wheel_receiver, 'selection_combo', None)
+                    if (chooser is not None and kind == QEvent.Type.MouseButtonPress
+                            and (obj is chooser or chooser.isAncestorOf(obj))):
+                        self.wheel_receiver.focus_combo()
                     # A native button/editor gets the entire click; never
                     # reinterpret its trailing Release as a dialog-surface
                     # confirmation, even if a previous Press was armed.
