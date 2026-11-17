@@ -1882,6 +1882,7 @@ class ExpandedLauncherView(QWidget):
         self._browser_preview_base_sizes = None
         self.studio_preview = None
         self._studio_preview_base_sizes = None
+        self._preview_layout_restoring = False
         self.middle.tree.bookmark_preview_double_click = self.preview_bookmark_from_list
         # Files Exp replaces only the old first-column CONTENT. The splitter,
         # old authored root tree and all of its data/selection logic survive.
@@ -2100,23 +2101,69 @@ class ExpandedLauncherView(QWidget):
             self.toolbar_scroller.setFixedHeight(required)
 
     def _save_active_preview_width(self):
-        """Remember the user's third pane width without corrupting 2-pane keys."""
-        for panel in (getattr(self, 'browser_preview', None),
-                      getattr(self, 'studio_preview', None)):
+        """Persist a user-sized third pane even if Launch dies without Quit."""
+        if getattr(self, '_preview_layout_restoring', False):
+            return
+        for attr, key in (('browser_preview', 'workspace_files_browser_preview_width'),
+                          ('studio_preview', 'workspace_files_studio_preview_width')):
+            panel = getattr(self, attr, None)
             if panel is None or panel.isHidden():
                 continue
             index = self.files_splitter.indexOf(panel)
             widths = self.files_splitter.sizes()
             if 2 <= index < len(widths) and widths[index] >= 250:
+                self.launcher.settings.setValue(key, widths[index])
+                # Compatibility for existing installations and callers.
                 self.launcher.settings.setValue('workspace_files_preview_width', widths[index])
+                if attr == 'studio_preview' and len(widths) >= 3:
+                    # Save the divider *positions* too. Preview width alone
+                    # loses a user's Files Exp/List widths on next open.
+                    self.launcher.settings.setValue(
+                        'workspace_files_studio_preview_splitter_sizes',
+                        '|'.join(map(str, (widths[0], widths[1], widths[index]))))
+                # QSettings may otherwise flush only on normal application exit.
+                # _run_windows.bat's console can be closed abruptly.
+                self.launcher.settings.sync()
                 return
 
     def _preferred_preview_width(self, default_width, base_sizes, min_list_width):
-        """Restore a previous preview width, clamped to the current window."""
+        """Restore Studio pane width; never consult NativeShell bounds."""
         from preview_splitter_layout import restored_preview_width
-        return restored_preview_width(
-            self.launcher.settings.value('workspace_files_preview_width', None),
-            default_width, base_sizes, min_list_width)
+        setting = self.launcher.settings.value('workspace_files_studio_preview_width', None)
+        if setting is None or str(setting).strip() == '':
+            setting = self.launcher.settings.value('workspace_files_preview_width', None)
+        return restored_preview_width(setting, default_width, base_sizes, min_list_width)
+
+    def _restore_visible_preview_width(self, panel, desired_width, minimum_list_width,
+                                       saved_columns=None):
+        """Reapply saved divider positions after Qt settles the third widget."""
+        try:
+            if panel is None or panel.isHidden():
+                return
+            index = self.files_splitter.indexOf(panel)
+            if index < 2:
+                return
+            current = self.files_splitter.sizes()
+            if len(current) < 3 or len(current) <= index:
+                return
+            total = sum(current)
+            if total < 400:
+                return
+            from preview_splitter_layout import plan_restored_preview_sizes
+            # Preserve the Files Exp position captured before revealing the
+            # preview. Once visible, Qt may already have resized this pane.
+            before = getattr(self, '_studio_preview_base_sizes', None) or current[:2]
+            usable = [int(before[0]), total - int(before[0])]
+            sizes = plan_restored_preview_sizes(
+                usable, len(current), index, desired_width,
+                saved_columns=saved_columns, min_list_width=minimum_list_width,
+                min_first_width=0 if getattr(self.launcher, 'files_root_hidden_mode', False)
+                                  and not getattr(self.launcher, 'files_exp_embedded_mode', False)
+                                else 386 if getattr(self.launcher, 'remote_15_mode', False)
+                                else 190)
+            self.files_splitter.setSizes(sizes)
+        finally:
+            self._preview_layout_restoring = False
 
     def save_splitter_sizes(self, *_):
         # Store the optional third pane independently from original 2-column
@@ -6550,6 +6597,9 @@ class ExpandedLauncherView(QWidget):
             from preview_splitter_layout import restored_preview_width
             stored_width = getattr(getattr(self.launcher, 'settings', None), 'value',
                                    lambda *_: None)('workspace_files_preview_width', None)
+            stored_width = getattr(getattr(self.launcher, 'settings', None), 'value',
+                                   lambda _key, fallback: fallback)(
+                'workspace_files_browser_preview_width', stored_width)
             preview_width = restored_preview_width(
                 stored_width, max(270, min(490, int(total * 0.40))), sizes, 230)
             from preview_splitter_layout import preview_sizes
@@ -6603,20 +6653,45 @@ class ExpandedLauncherView(QWidget):
             self.studio_preview.hide()
             self.studio_preview.apply_theme(self.launcher.color_theme)
         if self.studio_preview.isHidden():
+            self._preview_layout_restoring = True
             base_sizes = self.files_splitter.sizes()[:2]
             self._studio_preview_base_sizes = base_sizes[:]
             self.studio_preview.show()
             total = sum(base_sizes)
-            preview_width = self._preferred_preview_width(
-                max(350, min(690, int(total * 0.50))), base_sizes, 170)
-            from preview_splitter_layout import preview_sizes
+            from preview_splitter_layout import plan_restored_preview_sizes
+            # Use an absolute width preference, then allocate both separators.
+            # The previous _preferred_preview_width() constrained Studio by
+            # the unrelated *closed* two-column Files Exp width.
+            default_width = max(350, min(690, int(total * 0.50)))
+            stored_width = self.launcher.settings.value(
+                'workspace_files_studio_preview_width', None)
+            if stored_width is None or str(stored_width).strip() == '':
+                stored_width = self.launcher.settings.value(
+                    'workspace_files_preview_width', None)
+            try:
+                preview_width = int(stored_width)
+                if preview_width < 250:
+                    raise ValueError('invalid preview width')
+            except (ValueError, TypeError):
+                preview_width = default_width
+            saved_columns = self.launcher.settings.value(
+                'workspace_files_studio_preview_splitter_sizes', '')
             count = (self.files_splitter.count() if hasattr(self.files_splitter, 'count')
                      else 2 + int(self.browser_preview is not None) + 1)
             index = (self.files_splitter.indexOf(self.studio_preview)
                      if hasattr(self.files_splitter, 'indexOf') else count - 1)
-            widths = preview_sizes(
-                base_sizes, count, index, preview_width, min_list_width=170)
+            min_first_width = (0 if getattr(self.launcher, 'files_root_hidden_mode', False)
+                                  and not getattr(self.launcher, 'files_exp_embedded_mode', False)
+                               else 386 if getattr(self.launcher, 'remote_15_mode', False)
+                               else 190)
+            widths = plan_restored_preview_sizes(
+                base_sizes, count, index, preview_width, saved_columns,
+                min_first_width=min_first_width, min_list_width=170)
             self.files_splitter.setSizes(widths)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda p=self.studio_preview, w=preview_width,
+                              saved=saved_columns:
+                              self._restore_visible_preview_width(p, w, 170, saved))
         return True
 
     def show_studio_preview(self, target):
@@ -6725,6 +6800,10 @@ class ExpandedLauncherView(QWidget):
                 return False
             if not panel.pop_out_sakura():
                 return False
+        self._save_active_preview_width()
+        self.launcher.settings.sync()
+        if not panel.close_launch_owned_studio():
+            return False
         self.studio_preview.undock()
         return True
 

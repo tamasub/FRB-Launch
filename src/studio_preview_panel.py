@@ -6,10 +6,14 @@ editor HWND from a previously absent PID can be docked. × asks the editor
 to close normally; explicit pop-out restores its desktop window.
 """
 import subprocess
+import os
 import time
+import threading
+import uuid
+import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, QEventLoop
 from PySide6.QtWidgets import (QFrame, QWidget, QLabel, QToolButton, QVBoxLayout,
                                QHBoxLayout, QSizePolicy, QStackedWidget, QMessageBox)
 from browser_nav_icons import browser_navigation_icon
@@ -21,6 +25,10 @@ class _NativeHost(QFrame):
     def __init__(self, owner):
         super().__init__(owner)
         self.owner = owner
+        # Only this host needs an HWND for SetParent.  Qt otherwise turns its
+        # entire ancestor chain into native child windows on first preview,
+        # which can leave an unpainted strip beside Launch's rounded frame.
+        self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.setObjectName('studioNativeHost')
 
@@ -37,6 +45,8 @@ class StudioPreviewPanel(QFrame):
     close_requested = Signal()
     popout_requested = Signal()
     sakura_close_completed = Signal()
+    _launch_switch_completed = Signal(object, str)
+    _launch_exit_completed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,6 +58,9 @@ class StudioPreviewPanel(QFrame):
         self._attached = None
         self._target = None
         self._started = 0
+        self._launch_pipe_token = None
+        self._launch_switch_pending = None
+        self._launch_switch_completed.connect(self._on_launch_switch_completed)
         # Suspended Studio HWNDs are not destroyed. Keep their process and HWND
         # for a later reselect of the same file (including uncommitted edits).
         self._parked = {}
@@ -123,44 +136,120 @@ class StudioPreviewPanel(QFrame):
         from sakura_window_trace import trace_windows
         trace_windows(stage, **details)
 
+    def _switch_launch_document(self, target):
+        """Switch the existing Launch-owned NativeShell, never fork per JSON."""
+        if self._launch_switch_pending is not None:
+            return True  # A second double click must not queue an unsafe handoff.
+        if not self._launch_pipe_token or not self._process or self._process.poll() is not None:
+            return False
+        self._launch_switch_pending = target
+        self.status_label.setText('Studioの表示ファイルを切り替えています…')
+        # Never block Qt: Studio can present an unsaved confirmation in WebView2.
+        token = self._launch_pipe_token
+
+        def submit():
+            result = 'ERROR: Studioへの接続に失敗しました'
+            address = r'\\.\pipe\frb_studio_launch_' + token
+            for attempt in range(80):
+                try:
+                    with open(address, 'r+b', buffering=0) as channel:
+                        # A Launch-maintenance JSON requires more than its path:
+                        # send the validated CLI context with each reuse request.
+                        # A plain document carries an empty argument list, which
+                        # clears the previous launch ViewDef/focus context.
+                        request = {'path': str(target[0]),
+                                   'args': list(target[3]) if len(target) > 3 else []}
+                        channel.write((json.dumps(request, ensure_ascii=False,
+                                                  separators=(',', ':')) + '\n').encode('utf-8'))
+                        # The C# pipe replies only after the unsaved guard resolves.
+                        reply = channel.readline()
+                        result = reply.decode('utf-8', errors='replace').strip() if reply else 'ERROR: Studio接続が切断されました'
+                    break
+                except OSError as exc:
+                    if self._process is None or self._process.poll() is not None:
+                        result = 'ERROR: Studioプロセスが終了しました'
+                        break
+                    if attempt == 79:
+                        result = 'ERROR: Studio切替パイプに接続できません: ' + str(exc)
+                    else:
+                        time.sleep(0.15)
+            self._launch_switch_completed.emit(target, result)
+
+        threading.Thread(target=submit, name='FRBStudioLaunchSwitch', daemon=True).start()
+        return True
+
+    def _on_launch_switch_completed(self, target, result):
+        if self._launch_switch_pending != target:
+            return
+        self._launch_switch_pending = None
+        if result == 'OK':
+            self._target = target
+            self._show_target_title(target)
+            self.status_label.hide()
+        elif result == 'CANCEL':
+            # Keep current C# document, HWND and save target as they were.
+            self.status_label.hide()
+        else:
+            self.status_label.setText('Studioのファイル切替に失敗しました。\n' + result)
+            self.status_label.show()
+
     def open_document(self, target):
-        """Display a real NativeShell session (never a copied HTML editor)."""
+        """One Launch-owned NativeShell process; switch its real save grant."""
         self.content_stack.setCurrentWidget(self.host)
-        if self._target == target and self._process and self._process.poll() is None:
+        if self._process and self._process.poll() is None and self._target is not None:
+            if self._external_key is not None:
+                self._park_external()
+                if self._external_key is not None:
+                    return False
+            # Even a reselect of the same file is a deliberate reload: the
+            # page may have been reset, and no in-memory view may remain.
             if self._attached:
                 self._attached.resize(self.host.width(), self.host.height())
-            return True
+            return self._switch_launch_document(target)
+
         self._park_current()
         if self._target is not None or self._external_key is not None:
-            # The old HWND could not be detached safely. Leave it intact.
-            return False
+            return False  # Keep unsaved foreign editors untouched.
+        old_target = target
         old = self._parked.pop(target, None)
+        if old is None:
+            # Reuse an earlier Launch-owned session even for a DIFFERENT JSON.
+            for parked_target, parked in tuple(self._parked.items()):
+                if parked[0].poll() is None:
+                    old_target = parked_target
+                    old = self._parked.pop(parked_target)
+                    break
         if old is not None and old[0].poll() is None:
             self._process, hwnd = old
-            self._target = target
+            self._target = old_target
             self._started = time.monotonic()
-            self._show_target_title(target)
+            self._show_target_title(old_target)
             if hwnd:
                 try:
                     from studio_win32_host import AttachedStudioWindow
                     self._attached = AttachedStudioWindow(hwnd, int(self.host.winId()))
                     self._attached.resize(self.host.width(), self.host.height())
                     self.status_label.hide()
-                    return True
+                    return self._switch_launch_document(target)
                 except (OSError, RuntimeError, ValueError):
-                    # If the native HWND died, the live process may have been
-                    # recreated; let the regular process poll look for it.
                     self._attached = None
             self.status_label.setText('Studioウィンドウへ再接続しています…')
             self.status_label.show()
             self._timer.start()
-            return True
+            # The existing process is still the sole session. Switch through
+            # its private pipe instead of starting a second NativeShell.
+            return self._switch_launch_document(target)
+
         command, working_directory = studio_start_command(target)
+        self._launch_pipe_token = uuid.uuid4().hex
+        command += ['--launch-preview', '--launch-preview-pipe=' + self._launch_pipe_token,
+                    '--launch-preview-owner-pid=' + str(os.getpid())]
         try:
             self._process = subprocess.Popen(command, cwd=working_directory)
         except OSError as exc:
             self._process = None
             self._target = None
+            self._launch_pipe_token = None
             self.status_label.setText('Studioの起動に失敗しました: ' + str(exc))
             self.status_label.show()
             return False
@@ -717,6 +806,22 @@ class StudioPreviewPanel(QFrame):
         self.title_label.setToolTip('')
         return True
 
+    def _refresh_outer_frame_after_native_attach(self):
+        """Rebuild Launch's rounded mask after a foreign WinForms HWND docks.
+
+        Native SetParent can invalidate the frame composition on the first
+        preview. This is presentation-only; never change splitter geometry,
+        Studio ownership, focus, or the selected document here.
+        """
+        launcher = getattr(self, 'launcher', None)
+        if launcher is None or not launcher.isVisible():
+            return
+        if getattr(launcher, '_size_drag', None):
+            return  # A subsequent resize event already rebuilds the mask.
+        launcher.clearMask()
+        launcher.update_window_shape()
+        launcher.update()
+
     def _poll(self):
         if not self._process or not self._target:
             self._timer.stop()
@@ -736,6 +841,9 @@ class StudioPreviewPanel(QFrame):
                 self._attached.resize(self.host.width(), self.host.height())
                 self.status_label.hide()
                 self._timer.stop()
+                # Qt/Win32 may recompose the outer mask after SetParent.  Run
+                # on the next Qt event turn, after the native child is laid out.
+                QTimer.singleShot(0, self._refresh_outer_frame_after_native_attach)
                 return
         except (OSError, RuntimeError, ValueError) as exc:
             self._timer.stop()
@@ -776,6 +884,74 @@ class StudioPreviewPanel(QFrame):
                 return
         self._parked[target] = (process, hwnd)
 
+    def close_launch_owned_studio(self):
+        """Close only the NativeShell launched with our private session token.
+
+        This is called exclusively during Launch Quit, not Preview ×.
+        A nested Qt event loop keeps the embedded Studio's unsaved dialog live.
+        Cancellation/error leaves its process and window untouched.
+        """
+        process = self._process
+        if process is None or process.poll() is not None:
+            # Studio may have been parked to open Obsidian/Options.
+            for candidate, _hwnd in self._parked.values():
+                if candidate.poll() is None:
+                    process = candidate
+                    break
+        if process is None or process.poll() is not None:
+            return True
+        if self._launch_switch_pending is not None:
+            self.launcher.error('Studioのファイル切替中です。完了後にLaunchを終了してください。')
+            return False
+        token = self._launch_pipe_token
+        if not token:
+            self.launcher.error('Launch専用Studioの識別情報がありません。誤終了防止のためLaunchの終了を中止しました。')
+            return False
+        from studio_launch_lifecycle import close_owned_studio
+        result = {}
+        waiting = QEventLoop(self)
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+
+        def completed(reply):
+            if 'reply' not in result:
+                result['reply'] = reply
+                waiting.quit()
+
+        def timed_out():
+            completed('ERROR: Studioの終了確認が時間切れになりました')
+
+        self._launch_exit_completed.connect(completed)
+        timer.timeout.connect(timed_out)
+        try:
+            def request():
+                reply = close_owned_studio(process, token)
+                self._launch_exit_completed.emit(reply)
+
+            threading.Thread(target=request, name='FRBStudioLaunchClose', daemon=True).start()
+            # Studio asks for user consent via its own unsaved-edit dialog.
+            # The UI thread must remain responsive until that dialog resolves.
+            timer.start(110000)
+            if 'reply' not in result:
+                waiting.exec()
+        finally:
+            timer.stop()
+            self._launch_exit_completed.disconnect(completed)
+            timer.deleteLater()
+        if result.get('reply') == 'OK':
+            if self._process is process:
+                self._process = None
+                self._attached = None  # Native HWND no longer exists.
+                self._target = None
+            self._parked = {key: value for key, value in self._parked.items()
+                            if value[0] is not process}
+            self._launch_pipe_token = None
+            return True
+        if result.get('reply') != 'CANCEL':
+            self.launcher.error('Studioを正常終了できなかったため、Launchの終了を中止しました。\n'
+                                + result.get('reply', 'ERROR: unknown'))
+        return False
+
     def undock(self):
         """Restore all live Studio windows only when Launch itself exits."""
         self._timer.stop()
@@ -801,6 +977,8 @@ class StudioPreviewPanel(QFrame):
             except (OSError, RuntimeError, ValueError):
                 pass
         self._parked.clear()
+        self._launch_switch_pending = None
+        self._launch_pipe_token = None
         if self._external_parked:
             from studio_win32_host import restore_parked_studio_window
             for hwnd in self._external_parked.values():

@@ -7845,7 +7845,11 @@ class Launcher(QWidget):
         header_fill = colors['header']
         subheader_fill = colors['subheader']
         header_line = '#cfddd4' if light else '#455a54'
-        self.main_body.setStyleSheet('QWidget#mainBody { background:transparent; border:0; }')
+        # A transparent Qt body can become a *real hole* in the window when
+        # Windows reparents the NativeShell HWND as a native child. Paint the
+        # body backing explicitly, while retaining the separate outer frame.
+        self.main_body.setStyleSheet(
+            f'QWidget#mainBody {{ background:{colors["window"]}; border:0; }}')
         self.search_bar.setStyleSheet(
             f'QWidget#searchBar {{ background:{header_fill}; border:0; border-bottom:1px solid {header_line}; }}')
         self.search.setStyleSheet(
@@ -8041,6 +8045,9 @@ class Launcher(QWidget):
         outer = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
         gradient = QLinearGradient(0, 0, 0, self.FRAME_TOP)
         top, bottom, outer_line, inner_line, fill, content_line, fine_line, _ = FRAME_COLORS[theme_family(self.color_theme)]
+        # Opaque backstop for the narrow content/frame seam. A native WinForms
+        # preview must not expose the desktop through an unpainted edge.
+        painter.fillRect(self.rect(), QColor(fill))
         gradient.setColorAt(0, QColor(top))
         gradient.setColorAt(1, QColor(bottom))
         painter.setBrush(gradient)
