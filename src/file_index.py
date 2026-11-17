@@ -475,13 +475,16 @@ def launch_steps(file, studio_root=''):
     path = str(file)
     extension = Path(path).suffix.casefold()
     working_directory = str(Path(path).parent)
-    if extension == '.md' and studio_root:
-        # CLI deep-link is handled by NativeShell --open-md (Studio add-on).
-        executable = Path(studio_root) / 'NativeShell' / '_publish' / 'FRBStudio.NativeShell.exe'
-        if executable.is_file():
-            return [{'launch_action_type': 'Run', 'launch_program': str(executable),
-                     'launch_arguments': ['--open-md='+path],
-                     'launch_working_directory': str(studio_root)}]
+    if extension == '.md':
+        # Markdown always goes to Obsidian, including Documents/outside Vault.
+        # A missing installer is an explicit error, NOT a silent Studio fallback.
+        from external_preview_route import find_obsidian_executable
+        executable = find_obsidian_executable()
+        if not executable:
+            raise FileNotFoundError('Obsidian.exeが見つかりません（最新版のインストールを確認してください）')
+        return [{'launch_action_type': 'Run', 'launch_program': executable,
+                 'launch_arguments': [path],
+                 'launch_working_directory': str(Path(executable).parent)}]
     if extension == '.json' and studio_managed_json(path, studio_root):
         executable = Path(studio_root) / 'NativeShell' / '_publish' / 'FRBStudio.NativeShell.exe'
         if executable.is_file():

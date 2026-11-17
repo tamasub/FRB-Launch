@@ -1,8 +1,9 @@
-"""Third Files column: host actual FRB Studio and Launch Option Settings.
+"""Third Files column: native FRB Studio and external editor previews.
 
-The Preview × hides the panel, not the C# application. Live Studio sessions
-stay in memory with their unsaved changes; switching targets parks old windows
-invisibly. Launch exit restores all live Studio windows to the desktop.
+FRB Studio sessions keep unsaved edits when the pane is hidden. Sakura's
+pre-existing desktop windows are never taken over: only a newly launched
+editor HWND from a previously absent PID can be docked. × asks the editor
+to close normally; explicit pop-out restores its desktop window.
 """
 import subprocess
 import time
@@ -10,7 +11,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QFrame, QWidget, QLabel, QToolButton, QVBoxLayout,
-                               QHBoxLayout, QSizePolicy, QStackedWidget)
+                               QHBoxLayout, QSizePolicy, QStackedWidget, QMessageBox)
 from browser_nav_icons import browser_navigation_icon
 from launch_appearance import theme_family, theme_palette
 from studio_preview_route import studio_start_command
@@ -34,6 +35,8 @@ class _NativeHost(QFrame):
 
 class StudioPreviewPanel(QFrame):
     close_requested = Signal()
+    popout_requested = Signal()
+    sakura_close_completed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,6 +60,19 @@ class StudioPreviewPanel(QFrame):
         # Sakura can open the next document in the SAME tabbed native window.
         # Track a handoff without unparenting the still-visible Sakura host.
         self._sakura_switch_from = None
+        # HWND -> PID of Sakura windows positively identified as launched by
+        # this Launch preview. Pre-existing user windows are NEVER owned.
+        self._sakura_owned_windows = {}
+        self._sakura_baseline_pids = None
+        # Sakura window must have been independently verified as newly created
+        # for this Launch request. Popen's return PID alone is insufficient.
+        self._sakura_attached_pid = None
+        self._sakura_transfer_consented = False
+        self._sakura_close_wait_hwnd = None
+        self._sakura_close_requested_at = 0.0
+        self._sakura_close_timer = QTimer(self)
+        self._sakura_close_timer.setInterval(350)
+        self._sakura_close_timer.timeout.connect(self._poll_sakura_close)
         self._external_timer = QTimer(self)
         self._external_timer.setInterval(350)
         self._external_timer.timeout.connect(self._poll_external)
@@ -73,8 +89,16 @@ class StudioPreviewPanel(QFrame):
         self.close_button = QToolButton(header)
         self.close_button.setFixedSize(29, 29)
         self.close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.close_button.setToolTip('第3列を隠す（エディターの編集状態は保持）')
+        self.close_button.setToolTip('第3列を閉じる')
         self.close_button.clicked.connect(self.close_requested.emit)
+        self.popout_button = QToolButton(header)
+        self.popout_button.setObjectName('filesEditorPopoutButton')
+        self.popout_button.setFixedSize(29, 29)
+        self.popout_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.popout_button.setToolTip('サクラエディタを外に出す（終了しません）')
+        self.popout_button.clicked.connect(self.pop_out_sakura)
+        self.popout_button.hide()
+        bar.addWidget(self.popout_button)
         bar.addWidget(self.close_button)
         layout.addWidget(header)
         self.content_stack = QStackedWidget(self)
@@ -89,6 +113,15 @@ class StudioPreviewPanel(QFrame):
         self._timer.setInterval(300)
         self._timer.timeout.connect(self._poll)
         self.apply_theme('light')
+
+    def _sakura_trace(self, event, **details):
+        # This is telemetry only. All errors are swallowed by the tracer.
+        from sakura_window_trace import trace
+        trace(event, **details)
+
+    def _sakura_window_scan(self, stage, **details):
+        from sakura_window_trace import trace_windows
+        trace_windows(stage, **details)
 
     def open_document(self, target):
         """Display a real NativeShell session (never a copied HTML editor)."""
@@ -140,9 +173,24 @@ class StudioPreviewPanel(QFrame):
         return True
 
     def open_external(self, target):
-        """Launch and dock a NEW Sakura/Obsidian window, never an old HWND."""
+        """Open a NEW editor window, never adopt an existing Sakura session."""
         self.content_stack.setCurrentWidget(self.host)
-        if self._external_key == target.key and (self._attached or self._external_pending):
+        if target.app == 'sakura':
+            getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                'OPEN_BEGIN', file=Path(target.path).name,
+                pending=self._external_pending is not None,
+                current_app=self._external_key[0] if self._external_key else '',
+                attached_hwnd=getattr(self._attached, 'hwnd', None),
+                parked=len(self._external_parked))
+        if self._external_pending is not None:
+            if target.app == 'sakura':
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'OPEN_SKIPPED', reason='previous_handoff_pending')
+            return True  # Ignore extra double-clicks until native handoff settles.
+        if self._external_key == target.key and self._attached:
+            if target.app == 'sakura':
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'OPEN_REUSE_ATTACHED', hwnd=getattr(self._attached, 'hwnd', None))
             if self._attached:
                 self._attached.resize(self.host.width(), self.host.height())
             return True
@@ -152,9 +200,22 @@ class StudioPreviewPanel(QFrame):
         if (target.app == 'sakura' and self._external_key is not None
                 and self._external_key[0] == 'sakura' and self._attached is not None
                 and self._attached.attached):
+            getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                'OPEN_IN_EXISTING_DOCKED_TAB')
             return self._open_sakura_next(target)
+        # A tabbed Sakura session is an editor window, not one document.
+        # Do not release it merely because a different preview was selected.
+        if self.sakura_attached():
+            getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                'OPEN_SKIPPED', reason='sakura_already_docked')
+            self._explain_sakura_switch_blocked()
+            return False
         self._park_current()  # also parks a preceding external editor
         if self._target is not None or self._external_key is not None:
+            if target.app == 'sakura':
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'OPEN_SKIPPED', reason='previous_editor_could_not_park',
+                    current_app=self._external_key[0] if self._external_key else '')
             return False  # Failed to park: never overwrite an unsaved editor.
         self.title_label.setText(('Obsidian' if target.app == 'obsidian'
                                   else 'サクラエディタ') + ' — ' + Path(target.path).name)
@@ -176,6 +237,7 @@ class StudioPreviewPanel(QFrame):
                 self._attached = AttachedStudioWindow(previous, int(self.host.winId()))
                 self._attached.resize(self.host.width(), self.host.height())
                 self._external_key = parked_key
+                self._sync_popout_button()
                 self.status_label.hide()
                 if target.app == 'sakura' and parked_key != target.key:
                     return self._open_sakura_next(target)
@@ -183,8 +245,20 @@ class StudioPreviewPanel(QFrame):
             except (OSError, RuntimeError, ValueError):
                 self._attached = None  # Native window was closed while parked.
         try:
-            from external_win32_host import snapshot_editor_windows
+            from external_win32_host import (snapshot_editor_windows,
+                                             snapshot_editor_process_ids, editor_windows)
+            if target.app == 'sakura':
+                # A desktop Sakura can already have tabs and unsaved work.
+                # Its own "external launch opens new window" option controls
+                # whether a new window appears. Never prompt to borrow it.
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'DESKTOP_WINDOWS_LEFT_UNTOUCHED',
+                    existing_count=len(editor_windows('sakura', include_hidden=False)))
             baseline = snapshot_editor_windows(target.app)
+            # A Sakura file-open may be forwarded to an existing editor PID.
+            # Never attach/close a HWND belonging to a pre-existing editor PID.
+            self._sakura_baseline_pids = (snapshot_editor_process_ids('sakura')
+                                         if target.app == 'sakura' else None)
             launched_pid = None
             if target.app == 'obsidian':
                 import os
@@ -195,20 +269,124 @@ class StudioPreviewPanel(QFrame):
                 process = subprocess.Popen(external_start_command(target),
                                            cwd=str(Path(target.executable).parent))
                 launched_pid = process.pid
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'SUBPROCESS_START', pid=launched_pid, file=Path(target.path).name)
             else:
                 raise ValueError('未知の外部エディターです')
         except (OSError, ValueError, RuntimeError) as exc:
+            if target.app == 'sakura':
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'OPEN_EXCEPTION', error_type=type(exc).__name__, error=str(exc))
             self.status_label.setText('エディターを開けませんでした: ' + str(exc))
             self.status_label.show()
             return False
         self._external_key = target.key
         self._external_pending = (target, baseline, launched_pid, time.monotonic())
+        if target.app == 'sakura':
+            getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                'POLL_WAIT_START', baseline_count=len(baseline),
+                excluded_pids=sorted(self._sakura_baseline_pids or ()),
+                launched_pid=launched_pid)
+            self._sakura_trace_poll_logged = False
         self.status_label.setText(
             '外部エディターの新しいウィンドウを待っています…\n'
             '既存ウィンドウを奪わず、安全に収容できた場合だけ表示します')
         self.status_label.show()
         self._external_timer.start()
         return True
+
+    def sakura_attached(self):
+        return bool(self._external_key is not None and self._external_key[0] == 'sakura'
+                    and self._attached is not None and self._attached.attached)
+
+    def _sync_popout_button(self):
+        button = getattr(self, 'popout_button', None)
+        if button is not None:
+            button.setVisible(self.sakura_attached())
+        if getattr(self, 'close_button', None) is not None:
+            self.close_button.setToolTip(
+                'サクラエディタへ通常終了を要求（未保存時はエディタ側で確認）'
+                if self.sakura_attached() else '第3列を隠す（編集状態を保持）')
+
+    def _explain_sakura_switch_blocked(self):
+        self.launcher.show_launch_notice(
+            QMessageBox.Icon.Information, 'サクラエディタを収容中',
+            'サクラエディタは第3列に収容中です。\n'
+            '他のプレビューに切り替えるには、右上の「外に出す」か「×」を押してください。')
+
+    def pop_out_sakura(self):
+        """The ONLY interactive detach command for a docked Sakura session.
+
+        Never close a tab or editor process. HWND + PID are checked because a
+        recycled Win32 handle must not be operated on as the previous editor.
+        """
+        if not self.sakura_attached() or self._external_pending is not None:
+            return False
+        from external_win32_host import editor_window_pid
+        attached = self._attached
+        pid = getattr(self, '_sakura_attached_pid', None)
+        if not pid or editor_window_pid(attached.hwnd) != pid:
+            return False
+        try:
+            attached.detach(foreground=True, show_window=True)
+        except (OSError, RuntimeError):
+            return False
+        self._sakura_close_timer.stop()
+        self._sakura_close_wait_hwnd = None
+        self._sakura_attached_pid = None
+        self._sakura_transfer_consented = False
+        self._sakura_owned_windows.pop(int(attached.hwnd), None)
+        self._attached = None
+        self._external_key = None
+        self._external_pending = None
+        self._sakura_switch_from = None
+        self._sync_popout_button()
+        self.popout_requested.emit()  # Parent hides the emptied pane.
+        return True
+
+    def _request_sakura_normal_close(self):
+        """× means ordinary WM_CLOSE for this consented Sakura WINDOW.
+
+        Keep its HWND embedded until Sakura has accepted the close. If Sakura
+        asks about unsaved tabs and the user cancels, retain the entire window
+        in Launch; neither detach nor delete any individual tabs.
+        """
+        if (not self.sakura_attached() or self._external_pending is not None
+                or not self._sakura_transfer_consented):
+            return False
+        from external_win32_host import editor_window_pid
+        from studio_win32_host import request_editor_window_close
+        hwnd = int(self._attached.hwnd)
+        pid = getattr(self, '_sakura_attached_pid', None)
+        if not pid or editor_window_pid(hwnd) != pid:
+            return False
+        now = time.monotonic()
+        if self._sakura_close_wait_hwnd == hwnd and now - self._sakura_close_requested_at < 1.0:
+            return False  # Avoid double WM_CLOSE while save dialog is opening.
+        request_editor_window_close(hwnd)
+        self._sakura_close_wait_hwnd = hwnd
+        self._sakura_close_requested_at = now
+        self._sakura_close_timer.start()
+        return False  # Async normal close; do not hide or undock yet.
+
+    def _poll_sakura_close(self):
+        hwnd = self._sakura_close_wait_hwnd
+        if not hwnd:
+            self._sakura_close_timer.stop()
+            return
+        from external_win32_host import editor_window_pid
+        if editor_window_pid(hwnd) == self._sakura_attached_pid:
+            return  # Save-confirmation remains open or close was cancelled.
+        self._sakura_close_timer.stop()
+        self._sakura_close_wait_hwnd = None
+        self._sakura_owned_windows.pop(int(hwnd), None)
+        self._sakura_attached_pid = None
+        self._sakura_transfer_consented = False
+        self._attached = None
+        self._external_key = None
+        self._sakura_switch_from = None
+        self._sync_popout_button()
+        self.sakura_close_completed.emit()
 
     def _open_sakura_next(self, target):
         """Request a second/third tab while Sakura remains a *visible* child.
@@ -219,10 +397,29 @@ class StudioPreviewPanel(QFrame):
         """
         if self._external_pending is not None:
             return False
+        if (self._attached is not None and
+                getattr(self, '_sakura_transfer_consented', False)
+                and int(self._attached.hwnd) not in
+                getattr(self, '_sakura_owned_windows', {})):
+            # A previously running Sakura was explicitly BORROWED, not spawned.
+            # Launching sakura.exe again can create another external window.
+            # Never make that transition without a tested in-window open path.
+            getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                'BORROWED_SAKURA_RELAUNCH_BLOCKED', requested=Path(target.path).name)
+            self.title_label.setToolTip(
+                f'{Path(target.path).name} はまだ開いていません。'
+                '既存サクラエディタ側の「ファイル → 開く」で開いてください。')
+            return False
+        # A cancelled Sakura save prompt leaves the HWND alive. Never lock out
+        # later tab navigation permanently because × was pressed once.
+        if (getattr(self, '_sakura_close_wait_hwnd', None) is not None
+                and time.monotonic() - getattr(self, '_sakura_close_requested_at', 0) < 1.5):
+            return False
         try:
-            from external_win32_host import snapshot_editor_windows
+            from external_win32_host import snapshot_editor_windows, snapshot_editor_process_ids
             from external_preview_route import external_start_command
             baseline = snapshot_editor_windows('sakura')
+            self._sakura_baseline_pids = snapshot_editor_process_ids('sakura')
             proc = subprocess.Popen(external_start_command(target),
                                     cwd=str(Path(target.executable).parent))
         except (OSError, ValueError, RuntimeError) as exc:
@@ -246,6 +443,26 @@ class StudioPreviewPanel(QFrame):
         return bool(self.isVisible() and self._external_key is not None
                     and self._attached is not None and self._attached.attached)
 
+    def focus_external_after_native_click(self, x, y):
+        """Give the clicked editor native input focus for Sakura AND Obsidian.
+
+        Both are cross-process Win32 children. The click must actually land on
+        the attached HWND; the shared Win32 helper rejects other applications,
+        toolbar/list clicks and delayed events, so it never transfers typing
+        from Files List merely because a preview is visible.
+        """
+        if (self._external_key is None
+                or self._external_key[0] not in ('obsidian', 'sakura')
+                or not self.external_embedded_active()):
+            return False
+        from studio_win32_host import focus_embedded_editor_from_click
+        return focus_embedded_editor_from_click(
+            self._attached.hwnd, int(self.host.winId()), x, y)
+
+    def focus_obsidian_after_native_click(self, x, y):
+        """Backwards-compatible name for the previous Obsidian-only hook."""
+        return self.focus_external_after_native_click(x, y)
+
     def obsidian_embedded_active(self):
         """Compatibility alias for existing Launch callers/tests."""
         return self.external_embedded_active()
@@ -260,14 +477,31 @@ class StudioPreviewPanel(QFrame):
         if self._external_key is not None and self._external_key[0] == 'obsidian':
             self._park_external()
 
-    def close_external_editors(self):
-        """Close external-preview OWNED windows on the Preview × button.
+    def _close_owned_sakura(self, hwnd):
+        """WM_CLOSE only for a HWND created in a new Sakura PID by Launch.
 
-        Unlike Studio's private NativeShell sessions, third-party windows
-        must not remain invisibly parked in the background. Restore their
-        normal frame before WM_CLOSE so any unsaved-change dialog is visible.
-        If closing is cancelled, the editor stays visible as a normal desktop
-        window, never silently hidden or forcibly killed.
+        Never close an existing desktop Sakura instance, even when opening a
+        file from Launch reused that window/tab. A PID check prevents a stale
+        HWND from being closed after Windows reuses the handle.
+        """
+        hwnd = int(hwnd)
+        owned = getattr(self, '_sakura_owned_windows', {})
+        expected_pid = owned.pop(hwnd, None)
+        if not expected_pid:
+            return True  # Not ours: restore/detach only, never close.
+        from external_win32_host import editor_window_pid
+        if editor_window_pid(hwnd) != expected_pid:
+            return True  # Closed/reused since docking: do not touch it.
+        from studio_win32_host import request_editor_window_close
+        request_editor_window_close(hwnd)  # WM_CLOSE only; editor handles save.
+        return True
+
+    def close_external_editors(self):
+        """Handle explicit ×. Sakura stays docked while WM_CLOSE is pending.
+
+        Sakura itself decides whether unsaved tabs can close. Never detach it
+        or hide the Launch pane before the native window actually closes.
+        Other external editors retain the earlier safe close path.
         """
         if self._external_pending is not None:
             # An editor has been launched but the HWND has not yet been
@@ -277,6 +511,8 @@ class StudioPreviewPanel(QFrame):
                 '外部エディターの起動・切替中です。表示が確定してから×で閉じてください。')
             self.status_label.show()
             return False
+        if getattr(self, 'sakura_attached', lambda: False)():
+            return self._request_sakura_normal_close()
         self._external_timer.stop()
         self._sakura_switch_from = None
         windows = []
@@ -285,7 +521,7 @@ class StudioPreviewPanel(QFrame):
             if attached is not None:
                 try:
                     attached.detach(foreground=False, show_window=True)
-                    windows.append(attached.hwnd)
+                    windows.append((attached.hwnd, self._external_key[0]))
                     self._attached = None
                 except (OSError, RuntimeError):
                     # Don't attempt to kill an editor still attached to Qt.
@@ -293,19 +529,22 @@ class StudioPreviewPanel(QFrame):
             self._external_key = None
         if self._external_parked:
             from studio_win32_host import restore_parked_studio_window
-            for hwnd in set(self._external_parked.values()):
+            for key, hwnd in tuple(self._external_parked.items()):
                 try:
                     restore_parked_studio_window(hwnd)
-                    windows.append(hwnd)
+                    windows.append((hwnd, key[0]))
                 except (OSError, RuntimeError, ValueError):
                     # Preserve failed HWNDs for a future recovery attempt.
                     return False
             self._external_parked.clear()
         if windows:
             from studio_win32_host import request_editor_window_close
-            for hwnd in set(windows):
+            for hwnd, app in set(windows):
                 try:
-                    request_editor_window_close(hwnd)
+                    if app != 'sakura':
+                        request_editor_window_close(hwnd)
+                    # Stale Sakura entries from older sessions are restored,
+                    # never closed without an explicit currently docked ×.
                 except (OSError, RuntimeError, ValueError):
                     return False
         return True
@@ -320,10 +559,20 @@ class StudioPreviewPanel(QFrame):
             self._external_timer.stop()
             return
         target, baseline, launched_pid, started = pending
+        if target.app == 'sakura' and not getattr(self, '_sakura_trace_poll_logged', False):
+            getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                'POLL_FIRST_TICK', elapsed_ms=int((time.monotonic() - started)*1000),
+                launched_pid=launched_pid)
+            self._sakura_trace_poll_logged = True
         switching_sakura = target.app == 'sakura' and self._sakura_switch_from is not None
         try:
             from external_win32_host import find_new_editor_window
-            hwnd = find_new_editor_window(target, baseline, launched_pid)
+            excluded = (getattr(self, '_sakura_baseline_pids', None)
+                        if target.app == 'sakura' else None)
+            if excluded is None:
+                hwnd = find_new_editor_window(target, baseline, launched_pid)
+            else:
+                hwnd = find_new_editor_window(target, baseline, launched_pid, excluded)
             if switching_sakura and not hwnd and self._attached is not None:
                 # Tab-mode reuse: the embedded HWND stays the same and only
                 # its active document/caption changes. Do NOT SetParent again.
@@ -335,23 +584,50 @@ class StudioPreviewPanel(QFrame):
                     self._sakura_switch_from = None
                     self._external_timer.stop()
                     return
+            # Do not adopt an existing user's Sakura HWND even if Sakura
+            # routes this file-open into that existing tab group. A separate
+            # editor window is required for Launch's third column.
             if hwnd:
+                if target.app == 'sakura':
+                    getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                        'POLL_NEW_HWND', hwnd=hwnd, excluded_pids=sorted(excluded or ()))
+                # Refuse pre-existing editor PIDs even if a new HWND or title
+                # appeared after the launch request. Never steal a desktop tab.
+                sakura_pid = None
+                if target.app == 'sakura' and excluded is not None:
+                    from external_win32_host import editor_window_pid
+                    sakura_pid = editor_window_pid(hwnd)
+                    if not sakura_pid or sakura_pid in excluded:
+                        raise RuntimeError('既存のサクラエディタはLaunchへ取り込みません')
                 from studio_win32_host import AttachedStudioWindow
                 if switching_sakura:
-                    # A genuinely new editor HWND appeared: only now safely
-                    # park the old session and dock the new one.
-                    self._park_external()
-                    if self._external_key is not None:
-                        raise RuntimeError('前のサクラエディタを安全に退避できませんでした')
+                    # Sakura unexpectedly opened another HWND. Keep the original
+                    # embedded session as-is; never detach it automatically.
+                    self._external_pending = None
+                    self._external_timer.stop()
+                    self._sakura_switch_from = None
+                    self.status_label.setText(
+                        '別のサクラエディタウィンドウが開きました。\n'
+                        '第3列のウィンドウはそのまま維持しています。')
+                    self.status_label.show()
+                    return
                 self._attached = AttachedStudioWindow(hwnd, int(self.host.winId()))
                 self._attached.resize(self.host.width(), self.host.height())
+                if target.app == 'sakura' and sakura_pid:
+                    self._sakura_owned_windows[int(hwnd)] = sakura_pid
+                    self._sakura_attached_pid = sakura_pid
+                    self._sakura_transfer_consented = True
                 self._external_key = target.key
+                self._sync_popout_button()
                 self.status_label.hide()
                 self._external_pending = None
                 self._sakura_switch_from = None
                 self._external_timer.stop()
                 return
         except (OSError, RuntimeError, ValueError) as exc:
+            if target.app == 'sakura':
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'POLL_EXCEPTION', error_type=type(exc).__name__, error=str(exc))
             self._external_timer.stop()
             self._external_pending = None
             if switching_sakura and self._sakura_switch_from:
@@ -365,6 +641,10 @@ class StudioPreviewPanel(QFrame):
         # Do not block the Preview close action for 30 seconds in that case.
         timeout = 6 if switching_sakura else (12 if target.app == 'obsidian' else 25)
         if time.monotonic() - started > timeout:
+            if target.app == 'sakura':
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'POLL_TIMEOUT', elapsed_seconds=round(time.monotonic()-started, 2))
+                getattr(self, '_sakura_window_scan', lambda *a, **k: None)('poll_timeout')
             self._external_timer.stop()
             self._external_pending = None
             if switching_sakura and self._sakura_switch_from:
@@ -374,16 +654,28 @@ class StudioPreviewPanel(QFrame):
                     '新しいサクラエディタの表示先を確認できませんでした。\n'
                     '安全のため、現在の編集画面を維持します。')
             else:
-                self.status_label.setText(
-                    '新しい編集ウィンドウを特定できませんでした。\n'
-                    '既存アプリの画面は安全のため収容していません。\n'
-                    'Obsidianの場合はVault登録を確認してください。')
+                if target.app == 'sakura':
+                    self.status_label.setText(
+                        '新しいサクラエディタのウィンドウを確認できませんでした。\n'
+                        '既存の編集画面は取り込んでいません。\n'
+                        'サクラの「共通設定 → タブバー → '
+                        '外部から起動するときは新しいウィンドウで開く」を確認してください。')
+                else:
+                    self.status_label.setText(
+                        '新しい編集ウィンドウを特定できませんでした。\n'
+                        '既存アプリの画面は安全のため収容していません。\n'
+                        'Obsidianの場合はVault登録を確認してください。')
             self._sakura_switch_from = None
             self.status_label.show()
 
     def _park_external(self):
         if self._external_key is None:
             return
+        is_sakura = self._external_key[0] == 'sakura'
+        if is_sakura:
+            # Strict Sakura contract: no implicit WM_CLOSE, detach or parking.
+            # The explicit pop-out and × commands own those transitions.
+            return False
         self._external_timer.stop()
         self._external_pending = None
         self._sakura_switch_from = None
@@ -391,11 +683,13 @@ class StudioPreviewPanel(QFrame):
         if attached is not None:
             try:
                 attached.detach(foreground=False, show_window=False)
+                self._external_parked[self._external_key] = attached.hwnd
             except (OSError, RuntimeError):
-                return  # Can't safely detach; don't discard its state.
-            self._external_parked[self._external_key] = attached.hwnd
+                return False
             self._attached = None
         self._external_key = None
+        getattr(self, '_sync_popout_button', lambda: None)()
+        return True
 
     def _show_target_title(self, target):
         name = 'Launch メニュー設定' if len(target) > 3 else Path(target[0]).name
@@ -404,6 +698,9 @@ class StudioPreviewPanel(QFrame):
 
     def open_options(self, launch_home, state_dir, studio_root):
         """Reuse the existing Qt WebEngine + Node save bridge as a child pane."""
+        if self.sakura_attached():
+            self._explain_sakura_switch_blocked()
+            return False
         if self._options_widget is None:
             from option_settings_window import OptionSettingsWindow
             options = OptionSettingsWindow(launch_home, state_dir,
@@ -455,6 +752,8 @@ class StudioPreviewPanel(QFrame):
         self._timer.stop()
         # This path is called when the user switches to/from C# Studio as well
         # as between external editors. Preserve the other app before reuse.
+        if getattr(self, 'sakura_attached', lambda: False)():
+            return False  # No automatic Sakura pop-out on document switch.
         if getattr(self, '_external_key', None) is not None:
             self._park_external()
             if self._external_key is not None:
@@ -481,6 +780,8 @@ class StudioPreviewPanel(QFrame):
         """Restore all live Studio windows only when Launch itself exits."""
         self._timer.stop()
         self._external_timer.stop()
+        self._sakura_close_timer.stop()
+        self._sakura_close_wait_hwnd = None
         self._external_pending = None
         active = self._attached
         self._attached = None
@@ -509,6 +810,11 @@ class StudioPreviewPanel(QFrame):
                     pass
             self._external_parked.clear()
         self._external_key = None
+        self._sakura_owned_windows.clear()
+        self._sakura_baseline_pids = None
+        self._sakura_attached_pid = None
+        self._sakura_transfer_consented = False
+        self._sync_popout_button()
         self._process = None
         self._target = None
         if self._options_widget is not None:
@@ -523,6 +829,7 @@ class StudioPreviewPanel(QFrame):
         self._theme = theme
         c = theme_palette(theme)
         self.close_button.setIcon(browser_navigation_icon('close', theme_family(theme)))
+        self.popout_button.setIcon(browser_navigation_icon('external', theme_family(theme)))
         if self._options_widget is not None:
             self._options_widget.set_theme(theme)
         self.setStyleSheet(f'''

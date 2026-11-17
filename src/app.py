@@ -9178,6 +9178,11 @@ class Launcher(QWidget):
                   reason, active, before, windows.foreground(), self._last_focus_area)
 
     def dismiss(self, *, force=False):
+        # A cross-process Sakura child must not vanish with the parent merely
+        # because Launch lost focus or Esc was pressed. Use Preview × or popout.
+        studio_panel = getattr(getattr(self, 'expanded_view', None), 'studio_preview', None)
+        if not force and studio_panel is not None and getattr(studio_panel, 'sakura_attached', lambda: False)():
+            return
         if not force and self.first_hand_confirmation_pending():
             return
         # Capture the Remote's logical Files column BEFORE hide_remote() removes
@@ -12447,7 +12452,9 @@ class Launcher(QWidget):
             # Expanded Files mode gets an in-place editor column. Keep the
             # existing standalone Qt dialog as fallback for Compact modes.
             view = getattr(self, 'expanded_view', None)
-            if view is not None and view.isVisible():
+            from third_column_host_options import embedded_editor_enabled
+            if (view is not None and view.isVisible()
+                    and embedded_editor_enabled(LAUNCH_HOME, 'studio')):
                 view.show_files_view()
                 if view.show_option_settings_preview(
                         LAUNCH_HOME, STATE,
@@ -12525,7 +12532,9 @@ class Launcher(QWidget):
         # Launch's authored menu configuration is the *same* NativeShell;
         # pass its existing flags into Files' third-column host unchanged.
         view = getattr(self, 'expanded_view', None)
-        if view is not None and view.isVisible():
+        from third_column_host_options import embedded_editor_enabled
+        if (view is not None and view.isVisible()
+                and embedded_editor_enabled(LAUNCH_HOME, 'studio')):
             view.show_files_view()
             target = (str(CONFIG), str(exe), str(studio_root), tuple(args[1:]))
             if view.show_studio_preview(target):
@@ -14043,13 +14052,20 @@ class Launcher(QWidget):
         if hasattr(self,'process_timer'):self.process_timer.stop()
         self.error(message)
 
-    def closeEvent(self,event):event.ignore();self.dismiss()
+    def closeEvent(self, event):
+        # Title-bar × is an explicit user request, not an outside-click.
+        # Keep a docked Sakura HWND parented (no implicit pop-out/WM_CLOSE),
+        # but allow Launch itself to hide in the tray as it always did.
+        event.ignore()
+        self.dismiss(force=True)
+
     def quit(self):
         # A cross-process WinForms editor must be undocked before Qt destroys
         # the host HWND. Never terminate Studio with potentially unsaved data.
         view = getattr(self, 'expanded_view', None)
         if view is not None and hasattr(view, 'release_studio_preview'):
-            view.release_studio_preview()
+            if view.release_studio_preview() is False:
+                return
         self._file_index_cancel.set()
         if self.apps_proc:
             self.apps_proc.kill();self.apps_proc.wait();self.apps_output.unlink(missing_ok=True)
@@ -14209,6 +14225,21 @@ def main():
         except RuntimeError:
             return False
 
+    def focus_docked_external_on_mouse_release(x, y):
+        """Foreign HWND input is independent from Qt's Files List focus.
+
+        Called by the existing mouse hook after a real button release. Never
+        activate a third-party editor merely because it was displayed.
+        """
+        preview = getattr(getattr(window, 'expanded_view', None),
+                          'studio_preview', None)
+        if preview is None or not preview.isVisible():
+            return
+        try:
+            preview.focus_external_after_native_click(x, y)
+        except (OSError, RuntimeError, ValueError) as focus_error:
+            DIAG.warning('EXTERNAL_NATIVE_FOCUS_FAILED: %s', focus_error)
+
     def dismiss_from_outside_click():
         # A new external editor window is in transit to the third-column
         # native host. A temporary OS focus switch isn't an outside action.
@@ -14264,6 +14295,7 @@ def main():
                                          or (launcher_surface_visible()
                                              and window.dismiss_on_outside_click)),
             defer_wallpaper_outside=lambda: window.remote_on_desktop_double_click,
+            on_embedded_mouse_release=focus_docked_external_on_mouse_release,
         )
         DIAG.info('DESKTOP_DOUBLE_CLICK_HOOK active=%s', desktop_click.start())
     except Exception:

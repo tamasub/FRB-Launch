@@ -2099,14 +2099,35 @@ class ExpandedLauncherView(QWidget):
         if self.toolbar_scroller.height() != required:
             self.toolbar_scroller.setFixedHeight(required)
 
+    def _save_active_preview_width(self):
+        """Remember the user's third pane width without corrupting 2-pane keys."""
+        for panel in (getattr(self, 'browser_preview', None),
+                      getattr(self, 'studio_preview', None)):
+            if panel is None or panel.isHidden():
+                continue
+            index = self.files_splitter.indexOf(panel)
+            widths = self.files_splitter.sizes()
+            if 2 <= index < len(widths) and widths[index] >= 250:
+                self.launcher.settings.setValue('workspace_files_preview_width', widths[index])
+                return
+
+    def _preferred_preview_width(self, default_width, base_sizes, min_list_width):
+        """Restore a previous preview width, clamped to the current window."""
+        from preview_splitter_layout import restored_preview_width
+        return restored_preview_width(
+            self.launcher.settings.value('workspace_files_preview_width', None),
+            default_width, base_sizes, min_list_width)
+
     def save_splitter_sizes(self, *_):
-        # Third-column preview width is transient. Never persist a 3-item
-        # splitter into existing 2-column settings for Files / Remote 1.5.
+        # Store the optional third pane independently from original 2-column
+        # Files/Remote/Browser splitter state.
         preview = getattr(self, 'browser_preview', None)
         studio = getattr(self, 'studio_preview', None)
         if preview is not None and not preview.isHidden():
+            self._save_active_preview_width()
             return
         if studio is not None and not studio.isHidden():
+            self._save_active_preview_width()
             return
         # Experimental 1.5-column widths must not poison older 2-column data.
         if getattr(self.launcher, 'remote_15_mode', False):
@@ -6440,24 +6461,47 @@ class ExpandedLauncherView(QWidget):
         """
         if self._workspace_mode != 'files' or not isinstance(row, dict):
             return False
-        # Only genuine Files List double clicks are rerouted. A shifted .md
-        # double click retains the previous Markdown Studio path when needed.
+        # Physical Files List documents choose their application BEFORE
+        # deciding whether its window may be embedded. Never redirect .md to
+        # Studio because it is outside an Obsidian vault.
         virtual = row.get('_launch_virtual_node')
         if virtual is None and any(row.get(field) for field in
                                    ('_browse_file', '_indexed_file', '_file')):
             from external_preview_route import external_preview_target
-            use_existing_studio = bool(QApplication.keyboardModifiers() &
-                                       Qt.KeyboardModifier.ShiftModifier)
-            external = None if use_existing_studio else external_preview_target(row)
+            from third_column_host_options import embedded_editor_enabled
+            external = external_preview_target(row)
             if external is not None:
-                if self.show_external_preview(external):
-                    return True
-                if external.app != 'obsidian':
-                    return False  # Non-Studio fallback remains unchanged.
+                # Sakura third-column embedding is retired. Always use the
+                # editor's ordinary external launch, even if an old user
+                # state.ini still contains embed_sakura=true. Never borrow,
+                # reparent or close another Sakura window from this route.
+                enabled = (external.app != 'sakura' and embedded_editor_enabled(
+                    os.environ.get('FRB_LAUNCH_HOME', Path(__file__).resolve().parents[1]),
+                    external.app))
+                if external.app == 'sakura':
+                    from sakura_window_trace import trace
+                    trace('ROUTE_FROM_FILES_LIST', file=Path(external.path).name,
+                          embed_enabled=enabled, workspace_mode=self._workspace_mode)
+                if enabled:
+                    # Vault-outside Obsidian documents open normally: 1.14's
+                    # standalone file handling does not promise a pop-out HWND.
+                    from external_preview_route import find_vault_root
+                    if external.app != 'obsidian' or find_vault_root(external.path) is not None:
+                        if self.show_external_preview(external):
+                            return True
+                try:
+                    from external_preview_route import launch_external_standalone
+                    launch_external_standalone(external)
+                    if getattr(self.launcher, 'dismiss_on_outside_click', True):
+                        self.launcher.dismiss()  # Normal external-launch behavior.
+                except (OSError, ValueError, RuntimeError) as exc:
+                    self.launcher.error('外部エディターで開けません: ' + str(exc))
+                return True  # Even on failure, never silently open .md in Studio.
             from studio_preview_route import studio_preview_target
             root = self.launcher.expander().values.get('studio_root', '')
             target = studio_preview_target(row, root)
-            if target is not None:
+            if (target is not None and target[0].casefold().endswith('.json')
+                    and embedded_editor_enabled(os.environ.get('FRB_LAUNCH_HOME', Path(__file__).resolve().parents[1]), 'studio')):
                 return self.show_studio_preview(target)
         if not isinstance(virtual, dict) or virtual.get('kind') != 'file':
             return False
@@ -6477,6 +6521,9 @@ class ExpandedLauncherView(QWidget):
             return False
         studio = getattr(self, 'studio_preview', None)
         if studio is not None and not studio.isHidden():
+            if getattr(studio, 'sakura_attached', lambda: False)():
+                studio._explain_sakura_switch_blocked()
+                return False
             self.close_studio_preview()
         if self.browser_preview is None:
             try:
@@ -6500,7 +6547,11 @@ class ExpandedLauncherView(QWidget):
             self._browser_preview_base_sizes = sizes[:]
             self.browser_preview.show()
             total = sum(sizes)
-            preview_width = max(270, min(490, int(total * 0.40)))
+            from preview_splitter_layout import restored_preview_width
+            stored_width = getattr(getattr(self.launcher, 'settings', None), 'value',
+                                   lambda *_: None)('workspace_files_preview_width', None)
+            preview_width = restored_preview_width(
+                stored_width, max(270, min(490, int(total * 0.40))), sizes, 230)
             from preview_splitter_layout import preview_sizes
             count = (self.files_splitter.count() if hasattr(self.files_splitter, 'count')
                      else 2 + int(self.browser_preview is not None)
@@ -6521,6 +6572,7 @@ class ExpandedLauncherView(QWidget):
         panel = self.browser_preview
         if panel is None or panel.isHidden():
             return
+        getattr(self, '_save_active_preview_width', lambda: None)()
         panel.stop_preview()
         panel.hide()
         sizes = self._browser_preview_base_sizes
@@ -6542,7 +6594,11 @@ class ExpandedLauncherView(QWidget):
         if self.studio_preview is None:
             from studio_preview_panel import StudioPreviewPanel
             self.studio_preview = StudioPreviewPanel(self.files_splitter)
+            # The embedded editor uses Launch's shared dialog contract.
+            self.studio_preview.launcher = self.launcher
             self.studio_preview.close_requested.connect(self.close_studio_preview)
+            self.studio_preview.popout_requested.connect(self._hide_studio_preview_only)
+            self.studio_preview.sakura_close_completed.connect(self._hide_studio_preview_only)
             self.files_splitter.addWidget(self.studio_preview)
             self.studio_preview.hide()
             self.studio_preview.apply_theme(self.launcher.color_theme)
@@ -6551,7 +6607,8 @@ class ExpandedLauncherView(QWidget):
             self._studio_preview_base_sizes = base_sizes[:]
             self.studio_preview.show()
             total = sum(base_sizes)
-            preview_width = max(350, min(690, int(total * 0.50)))
+            preview_width = self._preferred_preview_width(
+                max(350, min(690, int(total * 0.50))), base_sizes, 170)
             from preview_splitter_layout import preview_sizes
             count = (self.files_splitter.count() if hasattr(self.files_splitter, 'count')
                      else 2 + int(self.browser_preview is not None) + 1)
@@ -6568,6 +6625,9 @@ class ExpandedLauncherView(QWidget):
         if not self._ensure_studio_preview():
             return False
         keep_list_focus = self.middle.tree.hasFocus()
+        if getattr(self.studio_preview, 'sakura_attached', lambda: False)():
+            self.studio_preview._explain_sakura_switch_blocked()
+            return False
         if not self.studio_preview.open_document(target):
             if not was_open:
                 self.close_studio_preview()
@@ -6577,14 +6637,27 @@ class ExpandedLauncherView(QWidget):
         return True
 
     def show_external_preview(self, target):
-        """Dock a native editor without restoring focus to Files List.
+        """Dock supported editors; Sakura is external-only after withdrawal.
 
         Unlike Studio documents, external HWNDs must receive normal Windows
         keyboard focus when clicked. Forcing List.setFocus() after a
         double-click made typing go to List and could trigger auto-dismiss.
         """
+        # Fail closed if a future caller bypasses preview_bookmark_from_list.
+        # Do not create a pane or touch any existing Sakura window here.
+        if target.app == 'sakura':
+            return False
         was_open = bool(self.studio_preview and not self.studio_preview.isHidden())
-        if not self._ensure_studio_preview():
+        prepared = self._ensure_studio_preview()
+        if target.app == 'sakura':
+            from sakura_window_trace import trace
+            trace('PREVIEW_HOST_CHECK', prepared=prepared,
+                  target=Path(target.path).name, workspace_mode=self._workspace_mode)
+        if not prepared:
+            return False
+        if (getattr(self.studio_preview, 'sakura_attached', lambda: False)()
+                and target.app != 'sakura'):
+            self.studio_preview._explain_sakura_switch_blocked()
             return False
         if not self.studio_preview.open_external(target):
             if not was_open:
@@ -6598,7 +6671,8 @@ class ExpandedLauncherView(QWidget):
         if not self._ensure_studio_preview():
             return False
         try:
-            self.studio_preview.open_options(launch_home, state_dir, studio_root)
+            if not self.studio_preview.open_options(launch_home, state_dir, studio_root):
+                return False
         except Exception:
             if not was_open:
                 self.close_studio_preview()
@@ -6615,6 +6689,18 @@ class ExpandedLauncherView(QWidget):
         # Studio NativeShell is the exception: preserve its in-place session.
         if not getattr(panel, 'close_external_editors', lambda: True)():
             return
+        self._hide_studio_preview_only()
+
+    def _hide_studio_preview_only(self):
+        """Hide an already released/closed editor without closing other sessions.
+
+        Called after Sakura's explicit pop-out or successful native WM_CLOSE.
+        Any previously parked Obsidian/Studio sessions are left untouched.
+        """
+        panel = self.studio_preview
+        if panel is None or panel.isHidden():
+            return
+        getattr(self, '_save_active_preview_width', lambda: None)()
         panel.hide()
         sizes = self._studio_preview_base_sizes
         self._studio_preview_base_sizes = None
@@ -6622,9 +6708,25 @@ class ExpandedLauncherView(QWidget):
             self.files_splitter.setSizes(sizes + [0] * (self.files_splitter.count() - 2))
 
     def release_studio_preview(self):
-        """Restore unsaved Studio sessions before Launch itself terminates."""
-        if self.studio_preview is not None:
-            self.studio_preview.undock()
+        """Launch exit requires explicit consent to release docked Sakura."""
+        panel = self.studio_preview
+        if panel is None:
+            return True
+        if getattr(panel, 'sakura_attached', lambda: False)():
+            from PySide6.QtWidgets import QMessageBox
+            # Route this approval through Launch's shared dialog/Remote guard.
+            reply = self.launcher.ask_remote_confirmation(
+                'Launchの終了',
+                'サクラエディタが第3列に収容されています。\n'
+                '「外に出す」ことを承認してLaunchを終了しますか？\n'
+                'サクラエディタのタブと編集内容は保持されます。',
+                yes_text='外に出して終了', no_text='キャンセル')
+            if reply != QMessageBox.StandardButton.Yes:
+                return False
+            if not panel.pop_out_sakura():
+                return False
+        self.studio_preview.undock()
+        return True
 
     def show_files_view(self):
         """Return to Files without destroying or navigating Browser's tabs."""

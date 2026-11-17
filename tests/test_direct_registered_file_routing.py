@@ -59,8 +59,13 @@ class DirectRegisteredFileRoutingTests(unittest.TestCase):
         self.assertEqual(file_index.route_registered_open_step(original, str(self.studio)), [original])
 
     def test_direct_registered_md_and_ps1_reuse_shared_routing(self):
-        md = file_index.route_registered_open_step({'launch_action_type': 'Open', 'launch_target': str(self.md)}, str(self.studio))
-        self.assertEqual(md[0]['launch_arguments'], ['--open-md=' + str(self.md)])
+        from unittest.mock import patch
+        obsidian = self.path / 'Obsidian.exe'
+        obsidian.write_bytes(b'')
+        with patch('external_preview_route.find_obsidian_executable', return_value=str(obsidian)):
+            md = file_index.route_registered_open_step({'launch_action_type': 'Open', 'launch_target': str(self.md)}, str(self.studio))
+        self.assertEqual(md[0]['launch_program'], str(obsidian))
+        self.assertEqual(md[0]['launch_arguments'], [str(self.md)])
         ps = file_index.route_registered_open_step({'launch_action_type': 'Open', 'launch_target': str(self.ps1)}, str(self.studio))
         self.assertEqual(ps[0]['launch_program'], 'powershell.exe')
         self.assertEqual(ps[0]['launch_arguments'], ['-NoProfile', '-File', str(self.ps1)])

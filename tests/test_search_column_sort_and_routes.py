@@ -31,16 +31,19 @@ class SearchSortAndRoutesTests(unittest.TestCase):
         self.assertEqual([r['title'] for r,_ in sort_search_pairs(pairs,1)],['foo','bar'])
         self.assertEqual(display_columns({'title':'f','item_kind':'directory','description':'d'},'Path'),('f  ›','d  ·  Path'))
 
-    def test_md_studio_command_with_real_executable(self):
+    def test_md_obsidian_command_with_real_executable(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); studio=root/'studio'
             binary=studio/'NativeShell'/'_publish'/'FRBStudio.NativeShell.exe'
             binary.parent.mkdir(parents=True);binary.write_bytes(b'')
             md=root/'memo.md';md.write_text('hello')
-            steps=launch_steps(md, str(studio))
-            self.assertEqual(steps[0]['launch_action_type'],'Run')
-            self.assertEqual(steps[0]['launch_arguments'],['--open-md='+str(md)])
-            self.assertEqual(launch_steps(md, str(root/'missing'))[0]['launch_action_type'],'Open')
+            from unittest.mock import patch
+            obsidian = root/'Obsidian.exe'; obsidian.write_bytes(b'')
+            with patch('external_preview_route.find_obsidian_executable', return_value=str(obsidian)):
+                steps=launch_steps(md, str(studio))
+                self.assertEqual(steps[0]['launch_action_type'],'Run')
+                self.assertEqual(steps[0]['launch_program'],str(obsidian))
+                self.assertEqual(steps[0]['launch_arguments'],[str(md)])
 
     def test_folder_routing_is_shared_with_index_routing(self):
         # GUI Qt isn't installed in CI, inspect Python AST for the connection.

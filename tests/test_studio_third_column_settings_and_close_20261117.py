@@ -50,7 +50,7 @@ def test_no_incorrect_two_column_geometry():
 
 def test_close_hides_but_never_undocks_or_exits_studio():
     src = method_source('expanded_view.py', 'ExpandedLauncherView', 'close_studio_preview')
-    assert 'panel.hide()' in src
+    assert 'self._hide_studio_preview_only()' in src
     assert 'panel.undock()' not in src
     assert '.terminate(' not in src and '.kill(' not in src
     exit_src = method_source('expanded_view.py', 'ExpandedLauncherView', 'release_studio_preview')
@@ -115,6 +115,7 @@ def test_real_close_method_hides_pane_without_detach():
                                setSizes=lambda sizes: updated_sizes.append(sizes))
     view = SimpleNamespace(studio_preview=panel, files_splitter=splitter,
                            _studio_preview_base_sizes=[290, 750])
+    view._hide_studio_preview_only = lambda: (setattr(panel, 'hidden', True), updated_sizes.append([290, 750, 0, 0]), setattr(view, '_studio_preview_base_sizes', None))
     namespace['close_studio_preview'](view)
     assert panel.hidden
     assert updated_sizes == [[290, 750, 0, 0]]

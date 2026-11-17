@@ -78,19 +78,20 @@ def test_registered_vault_not_just_obsidian_folder(tmp_path, monkeypatch):
     # Merely placing .obsidian in a directory must never cause a modal error.
     assert registered_obsidian_vaults() == ()
     assert find_vault_root(note) is None
-    assert external_preview_target({'_file': str(note)}) is None
+    assert external_preview_target({'_file': str(note)}).app == 'obsidian'
     registry.write_text(json.dumps({'vaults': {'123': {'path': str(valid), 'ts': 9}}}),
                         encoding='utf-8')
     assert find_vault_root(note) == valid
     assert external_preview_target({'_file': str(note)}).app == 'obsidian'
     assert find_vault_root(unknown) is None
-    assert external_preview_target({'_file': str(unknown)}) is None
+    assert external_preview_target({'_file': str(unknown)}).app == 'obsidian'
 
 
 def test_sakura_next_file_does_not_park_visible_editor(monkeypatch, tmp_path):
     import external_win32_host as host
     import external_preview_route as route
     monkeypatch.setattr(host, 'snapshot_editor_windows', lambda _: frozenset({100}))
+    monkeypatch.setattr(host, 'snapshot_editor_process_ids', lambda _: frozenset({50}))
     target = ExternalPreviewTarget('sakura', str(tmp_path / '2.txt'), str(tmp_path / 'sakura.exe'))
     (tmp_path / 'sakura.exe').write_text('app')
     calls = []
@@ -126,7 +127,7 @@ def test_sakura_same_hwnd_tab_selection_is_not_reparented(monkeypatch, tmp_path)
     assert panel._attached.hwnd == 100
 
 
-def test_sakura_new_hwnd_parks_previous_only_after_detection(monkeypatch, tmp_path):
+def test_sakura_new_hwnd_does_not_park_existing_session(monkeypatch, tmp_path):
     import external_win32_host as host
     import studio_win32_host as studio
     target = ExternalPreviewTarget('sakura', str(tmp_path / '3.txt'), str(tmp_path / 'sakura.exe'))
@@ -152,10 +153,9 @@ def test_sakura_new_hwnd_parks_previous_only_after_detection(monkeypatch, tmp_pa
         panel._external_key = None
     panel._park_external = park
     _panel_method('_poll_external')(panel)
-    assert calls[0] == ('park', 100)
-    assert calls[1] == ('attach', 200, 999)
-    assert panel._external_key == target.key
-    assert panel._attached.hwnd == 200
+    assert calls == []  # No SetParent/WM_CLOSE on unexpected new window.
+    assert panel._external_key == ('sakura', '2')
+    assert panel._attached.hwnd == 100
     assert panel._external_pending is None
 
 

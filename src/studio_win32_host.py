@@ -23,6 +23,11 @@ SW_HIDE, SW_SHOWNOACTIVATE, SW_SHOW, SW_RESTORE = 0, 4, 5, 9
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
+SWP_SHOWWINDOW = 0x0040
+RDW_INVALIDATE = 0x0001
+RDW_ALLCHILDREN = 0x0080
+RDW_UPDATENOW = 0x0100
+RDW_FRAME = 0x0400
 
 
 def _user32():
@@ -60,8 +65,24 @@ def _user32():
                                              ctypes.POINTER(ctypes.c_ubyte), ctypes.POINTER(wintypes.DWORD)]
     u.GetLayeredWindowAttributes.restype = wintypes.BOOL
     u.SetForegroundWindow.argtypes = [h]
+    u.GetForegroundWindow.argtypes = []
+    u.GetForegroundWindow.restype = h
+    u.GetAncestor.argtypes = [h, wintypes.UINT]
+    u.GetAncestor.restype = h
+    u.IsChild.argtypes = [h, h]
+    u.IsChild.restype = wintypes.BOOL
+    u.WindowFromPoint.argtypes = [wintypes.POINT]
+    u.WindowFromPoint.restype = h
+    u.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    u.AttachThreadInput.restype = wintypes.BOOL
+    u.SetFocus.argtypes = [h]
+    u.SetFocus.restype = h
+    u.GetFocus.argtypes = []
+    u.GetFocus.restype = h
     u.PostMessageW.argtypes = [h, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     u.PostMessageW.restype = wintypes.BOOL
+    u.RedrawWindow.argtypes = [h, h, h, wintypes.UINT]
+    u.RedrawWindow.restype = wintypes.BOOL
     return u
 
 
@@ -123,7 +144,11 @@ class AttachedStudioWindow:
         if not self.u.IsWindow(self.hwnd) or not self.u.IsWindow(self.host_hwnd):
             raise OSError('Studioまたは第3列のウィンドウが無効です')
         self.original_style = int(self.u.GetWindowLongPtrW(self.hwnd, GWL_STYLE))
-        self.original_parent = int(self.u.GetParent(self.hwnd) or 0)
+        self.original_exstyle = int(self.u.GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE))
+        # GetParent() returns the owner on some TOP-LEVEL popup windows.
+        # Restore those to the desktop, not a child of their former owner.
+        self.original_parent = (int(self.u.GetParent(self.hwnd) or 0)
+                                if self.original_style & WS_CHILD else 0)
         rect = wintypes.RECT()
         self.u.GetWindowRect(self.hwnd, ctypes.byref(rect))
         self.original_rect = (int(rect.left), int(rect.top),
@@ -147,6 +172,7 @@ class AttachedStudioWindow:
             # when no child relationship was established. Always restore it.
             self.u.SetParent(self.hwnd, self.original_parent)
             self.u.SetWindowLongPtrW(self.hwnd, GWL_STYLE, self.original_style)
+            self.u.SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, self.original_exstyle)
             x, y, w, h = self.original_rect
             self.u.SetWindowPos(self.hwnd, 0, x, y, w, h,
                                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
@@ -173,6 +199,7 @@ class AttachedStudioWindow:
             self.u.ShowWindow(self.hwnd, SW_HIDE)
             self.u.SetParent(self.hwnd, self.original_parent)
             self.u.SetWindowLongPtrW(self.hwnd, GWL_STYLE, self.original_style)
+            self.u.SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, self.original_exstyle)
             x, y, w, h = self.original_rect
             self.u.SetWindowPos(self.hwnd, 0, x, y, w, h,
                                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
@@ -180,10 +207,76 @@ class AttachedStudioWindow:
         if not show_window:
             self.u.ShowWindow(self.hwnd, SW_HIDE)
         elif foreground:
+            # Sakura's tab bar/client can retain the clipped size of the Qt
+            # host. Re-establish the desktop frame and force a native repaint.
             self.u.ShowWindow(self.hwnd, SW_RESTORE)
+            x, y, w, h = self.original_rect
+            self.u.SetWindowPos(self.hwnd, 0, x, y, w, h,
+                                SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
+            self.u.RedrawWindow(self.hwnd, 0, 0,
+                                RDW_INVALIDATE | RDW_ALLCHILDREN |
+                                RDW_UPDATENOW | RDW_FRAME)
             self.u.SetForegroundWindow(self.hwnd)
         else:
             self.u.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
+
+
+
+def focus_embedded_editor_from_click(editor_hwnd, host_hwnd, x, y, *, user32=None,
+                                     get_current_thread_id=None):
+    """Transfer *native* keyboard focus only after a click INSIDE a docked editor.
+
+    SetParent makes the foreign HWND visible, but does not link Qt's focus
+    widget to Electron's input queue. Qt may still own keyboard focus on
+    Files List. SetFocus alone fails across UI threads; AttachThreadInput is
+    transient, limited to the actual HWND under the user's click, and always
+    released. No synthetic keystrokes, global activation, or timer refocusing.
+
+    IMPORTANT: call only from an observed left-button release, NOT from
+    attachment/polling or on every Launch activation. This is used for Sakura and Obsidian cross-process editor HWNDs;
+    Studio NativeShell retains its existing behavior.
+    """
+    u = user32 if user32 is not None else _user32()
+    own_thread = get_current_thread_id
+    if own_thread is None:
+        if os.name != 'nt':
+            return False
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.GetCurrentThreadId.restype = wintypes.DWORD
+        own_thread = kernel.GetCurrentThreadId
+    editor, host = int(editor_hwnd or 0), int(host_hwnd or 0)
+    if not editor or not host or not u.IsWindow(editor) or not u.IsWindow(host):
+        return False
+    hit = int(u.WindowFromPoint(wintypes.POINT(int(x), int(y))) or 0)
+    if not hit or not u.IsWindow(hit) or (hit != editor and not u.IsChild(editor, hit)):
+        return False  # Not a direct click on the attached editor: never steal focus.
+    # Reject stale delayed mouse releases after another desktop app takes focus.
+    launch_root = int(u.GetAncestor(host, 2) or 0)  # GA_ROOT
+    foreground = int(u.GetForegroundWindow() or 0)
+    if not launch_root or foreground != launch_root:
+        return False
+    target_thread = int(u.GetWindowThreadProcessId(hit, None) or 0)
+    current_thread = int(own_thread() or 0)
+    if not target_thread or not current_thread:
+        return False
+    linked = False
+    if target_thread != current_thread:
+        if not u.AttachThreadInput(current_thread, target_thread, True):
+            return False
+        linked = True
+    try:
+        # Respect a cursor/IME focus that Electron already owns. Repeated
+        # clicks inside its editor must not reset the existing text caret.
+        focused = int(u.GetFocus() or 0)
+        if focused and (focused == editor or u.IsChild(editor, focused)):
+            return True
+        # The clicked Chromium/Electron child is the focusable native input
+        # surface. Focusing the outer Qt QWidget would return keys to List.
+        u.SetFocus(hit)
+        return int(u.GetFocus() or 0) == hit
+    finally:
+        if linked:
+            u.AttachThreadInput(current_thread, target_thread, False)
 
 
 def restore_parked_studio_window(hwnd):

@@ -89,3 +89,29 @@ def test_shipped_template_and_startup_hook_and_package_source():
     assert source.index('    ensure_initial_state_ini(') < source.index('    window=Launcher()')
     package = (ROOT / 'scripts/build_release_package.py').read_text(encoding='utf-8')
     assert "('defs','defaults','scripts','config')" in package
+
+
+def test_hidden_app_host_switches_are_allowlisted_seeded_off_and_user_state_wins(tmp_path):
+    shipped = ROOT / 'defaults/state.ini'
+    text = shipped.read_text(encoding='utf-8')
+    for key in ('embed_studio', 'embed_obsidian', 'embed_sakura'):
+        assert f'{key}=false' in text
+
+    first = tmp_path / 'first/state.ini'
+    ensure_initial_state_ini(shipped, first)
+    first_text = first.read_text(encoding='utf-8')
+    for key in ('embed_studio', 'embed_obsidian', 'embed_sakura'):
+        assert f'{key}=false' in first_text
+
+    template = tmp_path / 'defaults/state.ini'
+    template.parent.mkdir(parents=True)
+    template.write_text('[General]\nembed_studio=yes\nembed_obsidian=no\n'
+                        'embed_sakura=bogus\n', encoding='utf-8')
+    second = tmp_path / 'second/state.ini'
+    ensure_initial_state_ini(template, second)
+    assert second.read_text(encoding='utf-8') == ('[General]\nembed_studio=true\n'
+                                                       'embed_obsidian=false\n')
+    original = second.read_bytes()
+    template.write_text('[General]\nembed_studio=false\n', encoding='utf-8')
+    ensure_initial_state_ini(template, second)
+    assert second.read_bytes() == original

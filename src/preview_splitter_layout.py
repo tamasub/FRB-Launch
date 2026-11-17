@@ -15,3 +15,16 @@ def preview_sizes(base_sizes, count, pane_index, preview_width, min_list_width):
     sizes[1] = max(min_list_width, total - first - preview_width)
     sizes[pane_index] = preview_width
     return sizes
+
+
+def restored_preview_width(saved, default, base_sizes, min_list_width):
+    """Return persisted third column width constrained to available space."""
+    try:
+        requested = int(saved)
+        if requested < 250:
+            raise ValueError('invalid preview width')
+    except (ValueError, TypeError):
+        requested = int(default)
+    total = sum(base_sizes)
+    upper = max(1, total - int(base_sizes[0]) - int(min_list_width))
+    return max(1, min(requested, upper))

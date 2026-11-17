@@ -1,9 +1,7 @@
-"""Narrow Files List -> third-column external editor routes.
+"""Route physical Files List .md/.txt/.ini to their requested editors.
 
-No changes to file associations. Obsidian is only used for existing notes
-inside a directory with an Obsidian vault config; otherwise Markdown Studio
-remains the existing fallback. Sakura runs only when an actual executable can
-be identified, otherwise normal Files List handling is left intact.
+Embedding in Launch is optional; the application selection is independent of
+Vault membership and file associations. Studio JSON routing is separate.
 """
 from dataclasses import dataclass
 import os
@@ -132,10 +130,7 @@ def external_preview_target(row, *, sakura_lookup=None, vault_lookup=None):
     if path is None:
         return None
     if path.suffix.casefold() == '.md':
-        vault = (vault_lookup or find_vault_root)(path)
-        if vault is not None:
-            return ExternalPreviewTarget('obsidian', str(path))
-        return None  # Preserve existing Markdown Studio for files outside vaults.
+        return ExternalPreviewTarget('obsidian', str(path))
     if path.suffix.casefold() in ('.txt', '.ini'):
         executable = (sakura_lookup or find_sakura_executable)()
         if executable:
@@ -182,3 +177,59 @@ def external_start_command(target):
         raise ValueError('Sakura editor executable was not resolved')
     # -- ensures files whose names start with '-' aren't mistaken for flags.
     return [target.executable, '--', target.path]
+
+
+def find_obsidian_executable():
+    """Find the official Windows executable without using .md file association."""
+    explicit = os.environ.get('FRB_LAUNCH_OBSIDIAN_EXE', '').strip().strip('"')
+    if explicit:
+        candidate = Path(os.path.expandvars(explicit))
+        return str(candidate) if candidate.is_file() else None
+    candidates = [shutil.which('Obsidian.exe')]
+    for variable, suffixes in (
+            ('LOCALAPPDATA', (('Programs', 'Obsidian', 'Obsidian.exe'),)),
+            ('ProgramFiles', (('Obsidian', 'Obsidian.exe'),)),
+            ('ProgramFiles(x86)', (('Obsidian', 'Obsidian.exe'),))):
+        base = os.environ.get(variable)
+        if base:
+            candidates.extend(str(Path(base).joinpath(*s)) for s in suffixes)
+    if os.name == 'nt':
+        try:
+            import winreg
+            key_name = r'Software\Microsoft\Windows\CurrentVersion\App Paths\Obsidian.exe'
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    with winreg.OpenKey(hive, key_name) as key:
+                        candidates.append(winreg.QueryValueEx(key, '')[0])
+                except OSError:
+                    continue
+        except ImportError:
+            pass
+    for item in candidates:
+        if item:
+            candidate = Path(os.path.expandvars(str(item).strip('"')))
+            if candidate.is_file() and candidate.name.casefold() == 'obsidian.exe':
+                return str(candidate)
+    return None
+
+
+def standalone_editor_command(target, *, obsidian_lookup=None):
+    """Return the executable command; no implicit Studio or default-app fallback."""
+    if target.app == 'sakura':
+        return external_start_command(target)
+    if target.app == 'obsidian':
+        executable = (obsidian_lookup or find_obsidian_executable)()
+        if not executable:
+            raise FileNotFoundError('Obsidian.exeが見つかりません（最新版を再インストールしてください）')
+        # Obsidian 1.14+ with a current installer supports standalone .md.
+        # Passing an explicit absolute path keeps Vault-outside files intact.
+        return [executable, target.path]
+    raise ValueError('サポートされていない外部エディターです')
+
+
+def launch_external_standalone(target, *, popen=None, obsidian_lookup=None):
+    """Launch a real editor window without embedding or changing associations."""
+    import subprocess
+    command = standalone_editor_command(target, obsidian_lookup=obsidian_lookup)
+    process = (popen or subprocess.Popen)(command, cwd=str(Path(command[0]).parent))
+    return process

@@ -139,7 +139,7 @@ class FileIndexTests(unittest.TestCase):
         script=self.folder/'analysis.PY'
         self.assertEqual(launch_steps(script)[0]['launch_program'], 'py.exe')
         self.assertEqual(launch_steps(self.folder/'start.ps1')[0]['launch_arguments'][0],'-NoProfile')
-        for ext in ('.xlsx','.bat','.md','.json'):
+        for ext in ('.xlsx','.bat','.json'):
             self.assertEqual(launch_steps(self.folder/('abc'+ext))[0]['launch_action_type'],'Open')
 
 if __name__ == '__main__': unittest.main()

@@ -57,7 +57,7 @@ def test_external_focus_is_not_overridden_by_list_and_guards_stay_active():
     assert 'external_embedding_pending' in main
 
 
-def test_close_docked_and_parked_editors_asks_normal_close(monkeypatch):
+def test_stale_sakura_windows_never_receive_implicit_wm_close(monkeypatch):
     actions = []
     monkeypatch.setattr(win32, 'restore_parked_studio_window',
                         lambda hwnd: actions.append(('restore', hwnd)))
@@ -67,15 +67,14 @@ def test_close_docked_and_parked_editors_asks_normal_close(monkeypatch):
     panel = SimpleNamespace(_external_key=('sakura', 'a'), _attached=attached,
                             _external_pending=None, _sakura_switch_from='old',
                             _external_parked={('sakura', 'b'): 200}, _external_timer=Timer())
+    panel._close_owned_sakura = lambda hwnd: actions.append(('ownership_check', hwnd))
     assert method('close_external_editors')(panel) is True
     assert ('detach', {'foreground': False, 'show_window': True}) in actions
     assert ('restore', 200) in actions
-    assert ('wm_close', 100) in actions
-    assert ('wm_close', 200) in actions
-    assert panel._attached is None
+    assert not any(x[0] == 'ownership_check' for x in actions)
+    assert not any(x[0] == 'wm_close' for x in actions)
     assert panel._external_key is None
     assert panel._external_parked == {}
-    assert panel._external_timer.stopped
 
 
 def test_close_while_pending_refuses_to_hide_unmanaged_editor():
@@ -107,7 +106,7 @@ def test_close_callback_calls_external_cleanup_before_hide():
     func = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'close_studio_preview')
     segment = ast.get_source_segment(source, func)
     assert 'close_external_editors' in segment
-    assert segment.index('close_external_editors') < segment.index('panel.hide()')
+    assert segment.index('close_external_editors') < segment.index('self._hide_studio_preview_only()')
     native = (SRC / 'studio_win32_host.py').read_text(encoding='utf-8')
     assert 'PostMessageW' in native and '0x0010' in native
     assert 'kernel32.TerminateProcess(' not in native

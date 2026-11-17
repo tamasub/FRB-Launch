@@ -45,9 +45,9 @@ def test_md_in_a_vault_routes_to_obsidian(tmp_path):
     assert find_vault_root(md, registered_roots=[md.parents[1]]) == md.parents[1]
 
 
-def test_md_outside_vault_preserves_studio_fallback(tmp_path):
+def test_md_outside_vault_routes_to_obsidian(tmp_path):
     _, _, _, outside, *_ = create_documents(tmp_path)
-    assert external_preview_target({'_browse_file': str(outside)}) is None
+    assert external_preview_target({'_browse_file': str(outside)}).app == 'obsidian'
 
 
 def test_txt_and_ini_route_only_to_real_sakura(tmp_path):
@@ -177,7 +177,7 @@ def test_ui_routes_only_doubleclick_and_keeps_json():
     assert 'external_preview_target(row)' in segment
     assert 'show_external_preview(external)' in segment
     assert segment.index('external_preview_target(row)') < segment.index('studio_preview_target(row, root)')
-    assert 'Qt.KeyboardModifier.ShiftModifier' in segment
+    assert 'embedded_editor_enabled(' in segment and 'launch_external_standalone(external)' in segment
     assert 'preview_authored_launch_url' in segment
     assert 'return self.show_studio_preview(target)' in segment
 

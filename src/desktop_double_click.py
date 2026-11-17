@@ -97,9 +97,11 @@ class DesktopDoubleClick:
     RPC_E_CHANGED_MODE = -2147417850  # COM is already initialized as MTA.
 
     def __init__(self, on_double_click, logger=None, on_outside_click=None,
-                 is_launcher_visible=None, defer_wallpaper_outside=None):
+                 is_launcher_visible=None, defer_wallpaper_outside=None,
+                 on_embedded_mouse_release=None):
         self.on_double_click = on_double_click
         self.on_outside_click = on_outside_click
+        self.on_embedded_mouse_release = on_embedded_mouse_release
         self.is_launcher_visible = is_launcher_visible
         # With desktop-to-Remote enabled, one desktop click must not hide
         # Launch before the second click can form the opening gesture.
@@ -384,6 +386,16 @@ class DesktopDoubleClick:
             if code >= 0 and message in (
                     self.WM_LBUTTONDOWN, self.WM_RBUTTONDOWN, self.WM_LBUTTONUP):
                 info = c.cast(param, c.POINTER(LowLevelMouseInfo)).contents
+                if (message == self.WM_LBUTTONUP
+                        and getattr(self, 'on_embedded_mouse_release', None) is not None):
+                    # Hook callbacks must stay fast. The Qt event loop checks
+                    # the precise native HWND and applies focus *only* if the
+                    # release happened inside the docked Obsidian editor.
+                    from PySide6.QtCore import QTimer
+                    # Let Windows finish mouse activation before the native
+                    # focus handoff; the target is re-verified at that point.
+                    QTimer.singleShot(20, lambda x=info.pt.x, y=info.pt.y:
+                                      self.on_embedded_mouse_release(x, y))
                 if message in (self.WM_LBUTTONDOWN, self.WM_RBUTTONDOWN):
                     if (self.on_outside_click is not None
                             and self.is_launcher_visible is not None
