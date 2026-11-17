@@ -58,10 +58,12 @@ def test_ctrl_g_targets_breadcrumb_saved_folders_and_down_drives_popup():
     handler = method(VIEW, 'ExpandedLauncherView', 'eventFilter')
     assert 'event.key() == Qt.Key.Key_G' in handler
     assert "self._workspace_mode == 'files'" in handler
-    assert 'self.favorite_dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)' in handler
-    assert 'self.expanded_view.favorite_dropdown.setFocus(' in dispatch
-    assert 'self.favorite_dropdown.setFocusPolicy(Qt.FocusPolicy.ClickFocus)' in VIEW
-    assert 'self.toggle_directory_favorites()' in handler
+    assert 'self.show_directory_favorites()' in handler
+    assert 'self.expanded_view.show_directory_favorites()' in dispatch
+    assert 'self.favorite_dropdown.setFocusPolicy(Qt.FocusPolicy.StrongFocus)' in VIEW
+    show = method(VIEW, 'ExpandedLauncherView', 'show_directory_favorites')
+    assert 'self.toggle_directory_favorites()' in show
+    assert 'choices.setFocus(Qt.FocusReason.ShortcutFocusReason)' in show
     assert 'move_tree_selection(self.favorite_choices,' in handler
     assert 'self.directory_favorite_clicked(row, 0)' in handler
 

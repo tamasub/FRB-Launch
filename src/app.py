@@ -3937,8 +3937,9 @@ class Launcher(QWidget):
                 return
             install_root = (Path(sys.executable).resolve().parent
                             if getattr(sys, 'frozen', False) else LAUNCH_HOME)
-            dialog = UpdateInformationDialog(LAUNCH_HOME, install_root,
-                                             APP_VERSION, self.color_theme, self)
+            dialog = UpdateInformationDialog(
+                LAUNCH_HOME, install_root, APP_VERSION, self.color_theme, self,
+                studio_root=self.expander().values.get('studio_root', ''))
             self._update_information_dialog = dialog
             dialog.checked_newer.connect(self._set_update_notice)
             dialog.show()
@@ -12165,7 +12166,7 @@ class Launcher(QWidget):
                 and self.expanded_view._workspace_mode == 'files'
                 and event.modifiers() == Qt.KeyboardModifier.ControlModifier
                 and event.key() == Qt.Key.Key_G):
-            self.expanded_view.favorite_dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            self.expanded_view.show_directory_favorites()
             event.accept()
             return True
         if event.type() == QEvent.Type.KeyPress and hasattr(self, 'expanded_view'):
@@ -12217,18 +12218,17 @@ class Launcher(QWidget):
             if (ctrl and event.modifiers() == Qt.KeyboardModifier.ControlModifier
                     and k == Qt.Key.Key_H and self.expanded_view.isVisible()
                     and self.expanded_view._workspace_mode == 'files'):
-                # Ctrl+H targets the LOCAL Files List keyword history, not
-                # global search (Ctrl+F) or breadcrumb folders (Ctrl+G).
-                self.expanded_view.focus_middle_search_history()
+                # Ctrl+H opens LOCAL Files List search history immediately.
+                # The existing Up/Down/Enter menu cursor stays in charge.
+                self.expanded_view.show_middle_search_history()
                 event.accept()
                 return True
             if (ctrl and event.modifiers() == Qt.KeyboardModifier.ControlModifier
                     and k == Qt.Key.Key_G and self.expanded_view.isVisible()
                     and self.expanded_view._workspace_mode == 'files'):
-                # The breadcrumb dropdown owns the saved *folder* history;
-                # global keyword history is a separate Ctrl+F/search surface.
-                dropdown = self.expanded_view.favorite_dropdown
-                dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                # Ctrl+G opens the saved breadcrumb *folder* history. The
+                # existing tree owns Up/Down/Enter and Escape afterwards.
+                self.expanded_view.show_directory_favorites()
                 event.accept()
                 return True
             if ctrl and k in (Qt.Key.Key_C, Qt.Key.Key_X, Qt.Key.Key_V):

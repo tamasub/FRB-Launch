@@ -4,6 +4,7 @@ import os
 import sys
 import time
 from uuid import uuid4
+from app_version import APP_REPOSITORY_URL
 from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -12,6 +13,7 @@ from frb_update.contracts import UpdateError, read_sources, version_tuple
 from frb_update.bootstrap import check_feeds, ensure_updater, prepare_request, start_updater
 from frb_update.updater_core import pending_recovery
 from frb_update.progress_gate import activate
+from studio_version import read_studio_version
 
 class UpdateWorker(QThread):
     succeeded = Signal(object)
@@ -43,13 +45,13 @@ class UpdateWorker(QThread):
 
 class UpdateInformationDialog(QDialog):
     checked_newer = Signal(bool)
-    def __init__(self,launch_home:Path,install_root:Path,launch_version:str,theme:str,parent=None):
+    def __init__(self,launch_home:Path,install_root:Path,launch_version:str,theme:str,parent=None,*,studio_root=None):
         super().__init__(parent)
         self.setWindowTitle('FRB Launch — バージョン情報')
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
         self.setModal(False)
         self.setMinimumWidth(380)
-        self.resize(435,290)
+        self.resize(435,320)
         self.install_root=Path(install_root).resolve()
         self.launch_home=Path(launch_home).resolve()
         self.sources_path=self.launch_home/'defs'/'update'/'update_sources.json'
@@ -80,7 +82,13 @@ class UpdateInformationDialog(QDialog):
         lay.addWidget(heading)
         self.installed=QLabel('統合版: '+(self.current['version'] if self.current else '未登録（開発版）'))
         self.launch_component=QLabel('Launch: '+launch_version)
-        self.studio_component=QLabel('Studio: '+str((self.current or {}).get('components',{}).get('studio','未登録')))
+        studio_version = read_studio_version(self.launch_home, self.install_root, studio_root)
+        if studio_version:
+            studio_label = studio_version
+        else:
+            recorded = (self.current or {}).get('components', {}).get('studio')
+            studio_label = str(recorded) + '（配布記録）' if recorded else '未登録'
+        self.studio_component=QLabel('Studio: '+studio_label)
         for widget in (self.installed,self.launch_component,self.studio_component):
             widget.setObjectName('updateVersionValue')
             lay.addWidget(widget)
@@ -111,6 +119,15 @@ class UpdateInformationDialog(QDialog):
                                              +str(status.get('message','')))
             except (OSError,ValueError):pass
         lay.addStretch(1)
+        # The Settings version screen includes the same GitHub URL as About.
+        # Keep this alongside the installed Studio version, not in its place.
+        self.repository_link=QLabel(
+            f'GitHub: <a href="{APP_REPOSITORY_URL}">{APP_REPOSITORY_URL}</a>')
+        self.repository_link.setObjectName('updateRepositoryLink')
+        self.repository_link.setTextFormat(Qt.TextFormat.RichText)
+        self.repository_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        self.repository_link.setOpenExternalLinks(True)
+        lay.addWidget(self.repository_link)
         buttons=QHBoxLayout();buttons.setSpacing(6)
         self.check=QPushButton('最新版を確認');self.apply=QPushButton('更新を開始');self.close_btn=QPushButton('閉じる')
         self.apply.setEnabled(False)

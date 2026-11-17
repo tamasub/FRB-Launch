@@ -98,7 +98,7 @@ def test_ctrl_h_focus_targets_local_search_without_changing_other_histories():
     launcher = (SRC / 'app.py').read_text(encoding='utf-8')
     assert 'event.key() == Qt.Key.Key_H' in expanded
     assert 'k == Qt.Key.Key_H' in launcher
-    assert 'self.expanded_view.focus_middle_search_history()' in launcher
+    assert 'self.expanded_view.show_middle_search_history()' in launcher
     assert "self._workspace_mode == 'files'" in expanded
     assert 'self.middle_search_history_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)' in expanded
     assert 'self.middle_search_history_menu.installEventFilter(self)' in expanded

@@ -1547,7 +1547,7 @@ class ExpandedLauncherView(QWidget):
         self.favorite_dropdown.setText('')
         self.favorite_dropdown.setIcon(combo_chevron_icon(self.launcher.color_theme))
         self.favorite_dropdown.setToolTip('作業フォルダーのお気に入り一覧')
-        # Both Ctrl+G and the Files Tab ring must land here by keyboard.
+        # The Tab ring can focus this button; Ctrl+G opens its popup directly.
         self.favorite_dropdown.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.favorite_dropdown.setCursor(Qt.CursorShape.PointingHandCursor)
         self.favorite_dropdown.installEventFilter(self)
@@ -1645,7 +1645,7 @@ class ExpandedLauncherView(QWidget):
         self.middle_search_history_button.setObjectName('expandedMiddleSearchHistoryButton')
         self.middle_search_history_button.setFixedSize(30, 29)
         self.middle_search_history_button.setIconSize(QSize(22, 22))
-        # Programmatic Ctrl+H focus and subsequent arrow-key navigation.
+        # Ctrl+H opens this existing non-grabbing menu directly.
         self.middle_search_history_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.middle_search_history_button.installEventFilter(self)
         self.middle_search_history_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2798,7 +2798,7 @@ class ExpandedLauncherView(QWidget):
         menu.hide()
 
     def focus_middle_search_history(self):
-        """Ctrl+H jumps to Files List history; Down opens existing QMenu."""
+        """Focus the Files List keyword-history button (Tab/legacy behavior)."""
         if not self.isVisible() or self._workspace_mode != 'files':
             return False
         button = getattr(self, 'middle_search_history_button', None)
@@ -2807,6 +2807,45 @@ class ExpandedLauncherView(QWidget):
             return False
         button.setFocus(Qt.FocusReason.ShortcutFocusReason)
         return True
+
+    def show_middle_search_history(self):
+        """Ctrl+H: open Files List search history and keep arrow selection.
+
+        Do not toggle an already-open popup: pressing Ctrl+H again must not
+        dismiss it or reset the currently highlighted saved keyword.
+        """
+        if not self.focus_middle_search_history():
+            return False
+        menu = self.middle_search_history_menu
+        if not menu.isVisible():
+            if self.favorite_popup.isVisible():
+                self.hide_favorite_popup()
+            self.toggle_middle_search_history_menu()
+            if menu.isVisible():
+                # Header commands (register/remove) are not selectable by the
+                # keyword arrow-key cursor. First Down selects a saved word.
+                menu.setActiveAction(None)
+        return menu.isVisible()
+
+    def show_directory_favorites(self):
+        """Ctrl+G: open breadcrumb folder history with the tree key-ready."""
+        if not self.isVisible() or self._workspace_mode != 'files':
+            return False
+        dropdown = getattr(self, 'favorite_dropdown', None)
+        popup = getattr(self, 'favorite_popup', None)
+        choices = getattr(self, 'favorite_choices', None)
+        if dropdown is None or popup is None or choices is None:
+            return False
+        if not popup.isVisible():
+            menu = getattr(self, 'middle_search_history_menu', None)
+            if menu is not None and menu.isVisible():
+                menu.hide()
+            dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            self.toggle_directory_favorites()
+        if popup.isVisible():
+            # Reuse the pre-existing Up/Down/Enter/Escape popup-tree handler.
+            choices.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        return popup.isVisible()
 
     def handle_middle_search_history_key(self, obj, event):
         """Keyboard adapter for the existing non-grabbing Files List menu.
@@ -4586,16 +4625,38 @@ class ExpandedLauncherView(QWidget):
         event.accept()
         return True
 
+    def clear_middle_search_on_escape(self, obj, event):
+        """Esc in the focused Files List search field acts like its clear (×).
+
+        QLineEdit.clear() goes through the existing textChanged ->
+        apply_middle_filter path. Do not intercept Esc in other controls,
+        in Browser mode, or when this field is already empty.
+        """
+        editor = getattr(self, 'middle_search', None)
+        if (editor is None or obj is not editor
+                or event.type() != QEvent.Type.KeyPress
+                or event.key() != Qt.Key.Key_Escape
+                or event.modifiers() != Qt.KeyboardModifier.NoModifier
+                or not self.isVisible() or self._workspace_mode != 'files'
+                or not editor.hasFocus() or not editor.text()):
+            return False
+        editor.clear()  # Same operation as the QLineEdit clear (×) button.
+        event.accept()
+        return True
+
     def eventFilter(self, obj, event):
         if self.keyboard_files_shortcuts(obj, event):
+            return True
+        if self.clear_middle_search_on_escape(obj, event):
             return True
         if (event.type() == QEvent.Type.KeyPress and self.isVisible()
                 and self._workspace_mode == 'files'
                 and event.modifiers() == Qt.KeyboardModifier.ControlModifier
                 and event.key() == Qt.Key.Key_H
                 and isinstance(obj, QWidget)
-                and obj.window() in (self.launcher, getattr(self.launcher, 'remote_window', None))):
-            self.focus_middle_search_history()
+                and (obj.window() in (self.launcher, getattr(self.launcher, 'remote_window', None))
+                     or self._files_keyboard_focus_area(obj) is not None)):
+            self.show_middle_search_history()
             event.accept()
             return True
         # A global event can arrive between creating the history button and
@@ -4609,16 +4670,17 @@ class ExpandedLauncherView(QWidget):
                 and event.modifiers() == Qt.KeyboardModifier.ControlModifier
                 and event.key() == Qt.Key.Key_G
                 and isinstance(obj, QWidget)
-                and obj.window() in (self.launcher, getattr(self.launcher, 'remote_window', None))):
-            self.favorite_dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                and (obj.window() in (self.launcher, getattr(self.launcher, 'remote_window', None))
+                     or self._files_keyboard_focus_area(obj) is not None)):
+            self.show_directory_favorites()
             event.accept()
             return True
         if (obj is getattr(self, 'favorite_dropdown', None)
                 and event.type() == QEvent.Type.KeyPress
                 and event.modifiers() == Qt.KeyboardModifier.NoModifier):
             if event.key() == Qt.Key.Key_Down:
-                # Ctrl+G puts focus on the breadcrumb history button. First
-                # Down opens; subsequent Downs belong to the popup tree.
+                # Tab focuses the breadcrumb button; Down opens its history.
+                # Ctrl+G now opens it directly and focuses the popup tree.
                 if not self.favorite_popup.isVisible():
                     self.toggle_directory_favorites()
                 else:
