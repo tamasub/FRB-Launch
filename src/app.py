@@ -5688,7 +5688,8 @@ class Launcher(QWidget):
                 else:
                     view.choose_middle(item, 0)
             elif double:
-                view.activate_row(pane, item)
+                if not view.preview_bookmark_from_list(row):
+                    view.activate_row(pane, item)
         elif pane is view.right:
             # Browser selection and activation are separate. A wheel turn
             # only selects; an explicit Remote click opens the chosen URL.
@@ -6180,6 +6181,49 @@ class Launcher(QWidget):
         if view._workspace_mode != 'files':
             view.show_files_view()
         return bool(view.show_virtual_launch_directory(node))
+
+    def preview_virtual_bookmark(self, row):
+        """Double-click-only Files List preview; revalidate catalog identity."""
+        if (not isinstance(row, dict) or not row.get('_browser_bookmark')
+                or self.webview_settings.get('mode') != 'embedded'):
+            return False
+        view = self.expanded_view
+        if not view.isVisible() or view._workspace_mode != 'files':
+            return False
+        authoritative = virtual_bookmark_execution_row(
+            getattr(self, 'authored_items', ()),
+            (getattr(self, 'data', None) or {}).get('items', ()),
+            str(row.get('page_id') or ''), str(row.get('item_id') or ''))
+        url = bookmark_web_url(authoritative)
+        return bool(url and view.show_browser_preview(url))
+
+    def preview_authored_launch_url(self, row):
+        """Preview a registered single-Open HTTP(S) URL, never its actions.
+
+        Files List display data is not authoritative. Resolve the current
+        enabled Studio-authored item by (page_id, item_id), then use the same
+        URL validator as imported bookmarks. Enter still uses the ordinary
+        executor; this method is called only for a double-click preview.
+        """
+        if (not isinstance(row, dict) or row.get('_browser_bookmark')
+                or row.get('_installed_app')
+                or self.webview_settings.get('mode') != 'embedded'):
+            return False
+        view = self.expanded_view
+        if not view.isVisible() or view._workspace_mode != 'files':
+            return False
+        page_id, item_id = str(row.get('page_id') or ''), str(row.get('item_id') or '')
+        authoritative = virtual_execution_row(
+            getattr(self, 'authored_items', ()),
+            (getattr(self, 'data', None) or {}).get('items', ()),
+            page_id, item_id)
+        # Exclude synthesized runtime items; a URL must be authored in Launch.
+        if (not isinstance(authoritative, dict)
+                or authoritative.get('_browser_bookmark')
+                or authoritative.get('_installed_app')):
+            return False
+        url = bookmark_web_url(authoritative)  # Single Open + HTTP(S) only.
+        return bool(url and view.show_browser_preview(url))
 
     def activate_virtual_launch_item(self, row):
         """Run an authored Launch JSON leaf via the ordinary Launch executor.

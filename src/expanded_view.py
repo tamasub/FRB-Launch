@@ -627,6 +627,27 @@ class _SeparatedFileTree(ExternalFileDragTree):
         # blank click intentionally leaves the middle pane with no selection.
         self.deliberate_blank_selection = False
         self.blank_clicked = None
+        self._preview_double_release_pending = False
+
+    def mouseDoubleClickEvent(self, event):
+        # Browser bookmarks and authored HTTP(S) URL leaves preview in Files.
+        # Consume the native double click BEFORE Qt emits activated:
+        # Enter and non-URL double clicks retain their existing routes.
+        callback = getattr(self, 'bookmark_preview_double_click', None)
+        if event.button() == Qt.MouseButton.LeftButton and callable(callback):
+            item = self.itemAt(event.position().toPoint())
+            if item is not None and callback(item.data(0, Qt.ItemDataRole.UserRole)):
+                # QTreeWidget can emit activated on the release following a
+                # double-click. Consume that release as well, so the URL is
+                # NOT opened a second time in the full Browser workspace.
+                self._preview_double_release_pending = True
+                QTimer.singleShot(900, self._clear_preview_double_release)
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+    def _clear_preview_double_release(self):
+        self._preview_double_release_pending = False
 
     def _launch_drop_target(self, event):
         callback = getattr(self, 'launch_registration_resolver', None)
@@ -756,6 +777,11 @@ class _SeparatedFileTree(ExternalFileDragTree):
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if (self._preview_double_release_pending
+                and event.button() == Qt.MouseButton.LeftButton):
+            self._clear_preview_double_release()
+            event.accept()
+            return
         if (self.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
                 and event.button() == Qt.MouseButton.RightButton):
             event.accept()
@@ -1849,6 +1875,12 @@ class ExpandedLauncherView(QWidget):
         self.remote_15_lane.hide()
         self.files_splitter.addWidget(self.files_first_host)
         self.files_splitter.addWidget(self.middle)
+        # An optional third column is inserted into this very splitter only
+        # after a bookmark URL is double-clicked. The initial Files layout
+        # and all persisted two-column width settings remain unchanged.
+        self.browser_preview = None
+        self._browser_preview_base_sizes = None
+        self.middle.tree.bookmark_preview_double_click = self.preview_bookmark_from_list
         # Files Exp replaces only the old first-column CONTENT. The splitter,
         # old authored root tree and all of its data/selection logic survive.
         from remote_files_explorer import RemoteFilesExplorer
@@ -2066,6 +2098,11 @@ class ExpandedLauncherView(QWidget):
             self.toolbar_scroller.setFixedHeight(required)
 
     def save_splitter_sizes(self, *_):
+        # Third-column preview width is transient. Never persist a 3-item
+        # splitter into existing 2-column settings for Files / Remote 1.5.
+        preview = getattr(self, 'browser_preview', None)
+        if preview is not None and not preview.isHidden():
+            return
         # Experimental 1.5-column widths must not poison older 2-column data.
         if getattr(self.launcher, 'remote_15_mode', False):
             widths = self.files_splitter.sizes()
@@ -2229,6 +2266,8 @@ class ExpandedLauncherView(QWidget):
             pad.set_circle_theme(fill, border, ink)
         if self.web_view is not None:
             self.web_view.apply_theme(theme)
+        if self.browser_preview is not None:
+            self.browser_preview.apply_theme(theme)
         colors = theme_palette(theme)
         light = theme_family(theme) == 'light'
         bg, border, hdr, text, hover, active, stripe = (
@@ -6383,6 +6422,76 @@ class ExpandedLauncherView(QWidget):
         else:
             self.web_view.show_url(url)
         return True
+
+    def preview_bookmark_from_list(self, row):
+        """Double-click preview of Browser bookmarks and authored URL leaves.
+
+        Only virtual Files List items participate. The Launcher resolves the
+        latest item by stable ID before deciding whether it is a safe URL;
+        a stale display row is never used as the navigation authority.
+        """
+        if self._workspace_mode != 'files' or not isinstance(row, dict):
+            return False
+        virtual = row.get('_launch_virtual_node')
+        if not isinstance(virtual, dict) or virtual.get('kind') != 'file':
+            return False
+        catalog = virtual.get('runtime_catalog')
+        if catalog == 'browser_bookmarks':
+            return bool(self.launcher.preview_virtual_bookmark(virtual.get('row')))
+        if catalog:
+            return False  # Installed apps and future runtime catalogs are not URLs.
+        return bool(self.launcher.preview_authored_launch_url(virtual.get('row')))
+
+    def show_browser_preview(self, url):
+        """Preview a URL alongside Files List, without switching workspace."""
+        from webview_settings import valid_http_url
+        if (self._workspace_mode != 'files' or
+                self.launcher.webview_settings.get('mode') != 'embedded' or
+                not valid_http_url(url)):
+            return False
+        if self.browser_preview is None:
+            try:
+                from browser_preview_panel import BrowserPreviewPanel
+                existing = getattr(self, 'web_view', None)
+                profile = existing.profile if existing is not None else None
+                self.browser_preview = BrowserPreviewPanel(
+                    self.files_splitter, settings=self.launcher.webview_settings,
+                    profile=profile)
+                self.browser_preview.close_requested.connect(self.close_browser_preview)
+                self.files_splitter.addWidget(self.browser_preview)
+                self.browser_preview.hide()
+                self.browser_preview.apply_theme(self.launcher.color_theme)
+            except (ImportError, RuntimeError) as exc:
+                self.launcher.error('Browser Previewを開けません: ' + str(exc))
+                return False
+        keep_list_focus = self.middle.tree.hasFocus()
+        was_open = not self.browser_preview.isHidden()
+        if not was_open:
+            sizes = self.files_splitter.sizes()[:2]
+            self._browser_preview_base_sizes = sizes[:]
+            self.browser_preview.show()
+            total = sum(sizes)
+            preview_width = max(270, min(490, int(total * 0.40)))
+            first = sizes[0] if sizes else 280
+            self.files_splitter.setSizes([first, max(230, total - first - preview_width),
+                                          preview_width])
+        self.browser_preview.navigate(url)
+        # The new Chromium surface must not steal Files List arrow navigation.
+        if keep_list_focus:
+            self.middle.tree.setFocus(Qt.FocusReason.OtherFocusReason)
+        return True
+
+    def close_browser_preview(self):
+        """Close only the optional third pane, restoring the prior two widths."""
+        panel = self.browser_preview
+        if panel is None or panel.isHidden():
+            return
+        panel.stop_preview()
+        panel.hide()
+        sizes = self._browser_preview_base_sizes
+        self._browser_preview_base_sizes = None
+        if sizes and len(sizes) == 2:
+            self.files_splitter.setSizes(sizes)
 
     def show_files_view(self):
         """Return to Files without destroying or navigating Browser's tabs."""
