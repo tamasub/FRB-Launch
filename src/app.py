@@ -9243,6 +9243,17 @@ class Launcher(QWidget):
             windows.set_window_topmost(int(self.winId()), True)
 
     def app_state(self, state):
+        # Opening an Obsidian pop-out or Sakura document temporarily gives
+        # focus to a separate process BEFORE Win32 SetParent completes.
+        # Keep Launch visible during this bounded handoff only.
+        view = getattr(self, 'expanded_view', None)
+        panel = getattr(view, 'studio_preview', None)
+        if (panel is not None and
+                (getattr(panel, 'external_embedding_pending', lambda: False)()
+                 or getattr(panel, 'external_embedded_active', lambda: False)())):
+            # Qt can report ApplicationInactive when a reparented Electron
+            # child gains focus. Do not dismiss the visible Launch workspace.
+            return
         if getattr(self, '_cloud_link_handoff', False):
             # Provider dialog is a separate process. It should own the front
             # while this visible Launcher stays alive behind it. Resume the
@@ -12433,6 +12444,15 @@ class Launcher(QWidget):
             wheel = getattr(self, '_remote_context_wheel', None)
             if wheel is not None and getattr(wheel, 'root', None) is self.theme_menu:
                 wheel.stop()
+            # Expanded Files mode gets an in-place editor column. Keep the
+            # existing standalone Qt dialog as fallback for Compact modes.
+            view = getattr(self, 'expanded_view', None)
+            if view is not None and view.isVisible():
+                view.show_files_view()
+                if view.show_option_settings_preview(
+                        LAUNCH_HOME, STATE,
+                        self.expander().values.get('studio_root', '')):
+                    return
             existing = getattr(self, '_option_settings_window', None)
             if existing is not None and existing.isVisible():
                 existing.raise_()
@@ -12502,6 +12522,14 @@ class Launcher(QWidget):
             args.append('--launch-item-id=' + str(item_id))
         else:
             return
+        # Launch's authored menu configuration is the *same* NativeShell;
+        # pass its existing flags into Files' third-column host unchanged.
+        view = getattr(self, 'expanded_view', None)
+        if view is not None and view.isVisible():
+            view.show_files_view()
+            target = (str(CONFIG), str(exe), str(studio_root), tuple(args[1:]))
+            if view.show_studio_preview(target):
+                return
         self.execute({
             'item_id': '__launch_context_studio',
             'title': 'Studioくんでメニュー設定を編集',
@@ -14017,6 +14045,11 @@ class Launcher(QWidget):
 
     def closeEvent(self,event):event.ignore();self.dismiss()
     def quit(self):
+        # A cross-process WinForms editor must be undocked before Qt destroys
+        # the host HWND. Never terminate Studio with potentially unsaved data.
+        view = getattr(self, 'expanded_view', None)
+        if view is not None and hasattr(view, 'release_studio_preview'):
+            view.release_studio_preview()
         self._file_index_cancel.set()
         if self.apps_proc:
             self.apps_proc.kill();self.apps_proc.wait();self.apps_output.unlink(missing_ok=True)
@@ -14177,6 +14210,16 @@ def main():
             return False
 
     def dismiss_from_outside_click():
+        # A new external editor window is in transit to the third-column
+        # native host. A temporary OS focus switch isn't an outside action.
+        preview = getattr(getattr(window, 'expanded_view', None),
+                          'studio_preview', None)
+        if (preview is not None and
+                (getattr(preview, 'external_embedding_pending', lambda: False)()
+                 or getattr(preview, 'external_embedded_active', lambda: False)())):
+            # Docked Electron is a child of the Launch workspace, not a
+            # desktop outside click. Explicit Preview × still closes it.
+            return
         # This non-modal notification is part of FRB Launch's own UI, even
         # though it is displayed in a separate Tool window.
         notice = getattr(window, '_pointer_warp_notice', None)

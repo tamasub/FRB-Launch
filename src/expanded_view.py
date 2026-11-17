@@ -1880,6 +1880,8 @@ class ExpandedLauncherView(QWidget):
         # and all persisted two-column width settings remain unchanged.
         self.browser_preview = None
         self._browser_preview_base_sizes = None
+        self.studio_preview = None
+        self._studio_preview_base_sizes = None
         self.middle.tree.bookmark_preview_double_click = self.preview_bookmark_from_list
         # Files Exp replaces only the old first-column CONTENT. The splitter,
         # old authored root tree and all of its data/selection logic survive.
@@ -2101,11 +2103,14 @@ class ExpandedLauncherView(QWidget):
         # Third-column preview width is transient. Never persist a 3-item
         # splitter into existing 2-column settings for Files / Remote 1.5.
         preview = getattr(self, 'browser_preview', None)
+        studio = getattr(self, 'studio_preview', None)
         if preview is not None and not preview.isHidden():
+            return
+        if studio is not None and not studio.isHidden():
             return
         # Experimental 1.5-column widths must not poison older 2-column data.
         if getattr(self.launcher, 'remote_15_mode', False):
-            widths = self.files_splitter.sizes()
+            widths = self.files_splitter.sizes()[:2]
             if (self._workspace_mode == 'files' and len(widths) == 2
                     and widths[0] >= 196 and widths[1] >= 100):
                 self.launcher.settings.setValue(
@@ -2114,7 +2119,7 @@ class ExpandedLauncherView(QWidget):
             return
         # Embedded and original Files layouts have independent user widths.
         if getattr(self.launcher, 'files_exp_embedded_mode', False):
-            widths = self.files_splitter.sizes()
+            widths = self.files_splitter.sizes()[:2]
             if (self._workspace_mode == 'files' and len(widths) == 2
                     and all(value >= 100 for value in widths)):
                 self.launcher.settings.setValue(
@@ -2131,7 +2136,7 @@ class ExpandedLauncherView(QWidget):
                 self._browser_splitter_sizes = widths
         # When hidden, the Bookmarks splitter segment has width zero. Never
         # persist this temporary Files layout as Browser's preferred widths.
-        file_widths = self.files_splitter.sizes()
+        file_widths = self.files_splitter.sizes()[:2]
         self.launcher.settings.setValue('workspace_files_splitter_sizes',
                                         '|'.join(map(str, file_widths)))
         if (self._workspace_mode == 'files' or not self._browser_bookmarks_visible
@@ -2268,6 +2273,8 @@ class ExpandedLauncherView(QWidget):
             self.web_view.apply_theme(theme)
         if self.browser_preview is not None:
             self.browser_preview.apply_theme(theme)
+        if self.studio_preview is not None:
+            self.studio_preview.apply_theme(theme)
         colors = theme_palette(theme)
         light = theme_family(theme) == 'light'
         bg, border, hdr, text, hover, active, stripe = (
@@ -6424,15 +6431,34 @@ class ExpandedLauncherView(QWidget):
         return True
 
     def preview_bookmark_from_list(self, row):
-        """Double-click preview of Browser bookmarks and authored URL leaves.
+        """Physical Studio documents or virtual bookmark URL leaves.
 
-        Only virtual Files List items participate. The Launcher resolves the
-        latest item by stable ID before deciding whether it is a safe URL;
-        a stale display row is never used as the navigation authority.
+        Only a Files List *double-click* enters this route. Virtual Launch
+        URLs are resolved by the Launcher from authoritative current data;
+        physical paths are checked for the same Studio-managed eligibility
+        already used by the standalone Studio launcher.
         """
         if self._workspace_mode != 'files' or not isinstance(row, dict):
             return False
+        # Only genuine Files List double clicks are rerouted. A shifted .md
+        # double click retains the previous Markdown Studio path when needed.
         virtual = row.get('_launch_virtual_node')
+        if virtual is None and any(row.get(field) for field in
+                                   ('_browse_file', '_indexed_file', '_file')):
+            from external_preview_route import external_preview_target
+            use_existing_studio = bool(QApplication.keyboardModifiers() &
+                                       Qt.KeyboardModifier.ShiftModifier)
+            external = None if use_existing_studio else external_preview_target(row)
+            if external is not None:
+                if self.show_external_preview(external):
+                    return True
+                if external.app != 'obsidian':
+                    return False  # Non-Studio fallback remains unchanged.
+            from studio_preview_route import studio_preview_target
+            root = self.launcher.expander().values.get('studio_root', '')
+            target = studio_preview_target(row, root)
+            if target is not None:
+                return self.show_studio_preview(target)
         if not isinstance(virtual, dict) or virtual.get('kind') != 'file':
             return False
         catalog = virtual.get('runtime_catalog')
@@ -6449,6 +6475,9 @@ class ExpandedLauncherView(QWidget):
                 self.launcher.webview_settings.get('mode') != 'embedded' or
                 not valid_http_url(url)):
             return False
+        studio = getattr(self, 'studio_preview', None)
+        if studio is not None and not studio.isHidden():
+            self.close_studio_preview()
         if self.browser_preview is None:
             try:
                 from browser_preview_panel import BrowserPreviewPanel
@@ -6472,9 +6501,15 @@ class ExpandedLauncherView(QWidget):
             self.browser_preview.show()
             total = sum(sizes)
             preview_width = max(270, min(490, int(total * 0.40)))
-            first = sizes[0] if sizes else 280
-            self.files_splitter.setSizes([first, max(230, total - first - preview_width),
-                                          preview_width])
+            from preview_splitter_layout import preview_sizes
+            count = (self.files_splitter.count() if hasattr(self.files_splitter, 'count')
+                     else 2 + int(self.browser_preview is not None)
+                            + int(getattr(self, 'studio_preview', None) is not None))
+            index = (self.files_splitter.indexOf(self.browser_preview)
+                     if hasattr(self.files_splitter, 'indexOf') else count - 1)
+            widths = preview_sizes(
+                sizes, count, index, preview_width, min_list_width=230)
+            self.files_splitter.setSizes(widths)
         self.browser_preview.navigate(url)
         # The new Chromium surface must not steal Files List arrow navigation.
         if keep_list_focus:
@@ -6491,7 +6526,105 @@ class ExpandedLauncherView(QWidget):
         sizes = self._browser_preview_base_sizes
         self._browser_preview_base_sizes = None
         if sizes and len(sizes) == 2:
-            self.files_splitter.setSizes(sizes)
+            number = (self.files_splitter.count() if hasattr(self.files_splitter, 'count')
+                      else len(sizes))
+            if number == 2:
+                self.files_splitter.setSizes(sizes)
+            else:
+                self.files_splitter.setSizes(sizes + [0] * (number - 2))
+
+    def _ensure_studio_preview(self):
+        """Create/show the third-column host shared by Studio and Options."""
+        if self._workspace_mode != 'files' or os.name != 'nt':
+            return False
+        if self.browser_preview is not None and not self.browser_preview.isHidden():
+            self.close_browser_preview()
+        if self.studio_preview is None:
+            from studio_preview_panel import StudioPreviewPanel
+            self.studio_preview = StudioPreviewPanel(self.files_splitter)
+            self.studio_preview.close_requested.connect(self.close_studio_preview)
+            self.files_splitter.addWidget(self.studio_preview)
+            self.studio_preview.hide()
+            self.studio_preview.apply_theme(self.launcher.color_theme)
+        if self.studio_preview.isHidden():
+            base_sizes = self.files_splitter.sizes()[:2]
+            self._studio_preview_base_sizes = base_sizes[:]
+            self.studio_preview.show()
+            total = sum(base_sizes)
+            preview_width = max(350, min(690, int(total * 0.50)))
+            from preview_splitter_layout import preview_sizes
+            count = (self.files_splitter.count() if hasattr(self.files_splitter, 'count')
+                     else 2 + int(self.browser_preview is not None) + 1)
+            index = (self.files_splitter.indexOf(self.studio_preview)
+                     if hasattr(self.files_splitter, 'indexOf') else count - 1)
+            widths = preview_sizes(
+                base_sizes, count, index, preview_width, min_list_width=170)
+            self.files_splitter.setSizes(widths)
+        return True
+
+    def show_studio_preview(self, target):
+        """Dock the real C# Studio with its original WebView2 save bridge."""
+        was_open = bool(self.studio_preview and not self.studio_preview.isHidden())
+        if not self._ensure_studio_preview():
+            return False
+        keep_list_focus = self.middle.tree.hasFocus()
+        if not self.studio_preview.open_document(target):
+            if not was_open:
+                self.close_studio_preview()
+            return False
+        if keep_list_focus:
+            self.middle.tree.setFocus(Qt.FocusReason.OtherFocusReason)
+        return True
+
+    def show_external_preview(self, target):
+        """Dock a native editor without restoring focus to Files List.
+
+        Unlike Studio documents, external HWNDs must receive normal Windows
+        keyboard focus when clicked. Forcing List.setFocus() after a
+        double-click made typing go to List and could trigger auto-dismiss.
+        """
+        was_open = bool(self.studio_preview and not self.studio_preview.isHidden())
+        if not self._ensure_studio_preview():
+            return False
+        if not self.studio_preview.open_external(target):
+            if not was_open:
+                self.close_studio_preview()
+            return False
+        return True
+
+    def show_option_settings_preview(self, launch_home, state_dir, studio_root):
+        """Use the real Options Editor/Node save server in the third column."""
+        was_open = bool(self.studio_preview and not self.studio_preview.isHidden())
+        if not self._ensure_studio_preview():
+            return False
+        try:
+            self.studio_preview.open_options(launch_home, state_dir, studio_root)
+        except Exception:
+            if not was_open:
+                self.close_studio_preview()
+            raise
+        return True
+
+    def close_studio_preview(self):
+        """Hide only the column. Do NOT undock, quit, or discard the editor."""
+        panel = self.studio_preview
+        if panel is None or panel.isHidden():
+            return
+        # Third-party editors: request normal close, never park invisibly.
+        # For unsaved documents WM_CLOSE prompts in the editor on the desktop.
+        # Studio NativeShell is the exception: preserve its in-place session.
+        if not getattr(panel, 'close_external_editors', lambda: True)():
+            return
+        panel.hide()
+        sizes = self._studio_preview_base_sizes
+        self._studio_preview_base_sizes = None
+        if sizes and len(sizes) == 2:
+            self.files_splitter.setSizes(sizes + [0] * (self.files_splitter.count() - 2))
+
+    def release_studio_preview(self):
+        """Restore unsaved Studio sessions before Launch itself terminates."""
+        if self.studio_preview is not None:
+            self.studio_preview.undock()
 
     def show_files_view(self):
         """Return to Files without destroying or navigating Browser's tabs."""

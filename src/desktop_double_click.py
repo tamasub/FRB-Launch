@@ -309,15 +309,38 @@ class DesktopDoubleClick:
         return bool(target_pid and target_pid != own_pid)
 
     def _outside_own_process(self, point):
-        """Win32 hit-test instead of Qt focus: Tool/always-on-top may stay active."""
+        """Treat native child HWNDs *inside* Launch as inside, regardless of PID.
+
+        Studio's WinForms WebView2 remains a separate C# process even while
+        its real window is docked inside the Qt Files pane. A process-only
+        check would dismiss Launch on the FIRST click into the Studio editor.
+        Win32 parentage is authoritative; unrelated external applications
+        continue to be treated as outside-click targets.
+        """
         hwnd = self.user.WindowFromPoint(point)
         if not hwnd:
             return False
         pid = w.DWORD()
         if not self.user.GetWindowThreadProcessId(hwnd, c.byref(pid)):
             return False
-        # All our top-level menus and controls share this process id.
-        return self._external_pid(pid.value, self.process_id)
+        if not self._external_pid(pid.value, self.process_id):
+            return False
+        # Only a real ancestor HWND inside this process authorizes the cross-
+        # process child. Do not trust a foreground title or a PID by itself.
+        get_parent = getattr(self.user, 'GetParent', None)
+        if not callable(get_parent):
+            return True  # Unknown parentage: preserve outside-click behavior.
+        current = hwnd
+        for _ in range(24):
+            parent = get_parent(current)
+            if not parent or parent == current:
+                break
+            ancestor_pid = w.DWORD()
+            if self.user.GetWindowThreadProcessId(parent, c.byref(ancestor_pid)):
+                if ancestor_pid.value == self.process_id:
+                    return False
+            current = parent
+        return True
 
     def _cancel_deferred_outside(self):
         self._deferred_outside_serial = getattr(self, '_deferred_outside_serial', 0) + 1
