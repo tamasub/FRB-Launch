@@ -96,8 +96,12 @@ STUDIO_MAIN_CAPTIONS = frozenset((
 ))
 
 
-def find_studio_main_window(pid):
-    """Match either ready NativeShell caption, never the separate splash."""
+def find_studio_main_window(pid, *, launch_preview=False):
+    """Match the exact NativeShell HWND for a known PID, never its splash.
+
+    Only Launch-owned previews may be detected before reveal.  Standalone
+    Studio keeps the original taskbar/opacity readiness guards.
+    """
     u = _user32()
     result = []
     cb_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -116,9 +120,9 @@ def find_studio_main_window(pid):
             # It also changes ShowInTaskbar at RevealMainWindow (which may
             # recreate the HWND). Attach ONLY after the WebView bridge is ready.
             exstyle = int(u.GetWindowLongPtrW(hwnd, GWL_EXSTYLE))
-            if not (exstyle & WS_EX_APPWINDOW):
+            if not launch_preview and not (exstyle & WS_EX_APPWINDOW):
                 return True
-            if exstyle & WS_EX_LAYERED:
+            if not launch_preview and exstyle & WS_EX_LAYERED:
                 key = wintypes.DWORD()
                 alpha = ctypes.c_ubyte()
                 flags = wintypes.DWORD()

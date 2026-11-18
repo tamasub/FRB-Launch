@@ -13,6 +13,8 @@ def normalize_focus_state(value):
     if not isinstance(value, dict):
         return {'area': 'search'}
     area = value.get('area')
+    if area == 'files_exp':
+        area = 'files'  # Persist the real embedded Exp controller, not search.
     if area not in AREAS:
         area = 'search'
     result = {'area': area}

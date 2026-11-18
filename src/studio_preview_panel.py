@@ -46,6 +46,8 @@ class StudioPreviewPanel(QFrame):
     popout_requested = Signal()
     sakura_close_completed = Signal()
     _launch_switch_completed = Signal(object, str)
+    _studio_popout_ack = Signal(str)
+    _studio_dock_completed = Signal(int, str)
     _launch_exit_completed = Signal(str)
 
     def __init__(self, parent=None):
@@ -61,6 +63,10 @@ class StudioPreviewPanel(QFrame):
         self._launch_pipe_token = None
         self._launch_switch_pending = None
         self._launch_switch_completed.connect(self._on_launch_switch_completed)
+        self._studio_popout_ack.connect(self._finish_studio_popout)
+        self._studio_dock_completed.connect(self._on_studio_dock_completed)
+        self._studio_dock_pending = False
+        self._studio_popout_pending = False
         # Suspended Studio HWNDs are not destroyed. Keep their process and HWND
         # for a later reselect of the same file (including uncommitted edits).
         self._parked = {}
@@ -89,6 +95,10 @@ class StudioPreviewPanel(QFrame):
         self._external_timer = QTimer(self)
         self._external_timer.setInterval(350)
         self._external_timer.timeout.connect(self._poll_external)
+        self._embedded_health_timer = QTimer(self)
+        self._embedded_health_timer.setInterval(950)
+        self._embedded_health_timer.timeout.connect(self._check_embedded_editor_health)
+        self._embedded_health_timer.start()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -108,8 +118,8 @@ class StudioPreviewPanel(QFrame):
         self.popout_button.setObjectName('filesEditorPopoutButton')
         self.popout_button.setFixedSize(29, 29)
         self.popout_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.popout_button.setToolTip('サクラエディタを外に出す（終了しません）')
-        self.popout_button.clicked.connect(self.pop_out_sakura)
+        self.popout_button.setToolTip('第3列のエディターを外に出す（終了しません）')
+        self.popout_button.clicked.connect(self.pop_out_selected)
         self.popout_button.hide()
         bar.addWidget(self.popout_button)
         bar.addWidget(self.close_button)
@@ -178,6 +188,56 @@ class StudioPreviewPanel(QFrame):
         threading.Thread(target=submit, name='FRBStudioLaunchSwitch', daemon=True).start()
         return True
 
+    def _notify_studio_docked(self):
+        """Reveal a Launch-only transparent NativeShell after SetParent succeeds.
+
+        The session-specific pipe is already used for document switches and
+        pop-out.  Never block the Qt thread waiting for Studio/WebView2.
+        Older Studio builds have no DOCKED command and stay visibly docked.
+        """
+        if (self._studio_dock_pending or not self._launch_pipe_token or
+                self._process is None or self._process.poll() is not None or
+                self._attached is None or not self._attached.attached):
+            return
+        pid = self._process.pid
+        token = self._launch_pipe_token
+        self._studio_dock_pending = True
+        self._sync_popout_button()
+
+        def acknowledge():
+            result = 'ERROR: Studioの収容確認に失敗しました'
+            address = r'\\.\pipe\frb_studio_launch_' + token
+            for attempt in range(60):
+                try:
+                    with open(address, 'r+b', buffering=0) as channel:
+                        channel.write(b'@FRB_LAUNCH_DOCKED@\n')
+                        reply = channel.readline()
+                        result = reply.decode('utf-8', errors='replace').strip() if reply else 'ERROR: Studioから応答がありません'
+                    break
+                except OSError as exc:
+                    result = 'ERROR: ' + str(exc)
+                    if self._process is None or self._process.poll() is not None:
+                        break
+                    if attempt != 59:
+                        time.sleep(0.15)
+            self._studio_dock_completed.emit(pid, result)
+
+        threading.Thread(target=acknowledge, name='FRBStudioDockReveal', daemon=True).start()
+
+    def _on_studio_dock_completed(self, pid, result):
+        if self._process is None or self._process.pid != pid:
+            return  # Stale response after release/restart: never reveal it.
+        self._studio_dock_pending = False
+        if self._attached is not None and self._attached.attached:
+            if result == 'OK':
+                self.status_label.hide()
+            else:
+                # Earlier Studio builds do not know the dock protocol, but
+                # their initially visible window was still docked normally.
+                self.status_label.setText('Studioの静かな収容確認に失敗しました。\n' + result)
+                self.status_label.show()
+        self._sync_popout_button()
+
     def _on_launch_switch_completed(self, target, result):
         if self._launch_switch_pending != target:
             return
@@ -229,6 +289,7 @@ class StudioPreviewPanel(QFrame):
                     from studio_win32_host import AttachedStudioWindow
                     self._attached = AttachedStudioWindow(hwnd, int(self.host.winId()))
                     self._attached.resize(self.host.width(), self.host.height())
+                    self._notify_studio_docked()
                     self.status_label.hide()
                     return self._switch_launch_document(target)
                 except (OSError, RuntimeError, ValueError):
@@ -242,6 +303,7 @@ class StudioPreviewPanel(QFrame):
 
         command, working_directory = studio_start_command(target)
         self._launch_pipe_token = uuid.uuid4().hex
+        self._studio_dock_pending = False
         command += ['--launch-preview', '--launch-preview-pipe=' + self._launch_pipe_token,
                     '--launch-preview-owner-pid=' + str(os.getpid())]
         try:
@@ -352,7 +414,12 @@ class StudioPreviewPanel(QFrame):
             if target.app == 'obsidian':
                 import os
                 from external_preview_route import obsidian_open_uri
+                # Existing Obsidian may briefly foreground itself before its
+                # new, verified HWND is ready for SetParent. Request Launch's
+                # focus back during this short handoff, not indefinitely.
                 os.startfile(obsidian_open_uri(target.path, require_registered=True))
+                for delay in (120, 400):
+                    QTimer.singleShot(delay, self._restore_launch_focus_during_handoff)
             elif target.app == 'sakura':
                 from external_preview_route import external_start_command
                 process = subprocess.Popen(external_start_command(target),
@@ -391,7 +458,21 @@ class StudioPreviewPanel(QFrame):
     def _sync_popout_button(self):
         button = getattr(self, 'popout_button', None)
         if button is not None:
-            button.setVisible(self.sakura_attached())
+            studio_session = (self._target is not None and self._process is not None
+                              and self._process.poll() is None)
+            studio_ready = (studio_session and self._attached is not None
+                            and self._attached.attached)
+            sakura_ready = self.sakura_attached()
+            # The button is part of the Studio header even during HWND attach:
+            # do not make it vanish simply because native reparenting briefly
+            # reports detached. The action remains disabled until safe.
+            button.setVisible(bool(sakura_ready or studio_session))
+            button.setEnabled(bool((studio_ready or sakura_ready)
+                                   and not self._studio_popout_pending
+                                   and not self._studio_dock_pending))
+            button.setToolTip('Studioを外に出す（編集状態を保持）' if studio_ready
+                              else 'Studioの収容が完了すると外に出せます' if studio_session
+                              else 'サクラエディタを外に出す（終了しません）')
         if getattr(self, 'close_button', None) is not None:
             self.close_button.setToolTip(
                 'サクラエディタへ通常終了を要求（未保存時はエディタ側で確認）'
@@ -402,6 +483,117 @@ class StudioPreviewPanel(QFrame):
             QMessageBox.Icon.Information, 'サクラエディタを収容中',
             'サクラエディタは第3列に収容中です。\n'
             '他のプレビューに切り替えるには、右上の「外に出す」か「×」を押してください。')
+
+    def pop_out_selected(self):
+        """Use the same Browser external-arrow icon for either native editor."""
+        if self.sakura_attached():
+            return self.pop_out_sakura()
+        return self.pop_out_studio()
+
+    def pop_out_studio(self):
+        """Release Studio's Launch-owner guard BEFORE detaching its HWND.
+
+        The private pipe command requires the matching, rebuilt Studio source.
+        An older NativeShell replies with ERROR and remains safely docked.
+        """
+        if (self._studio_popout_pending or self._launch_switch_pending is not None
+                or self._attached is None or not self._attached.attached
+                or self._process is None or self._process.poll() is not None
+                or not self._launch_pipe_token):
+            return False
+        self._studio_popout_pending = True
+        self._sync_popout_button()
+        token = self._launch_pipe_token
+
+        def request_release():
+            reply = 'ERROR: Studioへの接続に失敗しました'
+            address = r'\\.\pipe\frb_studio_launch_' + token
+            for attempt in range(24):
+                try:
+                    with open(address, 'r+b', buffering=0) as channel:
+                        channel.write(b'@FRB_LAUNCH_RELEASE@\n')
+                        response = channel.readline()
+                        reply = response.decode('utf-8', errors='replace').strip() if response else 'ERROR: 応答がありません'
+                    break
+                except OSError as exc:
+                    reply = 'ERROR: ' + str(exc)
+                    if attempt != 23:
+                        time.sleep(0.15)
+            self._studio_popout_ack.emit(reply)
+
+        threading.Thread(target=request_release, name='FRBStudioPopout', daemon=True).start()
+        return True
+
+    def _finish_studio_popout(self, reply):
+        if not self._studio_popout_pending:
+            return
+        self._studio_popout_pending = False
+        if reply != 'OK':
+            self.status_label.setText('Studioの外出しを中止しました。\n'
+                'Studio最新版のNativeShell再ビルドが必要な場合があります。\n' + reply)
+            self.status_label.show()
+            self._sync_popout_button()
+            return
+        attached = self._attached
+        try:
+            attached.detach(foreground=True, show_window=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            # Studio has already acknowledged owner release. Never kill it.
+            self.status_label.setText('Studioのウィンドウ復元に失敗しました: ' + str(exc))
+            self.status_label.show()
+            self._sync_popout_button()
+            return
+        self._attached = None
+        self._process = None  # It is NO LONGER a Launch-owned session.
+        self._target = None
+        self._launch_pipe_token = None
+        self._launch_switch_pending = None
+        self._timer.stop()
+        self._sync_popout_button()
+        self.popout_requested.emit()
+        return True
+
+    def _restore_launch_focus_during_handoff(self):
+        pending = self._external_pending
+        if (pending is None or pending[0].app != 'obsidian'
+                or self._attached is not None and self._external_key == pending[0].key):
+            return
+        owner = getattr(self, 'launcher', None)
+        if owner is None or not owner.isVisible():
+            return
+        try:
+            if not owner.isMinimized():
+                owner.raise_()
+                owner.activateWindow()
+        except RuntimeError:
+            return
+
+    def _check_embedded_editor_health(self):
+        """Hide an EMPTY Obsidian pane after its native HWND is destroyed.
+
+        Do not infer document emptiness from a caption, and never close a
+        desktop Obsidian process or an unsaved remaining tab.
+        """
+        if (self.isHidden() or self._external_pending is not None
+                or self._external_key is None or self._external_key[0] != 'obsidian'):
+            return
+        attached = self._attached
+        # An unsuccessful Obsidian handoff must not leave an empty third pane.
+        if attached is None:
+            self._external_key = None
+            self._sync_popout_button()
+            self.popout_requested.emit()
+            return
+        try:
+            alive = bool(attached.u.IsWindow(int(attached.hwnd)))
+        except (OSError, RuntimeError, ValueError):
+            alive = False
+        if alive:
+            return
+        self._attached = None
+        self._external_key = None
+        self._sync_popout_button()
+        self.popout_requested.emit()
 
     def pop_out_sakura(self):
         """The ONLY interactive detach command for a docked Sakura session.
@@ -700,6 +892,13 @@ class StudioPreviewPanel(QFrame):
                         '第3列のウィンドウはそのまま維持しています。')
                     self.status_label.show()
                     return
+                if target.app == 'obsidian':
+                    # Window has been positively identified as the NEW
+                    # editor HWND; hide it immediately before reparenting to
+                    # reduce the exposed desktop flash. Never hide existing
+                    # editor windows or any unrelated process.
+                    from studio_win32_host import _user32, SW_HIDE
+                    _user32().ShowWindow(int(hwnd), SW_HIDE)
                 self._attached = AttachedStudioWindow(hwnd, int(self.host.winId()))
                 self._attached.resize(self.host.width(), self.host.height())
                 if target.app == 'sakura' and sakura_pid:
@@ -707,6 +906,14 @@ class StudioPreviewPanel(QFrame):
                     self._sakura_attached_pid = sakura_pid
                     self._sakura_transfer_consented = True
                 self._external_key = target.key
+                if target.app == 'obsidian':
+                    from embedded_obsidian_presentation import prefer_light_native_frame
+                    prefer_light_native_frame(hwnd)
+                    # A newly launched editor may briefly become foreground
+                    # before SetParent. Return focus to Launch only after dock.
+                    owner = getattr(self, 'launcher', None)
+                    if owner is not None and owner.isVisible():
+                        QTimer.singleShot(0, owner.activateWindow)
                 self._sync_popout_button()
                 self.status_label.hide()
                 self._external_pending = None
@@ -834,13 +1041,16 @@ class StudioPreviewPanel(QFrame):
             return
         try:
             from studio_win32_host import find_studio_main_window, AttachedStudioWindow
-            hwnd = find_studio_main_window(self._process.pid)
+            hwnd = find_studio_main_window(self._process.pid, launch_preview=True)
             if hwnd:
                 # Ensure Qt creates a native HWND before docking WinForms.
                 self._attached = AttachedStudioWindow(hwnd, int(self.host.winId()))
                 self._attached.resize(self.host.width(), self.host.height())
-                self.status_label.hide()
                 self._timer.stop()
+                self._notify_studio_docked()
+                # Keep the loading label until Studio confirms it is docked
+                # and has made its transparent preview visible inside Launch.
+                self._sync_popout_button()
                 # Qt/Win32 may recompose the outer mask after SetParent.  Run
                 # on the next Qt event turn, after the native child is laid out.
                 QTimer.singleShot(0, self._refresh_outer_frame_after_native_attach)
@@ -957,6 +1167,7 @@ class StudioPreviewPanel(QFrame):
         self._timer.stop()
         self._external_timer.stop()
         self._sakura_close_timer.stop()
+        self._embedded_health_timer.stop()
         self._sakura_close_wait_hwnd = None
         self._external_pending = None
         active = self._attached

@@ -1,0 +1,221 @@
+# FRB Launch 0284 — 移行差分旧環境の登録パスのみを更新。研究データ参照は維持。--- frb_launch_data.json (backup)
++++ frb_launch_data.json (migrated)
+@@ -1014,7 +1014,7 @@
+       "launch_actions": [
+         {
+           "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat"
++          "launch_target": "%launch_home%\\_make_launch_zip.bat"
+         }
+       ],
+       "shuriken_enabled": true,
+@@ -1853,13 +1853,13 @@
+       "launch_selection_value_field": "",
+       "launch_selection_separator": "",
+       "launch_selection_result_name": "",
+-      "launch_browse_target": "F:\\FRB\\tools\\FRB_Launch",
+-      "launch_context_app": "",
+-      "launch_context_url_pattern": "",
+-      "launch_actions": [
+-        {
+-          "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch"
++      "launch_browse_target": "%launch_home%",
++      "launch_context_app": "",
++      "launch_context_url_pattern": "",
++      "launch_actions": [
++        {
++          "launch_action_type": "Open",
++          "launch_target": "%launch_home%"
+         }
+       ]
+     },
+@@ -2146,13 +2146,13 @@
+       "launch_selection_value_field": "",
+       "launch_selection_separator": "",
+       "launch_selection_result_name": "",
+-      "launch_browse_target": "F:\\FRB\\tools\\FRBStudio_App\\data\\json",
+-      "launch_context_app": "",
+-      "launch_context_url_pattern": "",
+-      "launch_actions": [
+-        {
+-          "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRBStudio_App\\data"
++      "launch_browse_target": "%studio_root%\\data\\json",
++      "launch_context_app": "",
++      "launch_context_url_pattern": "",
++      "launch_actions": [
++        {
++          "launch_action_type": "Open",
++          "launch_target": "%studio_root%\\data"
+         }
+       ]
+     },
+@@ -2992,7 +2992,7 @@
+     },
+     {
+       "title": "_make_launch_zip.bat",
+-      "description": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat",
++      "description": "F:\\FRB_Apps\\FRB_Launch\\_make_launch_zip.bat",
+       "item_kind": "command",
+       "icon_key": "file",
+       "enabled": true,
+@@ -3000,7 +3000,7 @@
+       "launch_actions": [
+         {
+           "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat",
++          "launch_target": "%launch_home%\\_make_launch_zip.bat",
+           "launch_program": "",
+           "launch_arguments": [],
+           "launch_working_directory": "",
+@@ -3343,7 +3343,7 @@
+     },
+     {
+       "title": "pytest.ini",
+-      "description": "F:\\FRB\\tools\\FRB_Launch\\pytest.ini",
++      "description": "F:\\FRB_Apps\\FRB_Launch\\pytest.ini",
+       "item_kind": "command",
+       "icon_key": "file",
+       "enabled": true,
+@@ -3351,7 +3351,7 @@
+       "launch_actions": [
+         {
+           "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\pytest.ini",
++          "launch_target": "%launch_home%\\pytest.ini",
+           "launch_program": "",
+           "launch_arguments": [],
+           "launch_working_directory": "",
+@@ -3369,7 +3369,7 @@
+     },
+     {
+       "title": "open_apps_log.bat",
+-      "description": "F:\\FRB\\tools\\FRB_Launch\\open_apps_log.bat",
++      "description": "F:\\FRB_Apps\\FRB_Launch\\open_apps_log.bat",
+       "item_kind": "command",
+       "icon_key": "file",
+       "enabled": true,
+@@ -3377,7 +3377,7 @@
+       "launch_actions": [
+         {
+           "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\open_apps_log.bat",
++          "launch_target": "%launch_home%\\open_apps_log.bat",
+           "launch_program": "",
+           "launch_arguments": [],
+           "launch_working_directory": "",
+@@ -3395,7 +3395,7 @@
+     },
+     {
+       "title": "_make_launch_zip.bat",
+-      "description": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat",
++      "description": "F:\\FRB_Apps\\FRB_Launch\\_make_launch_zip.bat",
+       "item_kind": "command",
+       "icon_key": "file",
+       "enabled": true,
+@@ -3403,7 +3403,7 @@
+       "launch_actions": [
+         {
+           "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\_make_launch_zip.bat",
++          "launch_target": "%launch_home%\\_make_launch_zip.bat",
+           "launch_program": "",
+           "launch_arguments": [],
+           "launch_working_directory": "",
+@@ -3421,7 +3421,7 @@
+     },
+     {
+       "title": "_build_windows.bat",
+-      "description": "F:\\FRB\\tools\\FRB_Launch\\_build_windows.bat",
++      "description": "F:\\FRB_Apps\\FRB_Launch\\_build_windows.bat",
+       "item_kind": "command",
+       "icon_key": "file",
+       "enabled": true,
+@@ -3429,7 +3429,7 @@
+       "launch_actions": [
+         {
+           "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\_build_windows.bat",
++          "launch_target": "%launch_home%\\_build_windows.bat",
+           "launch_program": "",
+           "launch_arguments": [],
+           "launch_working_directory": "",
+@@ -3447,7 +3447,7 @@
+     },
+     {
+       "title": "launch_json_move.py",
+-      "description": "F:\\FRB\\tools\\FRB_Launch\\src\\launch_json_move.py",
++      "description": "F:\\FRB_Apps\\FRB_Launch\\src\\launch_json_move.py",
+       "item_kind": "command",
+       "icon_key": "file",
+       "enabled": true,
+@@ -3455,7 +3455,7 @@
+       "launch_actions": [
+         {
+           "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\src\\launch_json_move.py",
++          "launch_target": "%launch_home%\\src\\launch_json_move.py",
+           "launch_program": "",
+           "launch_arguments": [],
+           "launch_working_directory": "",
+@@ -3473,7 +3473,7 @@
+     },
+     {
+       "title": "registered_root_studio.py",
+-      "description": "F:\\FRB\\tools\\FRB_Launch\\src\\registered_root_studio.py",
++      "description": "F:\\FRB_Apps\\FRB_Launch\\src\\registered_root_studio.py",
+       "item_kind": "command",
+       "icon_key": "file",
+       "enabled": true,
+@@ -3481,7 +3481,7 @@
+       "launch_actions": [
+         {
+           "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\src\\registered_root_studio.py",
++          "launch_target": "%launch_home%\\src\\registered_root_studio.py",
+           "launch_program": "",
+           "launch_arguments": [],
+           "launch_working_directory": "",
+@@ -3499,15 +3499,15 @@
+     },
+     {
+       "title": "experiments",
+-      "description": "F:\\FRB\\tools\\FRB_Launch\\experiments",
++      "description": "F:\\FRB_Apps\\FRB_Launch\\experiments",
+       "item_kind": "directory",
+       "icon_key": "folder.yellow",
+       "enabled": true,
+-      "launch_browse_target": "F:\\FRB\\tools\\FRB_Launch\\experiments",
+-      "launch_actions": [
+-        {
+-          "launch_action_type": "Open",
+-          "launch_target": "F:\\FRB\\tools\\FRB_Launch\\experiments",
++      "launch_browse_target": "%launch_home%\\experiments",
++      "launch_actions": [
++        {
++          "launch_action_type": "Open",
++          "launch_target": "%launch_home%\\experiments",
+           "launch_program": "",
+           "launch_arguments": [],
+           "launch_working_directory": "",
+@@ -4205,7 +4205,7 @@
+       "variable_id": "studio_root",
+       "title": "Studioのフォルダー",
+       "launch_variable_type": "literal",
+-      "launch_value": "F:\\FRB\\tools\\FRBStudio_App",
++      "launch_value": "F:\\FRB_Apps\\FRB_Studio",
+       "launch_date_offset_days": 0,
+       "launch_date_format": "",
+       "enabled": true
+--- file_index_options.json (backup)
++++ file_index_options.json (migrated)
+@@ -7,7 +7,7 @@
+   "enabled": true,
+   "index_mode": "registered",
+   "index_folders": [
+-    "F:\\FRB\\tools\\FRB_Launch",
++    "F:\\FRB_Apps\\FRB_Launch",
+     "C:\\Users\\tsub-\\Pictures"
+   ],
+   "max_depth": null,

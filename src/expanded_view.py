@@ -738,6 +738,11 @@ class _SeparatedFileTree(ExternalFileDragTree):
             event.accept()
 
     def mousePressEvent(self, event):
+        # Mouse selection starts a new Shift+arrow anchor. The old anchor must
+        # never bleed into a fresh click elsewhere in Files List.
+        if (event.button() == Qt.MouseButton.LeftButton and
+                not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)):
+            self._frb_shift_anchor = None
         # Freeze automatic shuriken before a normal List click is handled.
         # Manual Remote shuriken and other tree columns are unaffected.
         stop_auto = getattr(self, 'shuriken_stop_on_action', None)
@@ -1898,6 +1903,11 @@ class ExpandedLauncherView(QWidget):
         self.files_splitter.splitterMoved.connect(
             lambda *_: self.queue_rail_wheel_position())
         self.files_splitter.installEventFilter(self)
+        # setSizes() and preview show/hide do NOT emit splitterMoved. Keep
+        # the round WheelPad pinned to the real Exp/List handle as Qt settles
+        # after native third-column docking/undocking.
+        self.files_splitter.splitterMoved.connect(
+            lambda *_: QTimer.singleShot(50, self.queue_rail_wheel_position))
         # FRB ぐりぐりボタン：Remoteの実物WheelPadを再利用する。
         # 親はこのFiles画面。別Windowで座標を同期する方式は使わない。
         from launch_remote import RoundRailWheelPad
@@ -4697,6 +4707,22 @@ class ExpandedLauncherView(QWidget):
         if not owned:
             return False
         key, mods = event.key(), event.modifiers()
+        # The / experiment belongs ONLY to the current Files Exp or List
+        # tree; rename/search editors and ordinary global search keep '/'.
+        if getattr(self, '_workspace_mode', None) == 'files':
+            # The operating *current* may live in Exp/List even when focus
+            # remains on the central ぐりぐり pad. Never swallow / typed in
+            # search, breadcrumb, filter or inline-rename text editors.
+            keyboard_area = self._files_keyboard_focus_area(obj)
+            pad = getattr(launcher, '_active_remote_wheel_pad', lambda: None)()
+            current = getattr(launcher, '_files_operating_target', None)
+            pad_current = (obj is pad and current in ('files_exp', 'directory', 'files'))
+            if keyboard_area in ('exp', 'list') or pad_current:
+                from slash_exp_navigation import is_slash_shortcut
+                if (is_slash_shortcut(key, event.text(), mods)
+                        and launcher.show_slash_exp_navigation_menu()):
+                    event.accept()
+                    return True
         if mods == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_I:
             if not hasattr(launcher, 'theme_menu'):
                 return False  # QApplication filters can see startup events.
@@ -6615,6 +6641,10 @@ class ExpandedLauncherView(QWidget):
         # The new Chromium surface must not steal Files List arrow navigation.
         if keep_list_focus:
             self.middle.tree.setFocus(Qt.FocusReason.OtherFocusReason)
+        reflow = getattr(self, 'queue_rail_wheel_position', None)
+        if callable(reflow):
+            reflow()
+            QTimer.singleShot(80, reflow)
         return True
 
     def close_browser_preview(self):
@@ -6634,6 +6664,10 @@ class ExpandedLauncherView(QWidget):
                 self.files_splitter.setSizes(sizes)
             else:
                 self.files_splitter.setSizes(sizes + [0] * (number - 2))
+        reflow = getattr(self, 'queue_rail_wheel_position', None)
+        if callable(reflow):
+            reflow()
+            QTimer.singleShot(80, reflow)
 
     def _ensure_studio_preview(self):
         """Create/show the third-column host shared by Studio and Options."""
@@ -6688,10 +6722,14 @@ class ExpandedLauncherView(QWidget):
                 base_sizes, count, index, preview_width, saved_columns,
                 min_first_width=min_first_width, min_list_width=170)
             self.files_splitter.setSizes(widths)
-            from PySide6.QtCore import QTimer
+            # QTimer is imported at module scope. Importing it locally would
+            # shadow that name for the entire method and crash on a later
+            # preview when this first-open block is skipped.
             QTimer.singleShot(0, lambda p=self.studio_preview, w=preview_width,
                               saved=saved_columns:
                               self._restore_visible_preview_width(p, w, 170, saved))
+        self.queue_rail_wheel_position()
+        QTimer.singleShot(80, self.queue_rail_wheel_position)
         return True
 
     def show_studio_preview(self, target):
@@ -6709,6 +6747,8 @@ class ExpandedLauncherView(QWidget):
             return False
         if keep_list_focus:
             self.middle.tree.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.queue_rail_wheel_position()
+        QTimer.singleShot(80, self.queue_rail_wheel_position)
         return True
 
     def show_external_preview(self, target):
@@ -6738,6 +6778,8 @@ class ExpandedLauncherView(QWidget):
             if not was_open:
                 self.close_studio_preview()
             return False
+        self.queue_rail_wheel_position()
+        QTimer.singleShot(80, self.queue_rail_wheel_position)
         return True
 
     def show_option_settings_preview(self, launch_home, state_dir, studio_root):
@@ -6781,6 +6823,8 @@ class ExpandedLauncherView(QWidget):
         self._studio_preview_base_sizes = None
         if sizes and len(sizes) == 2:
             self.files_splitter.setSizes(sizes + [0] * (self.files_splitter.count() - 2))
+        self.queue_rail_wheel_position()
+        QTimer.singleShot(80, self.queue_rail_wheel_position)
 
     def release_studio_preview(self):
         """Launch exit requires explicit consent to release docked Sakura."""

@@ -813,18 +813,22 @@ class RemoteFilesExplorer(QWidget):
         finally:
             self._syncing_directory = old_sync
 
-    def current_registered_root(self, directory=None):
-        """The *selected Exp branch* defines physical shortcuts' logical root.
+    def current_registered_root(self, directory=None, *, source_item=None):
+        """Resolve a physical shortcut's root from its Exp model item.
 
-        Never infer this from the physical directory alone: another authored
-        shortcut may refer to the same folder, and a JSON mount elsewhere must
-        not become an accidental parent when changing operating roots.
+        Ordinary Exp defaults to the current tree row. The / navigator
+        supplies the final item's identity, because it intentionally leaves
+        Exp current unchanged during intermediate arrow navigation. A JSON
+        mount or another shortcut to the same path must never be substituted.
         """
         from directory_entry_origin import within_entry
-        index = self.tree.currentIndex()
-        if not index.isValid():
-            return None
-        item = self.model.itemFromIndex(index)
+        if source_item is None:
+            index = self.tree.currentIndex()
+            if not index.isValid():
+                return None
+            item = self.model.itemFromIndex(index)
+        else:
+            item = source_item
         if item is None:
             return None
         while item.parent() is not None and isinstance(

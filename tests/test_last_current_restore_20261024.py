@@ -23,6 +23,11 @@ def test_all_keyboard_current_areas_survive_serialization(area):
     assert value['area'] == area
 
 
+def test_embedded_exp_operating_area_persists_as_files_not_search():
+    # Direct Exp and Remote use files_exp; persistent focus_state uses files.
+    assert normalize_focus_state({'area': 'files_exp'})['area'] == 'files'
+
+
 def test_bad_or_old_setting_falls_back_to_search():
     for raw in (None, {}, 'invalid', [], {'area': 'unknown'}):
         assert normalize_focus_state(raw)['area'] == 'search'
@@ -88,3 +93,14 @@ def test_main_window_wiring_preserves_hotkeys_and_restores_prior_focus():
     assert "root_item_id = self._last_root_id" in methods['save_last_current']
     assert 'resolve_path_ids(' in methods['restore_last_current']
     assert 'self.search.clear()' in methods['summon']  # Do not revive previous query
+
+
+def test_embedded_exp_restore_targets_visible_exp_not_legacy_hidden_first_tree():
+    source = (ROOT / 'src' / 'app.py').read_text(encoding='utf8')
+    launcher = next(node for node in ast.parse(source).body
+                    if isinstance(node, ast.ClassDef) and node.name == 'Launcher')
+    restore = next(node for node in launcher.body if isinstance(node, ast.FunctionDef)
+                   and node.name == 'restore_last_current')
+    code = ast.get_source_segment(source, restore)
+    assert "view._focus_files_keyboard_area(" in code
+    assert "'exp' if area == 'files' else 'list'" in code

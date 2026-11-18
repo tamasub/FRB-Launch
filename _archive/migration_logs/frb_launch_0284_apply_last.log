@@ -1,0 +1,81 @@
+FRB Launch 0284 / 旧アプリパス移行
+Launch: F:\FRB_Apps\FRB_Launch
+Studio: F:\FRB_Apps\FRB_Studio
+モード: 適用
+  config\frb_launch_data.json: 変更 23 件
+    items[28](FRB Launch をZIP保存).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch\_make_launch_zip.bat
+      + %launch_home%\_make_launch_zip.bat
+    items[54](FRB_Launch).launch_browse_target
+      - F:\FRB\tools\FRB_Launch
+      + %launch_home%
+    items[54](FRB_Launch).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch
+      + %launch_home%
+    items[64](FRBStudio_App\data\json).launch_browse_target
+      - F:\FRB\tools\FRBStudio_App\data\json
+      + %studio_root%\data\json
+    items[64](FRBStudio_App\data\json).launch_actions[0].launch_target
+      - F:\FRB\tools\FRBStudio_App\data
+      + %studio_root%\data
+    items[90](_make_launch_zip.bat).description
+      - F:\FRB\tools\FRB_Launch\_make_launch_zip.bat
+      + F:\FRB_Apps\FRB_Launch\_make_launch_zip.bat
+    items[90](_make_launch_zip.bat).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch\_make_launch_zip.bat
+      + %launch_home%\_make_launch_zip.bat
+    items[105](pytest.ini).description
+      - F:\FRB\tools\FRB_Launch\pytest.ini
+      + F:\FRB_Apps\FRB_Launch\pytest.ini
+    items[105](pytest.ini).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch\pytest.ini
+      + %launch_home%\pytest.ini
+    items[106](open_apps_log.bat).description
+      - F:\FRB\tools\FRB_Launch\open_apps_log.bat
+      + F:\FRB_Apps\FRB_Launch\open_apps_log.bat
+    items[106](open_apps_log.bat).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch\open_apps_log.bat
+      + %launch_home%\open_apps_log.bat
+    items[107](_make_launch_zip.bat).description
+      - F:\FRB\tools\FRB_Launch\_make_launch_zip.bat
+      + F:\FRB_Apps\FRB_Launch\_make_launch_zip.bat
+    items[107](_make_launch_zip.bat).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch\_make_launch_zip.bat
+      + %launch_home%\_make_launch_zip.bat
+    items[108](_build_windows.bat).description
+      - F:\FRB\tools\FRB_Launch\_build_windows.bat
+      + F:\FRB_Apps\FRB_Launch\_build_windows.bat
+    items[108](_build_windows.bat).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch\_build_windows.bat
+      + %launch_home%\_build_windows.bat
+    items[109](launch_json_move.py).description
+      - F:\FRB\tools\FRB_Launch\src\launch_json_move.py
+      + F:\FRB_Apps\FRB_Launch\src\launch_json_move.py
+    items[109](launch_json_move.py).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch\src\launch_json_move.py
+      + %launch_home%\src\launch_json_move.py
+    items[110](registered_root_studio.py).description
+      - F:\FRB\tools\FRB_Launch\src\registered_root_studio.py
+      + F:\FRB_Apps\FRB_Launch\src\registered_root_studio.py
+    items[110](registered_root_studio.py).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch\src\registered_root_studio.py
+      + %launch_home%\src\registered_root_studio.py
+    items[111](experiments).launch_browse_target
+      - F:\FRB\tools\FRB_Launch\experiments
+      + %launch_home%\experiments
+    items[111](experiments).description
+      - F:\FRB\tools\FRB_Launch\experiments
+      + F:\FRB_Apps\FRB_Launch\experiments
+    items[111](experiments).launch_actions[0].launch_target
+      - F:\FRB\tools\FRB_Launch\experiments
+      + %launch_home%\experiments
+    launch_variables[0].studio_root.launch_value
+      - F:\FRB\tools\FRBStudio_App
+      + F:\FRB_Apps\FRB_Studio
+  config\file_index_options.json: 変更 1 件
+    index_folders[0]
+      - F:\FRB\tools\FRB_Launch
+      + F:\FRB_Apps\FRB_Launch
+
+移行完了。旧データのバックアップと差分: F:\FRB_Apps\FRB_Launch\backups\frb_apps_paths_0284_20261113_150638_49418d
+※ 設定JSONの項目名やFRB研究データの参照先は変更していません。

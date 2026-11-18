@@ -24,6 +24,7 @@ from frb_update.contracts import read_sources, version_tuple
 from frb_update.bootstrap import check_feeds
 from remote_text_dialog import RemoteTextDialog
 from remote_context_wheel import RemoteContextWheel
+from slash_exp_navigation import popup_exp_navigator
 from rod_foreground import foreground_owned_by_process
 from shuriken_model import configured_entries
 from shuriken_scroll_handoff import handoff_current_at_scroll_stop
@@ -2233,6 +2234,12 @@ class FRBContextMenu(RemoteFolderActionsMenu):
         super().__init__(parent=parent, launcher=launcher)
         self.remote_context_root = True
         self._frb_grigri_runner = None
+        # Exp/List right-click leaves real keyboard focus on the underlying
+        # tree because these menus are non-grabbing Qt.Tool windows. Route
+        # arrows/Enter/Escape through the same application-wide runner used
+        # for keyboard-opened List and Settings menus. Without this flag,
+        # Up/Down (and Enter) continue operating the Exp tree behind the menu.
+        self._frb_keyboard_opened = True
         # A context-menu object carries BOTH its Runner and presentation.
         # No Exp/List caller is allowed to choose different layout QSS.
         style_context_menu(self, self.launcher.color_theme)
@@ -2246,7 +2253,30 @@ class FRBContextMenu(RemoteFolderActionsMenu):
     # on Windows.  Native drawing (inherited from RemoteFolderActionsMenu)
     # preserves all QAction text and icons while this class still owns Runner.
 
+    def keyPressEvent(self, event):
+        # Context column attached to a / hierarchy: '/' closes ALL columns.
+        if getattr(self, '_slash_root_menu', None) is not None:
+            from slash_exp_navigation import is_slash_shortcut
+            if is_slash_shortcut(event.key(), event.text(), event.modifiers()):
+                self._slash_root_menu.close()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def eventFilter(self, obj, event):
+        if (getattr(self, '_slash_root_menu', None) is not None
+                and obj is getattr(self, 'filter_edit', None)
+                and event.type() == QEvent.Type.KeyPress):
+            from slash_exp_navigation import is_slash_shortcut
+            if is_slash_shortcut(event.key(), event.text(), event.modifiers()):
+                self._slash_root_menu.close()
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
+
     def _schedule_grigri_runner(self):
+        if getattr(self, '_frb_disable_runner', False):
+            return  # Native / submenu has its own keyboard owner.
         # aboutToShow happens before Qt marks QMenu visible. Install on the
         # next event-loop turn; a popup dismissed immediately stays inactive.
         QTimer.singleShot(0, self._activate_grigri_runner)
@@ -3716,6 +3746,17 @@ class Launcher(QWidget):
         # Window scope avoids installing a system-wide shortcut or changing Ctrl+F3 Page navigation.
         self.search_focus_shortcut = QShortcut(QKeySequence('F3'), self)
         self.search_focus_shortcut.activated.connect(self.focus_search)
+        # Exp/List may have no focused tree after a desktop double-click.
+        # The application-local shortcut reaches Launch's actual window even
+        # then; inline editors and ordinary search must keep their slash.
+        self.slash_exp_shortcut = QShortcut(QKeySequence('/'), self)
+        self.slash_exp_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.slash_exp_shortcut.setAutoRepeat(False)
+        self.slash_exp_shortcut.activated.connect(self.toggle_slash_exp_shortcut)
+        # QShortcut resolves before KeyPress. Disable it while an ordinary
+        # text editor is focused so '/' remains a printable search character.
+        QApplication.instance().focusChanged.connect(self._sync_slash_shortcut_focus)
+        self._sync_slash_shortcut_focus(None, QApplication.focusWidget())
         self.folder_refresh_shortcut = QShortcut(QKeySequence('F5'), self)
         self.folder_refresh_shortcut.activated.connect(self.refresh_current_middle_folder)
         self.hover_watch = QTimer(self);self.hover_watch.setInterval(60)
@@ -4168,20 +4209,23 @@ class Launcher(QWidget):
             getattr(self, '_files_operating_target', 'directory'))
         return True
 
-    def navigate_files_exp_folder(self, directory):
+    def navigate_files_exp_folder(self, directory, *, origin_panel=None,
+                                  origin_item=None):
         """Commit a Files Exp selection through the existing breadcrumb flow.
 
         A folder-tree selection never executes/open-files or writes to disk.
-        Keep Tool windows and popup focus stable during navigation.
+        The / navigator supplies its terminal model item to preserve the
+        selected registered-root identity even when Exp current differs.
         """
         view = self.expanded_view
         if not view.isVisible() or not Path(directory).is_dir():
             return False
         if view._workspace_mode != 'files':
             view.show_files_view()
-        panel = self._current_remote_files_exp()
-        registered_root = (panel.current_registered_root(directory)
-                           if panel is not None else None)
+        panel = origin_panel if origin_panel is not None else self._current_remote_files_exp()
+        registered_root = (panel.current_registered_root(
+            directory, source_item=origin_item)
+            if panel is not None else None)
         return bool(view.go_to_directory(
             directory, preserve_remote_popup=True,
             registered_root=registered_root))
@@ -4336,6 +4380,122 @@ class Launcher(QWidget):
             view.row_data(tree.topLevelItem(i))
             for i in range(tree.topLevelItemCount()))
             if isinstance(row, dict)]
+
+    def show_slash_exp_file_context(self, filename, position, *, return_menu=False):
+        """Right on / file leaf: use the ordinary Files List context actions."""
+        filename = str(filename)
+        if not Path(filename).is_file():
+            return False
+        row = {'title': Path(filename).name, 'item_kind': 'command',
+               '_browse_file': filename}
+        return self.show_launch_context_menu(
+            position, row, list_context=True, return_menu=return_menu)
+
+    def show_slash_exp_terminal_context(self, directory, position, *, identity=None,
+                                        return_menu=False):
+        """Right on a terminal / row: context only, no breadcrumb commit.
+
+        Reuse the single existing Files Exp context builder. Unlike ordinary
+        Exp right-click this does not call navigate_files_exp_folder(), so
+        arrow navigation is strictly non-executing until a menu command runs.
+        """
+        directory = str(directory)
+        if not Path(directory).is_dir():
+            return False
+        studio_item_id = None
+        if isinstance(identity, dict) and identity.get('source') == 'launch_json':
+            from registered_root_studio import verified_registered_root
+            row = verified_registered_root({
+                'page_id': identity.get('page_id'),
+                'item_id': identity.get('item_id'),
+                'path': directory}, self.pages, self.authored_items,
+                self.expander().expand)
+            if (row is not None and identity.get('node_id') ==
+                    f"item:{row['page_id']}:{row['item_id']}"):
+                studio_item_id = str(row['item_id'])
+        return self.show_expanded_background_paste_menu(
+            position, remote_folder_list=True,
+            files_exp_rename_target=directory,
+            studio_properties_item_id=studio_item_id,
+            return_menu=return_menu)
+
+    def _sync_slash_shortcut_focus(self, old, focused):
+        shortcut = getattr(self, 'slash_exp_shortcut', None)
+        if shortcut is None:
+            return
+        menu = getattr(self, '_slash_exp_navigation_menu', None)
+        try:
+            navigable = menu is not None and menu.isVisible()
+        except RuntimeError:
+            navigable = False
+        is_editor = isinstance(focused, (QLineEdit, QPlainTextEdit, QComboBox))
+        shortcut.setEnabled(navigable or not is_editor)
+
+    def toggle_slash_exp_shortcut(self):
+        """Desktop-start-safe / without hijacking text editing widgets."""
+        menu = getattr(self, '_slash_exp_navigation_menu', None)
+        if menu is not None:
+            try:
+                if menu.isVisible():
+                    menu.close()
+                    return True
+            except RuntimeError:
+                pass
+        focused = QApplication.focusWidget()
+        if isinstance(focused, (QLineEdit, QPlainTextEdit, QComboBox)):
+            return False
+        return self.show_slash_exp_navigation_menu()
+
+    def show_slash_exp_navigation_menu(self):
+        """/ from Files: toggle the compact arrow-only Exp navigator.
+
+        A second / is exactly Esc. Do this BEFORE looking for a focused
+        Exp/List widget; Qt popup may own focus at that moment.
+        """
+        previous = getattr(self, '_slash_exp_navigation_menu', None)
+        if previous is not None:
+            try:
+                if previous.isVisible():
+                    previous.close()
+                    return True
+            except RuntimeError:
+                pass
+        view = getattr(self, 'expanded_view', None)
+        if (view is None or not view.isVisible()
+                or getattr(view, '_workspace_mode', None) != 'files'):
+            return False
+        panel = self._current_remote_files_exp()
+        if panel is None or panel.model.rowCount() == 0:
+            panel = getattr(view, 'embedded_files_exp', None)
+        if panel is None or panel.model.rowCount() == 0:
+            return False
+        # Do not leave overlapping non-grabbing Tool/QMenu chains behind.
+        self.close_remote_folder_menu()
+        self.close_remote_page_menu()
+        previous_context = getattr(self, '_launch_context_menu', None)
+        if previous_context is not None:
+            try:
+                previous_context.close()
+            except RuntimeError:
+                pass
+        existing_cascade = getattr(self, 'menu', None)
+        if existing_cascade is not None and existing_cascade.isVisible():
+            existing_cascade.close()
+        # / is an overlay of Files Exp itself, NOT a popup next to the
+        # wheel or Files List. Place its first column over Exp's first row.
+        # This remains stable whether the wheel moves or Remote is hidden.
+        exp_tree = getattr(panel, 'tree', None)
+        exp_viewport = getattr(exp_tree, 'viewport', None)
+        exp_viewport = exp_viewport() if callable(exp_viewport) else None
+        if exp_tree is None or not exp_tree.isVisible():
+            return False
+        # Place *inside* the Files Exp frame, not beyond its left border.
+        # Size the initial column to the frame's inner width; descendants
+        # retain their larger normal/long-name widths to the right.
+        frame_gutter = 5
+        anchor = exp_tree.mapToGlobal(QPoint(frame_gutter, 2))
+        exp_width = max(190, exp_tree.width() - 2 * frame_gutter)
+        return popup_exp_navigator(self, panel, anchor, first_column_width=exp_width)
 
     def show_remote_files_first_column_menu(self):
         """Right-click Files: switch to Files and open its first-column roots.
@@ -6749,7 +6909,8 @@ class Launcher(QWidget):
         current = (identity['page_id'], identity['item_id'])
         return selected if current in selected and len(selected) > 1 else [current]
 
-    def show_virtual_launch_context(self, identity, point, *, list_context=False):
+    def show_virtual_launch_context(self, identity, point, *, list_context=False,
+                                    return_menu=False):
         """Offer Studio Properties for authored virtual Page/item identities.
 
         These nodes are JSON projections, NOT real filesystem folders. Only
@@ -6781,13 +6942,17 @@ class Launcher(QWidget):
                 simple_page.triggered.connect(
                     lambda checked=False, pg=target['page_id']:
                     QTimer.singleShot(0, lambda: self.launch_page_simple_edit_action(pg)))
-            if target['kind'] == 'item' and len(selected_unregister) <= 1:
+            if target['kind'] == 'item':
                 simple = menu.addAction('簡易編集...')
+                simple.setEnabled(len(selected_unregister) <= 1)
                 simple.setIcon(context_action_icon('rename'))
                 simple.triggered.connect(
                     lambda checked=False, pg=target['page_id'], iid=target['item_id']:
                     QTimer.singleShot(0, lambda: self.launch_simple_edit_action(pg, iid)))
             properties_action = menu.addAction('詳細編集...')
+            # A single-item Studio editor cannot represent a selection.
+            # Keep it visible for discoverability, but refuse batch execution.
+            properties_action.setEnabled(len(selected_unregister) <= 1)
             properties_action.setIcon(context_action_icon('properties'))
             if target['kind'] == 'page':
                 properties_action.triggered.connect(
@@ -6801,7 +6966,7 @@ class Launcher(QWidget):
                         item_id=iid)))
         reference = menu.addAction('JSON参照IDをコピー')
         reference.setIcon(context_action_icon('copy'))
-        reference.setEnabled(bool(item_id))
+        reference.setEnabled(bool(item_id) and len(selected_unregister) <= 1)
         def copy_identity(checked=False):
             if item_id:
                 import json
@@ -6827,6 +6992,8 @@ class Launcher(QWidget):
                 unreg.triggered.connect(
                     lambda checked=False, targets=tuple(selected_unregister):
                     QTimer.singleShot(0, lambda: self.launch_unregister_many_action(targets)))
+        if return_menu:
+            return menu  # Existing native actions become the / child column.
         self._show_launch_json_context_popup(
             menu, point, column='list' if list_context else 'exp')
 
@@ -9048,9 +9215,18 @@ class Launcher(QWidget):
                 if area == 'roots':
                     view.focus_root(item_id=state.get('item_id'))
                 elif area in ('files', 'directory', 'bookmarks'):
-                    panel = {'files': view.left, 'directory': view.middle,
-                             'bookmarks': view.right}[area]
-                    view.focus_panel(panel)
+                    if (view._workspace_mode == 'files'
+                            and self.files_exp_embedded_mode
+                            and area in ('files', 'directory')):
+                        # The permanent Files Exp is NOT the retired view.left
+                        # tree. Focusing that hidden tree is why the first key
+                        # after startup did nothing until a mouse click.
+                        view._focus_files_keyboard_area(
+                            'exp' if area == 'files' else 'list')
+                    else:
+                        panel = {'files': view.left, 'directory': view.middle,
+                                 'bookmarks': view.right}[area]
+                        view.focus_panel(panel)
                 elif area == 'pages':
                     self.tabs.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
                 else:
@@ -11650,6 +11826,10 @@ class Launcher(QWidget):
                     return f'web_body:{i}'
         if obj in self.expanded_view.root_buttons:
             return 'roots'
+        exp = getattr(self.expanded_view, 'embedded_files_exp', None)
+        if (exp is not None and self.expanded_view._workspace_mode == 'files'
+                and obj in (exp.tree, exp.tree.viewport())):
+            return 'files'  # The persistent/restore-compatible Exp area.
         for name, pane in (('files', self.expanded_view.left),
                            ('directory', self.expanded_view.middle),
                            ('bookmarks', self.expanded_view.right)):
@@ -11837,10 +12017,44 @@ class Launcher(QWidget):
             self.expanded_view.history_forward()
             event.accept()
             return True
+        # Explorer-standard Shift+Up/Down range selection in Files List.
+        # The ordinary Exp/List arrows are custom-handled below, so allowing
+        # Shift keys to fall through Qt alone can drop the range anchor when
+        # focus is restored from the floating Remote or a third-column host.
+        if (pane is self.expanded_view.middle and
+                event.modifiers() == Qt.KeyboardModifier.ShiftModifier and
+                key in (Qt.Key.Key_Up, Qt.Key.Key_Down)):
+            tree_widget = pane.tree
+            rows = [tree_widget.topLevelItem(i)
+                    for i in range(tree_widget.topLevelItemCount())]
+            rows = [item for item in rows if item is not None and not item.isHidden()
+                    and not item.isDisabled()]
+            if rows:
+                current = tree_widget.currentItem()
+                anchor = getattr(tree_widget, '_frb_shift_anchor', None)
+                if anchor not in rows:
+                    anchor = current if current in rows else rows[0]
+                    tree_widget._frb_shift_anchor = anchor
+                index = rows.index(current) if current in rows else rows.index(anchor)
+                target = rows[max(0, min(len(rows) - 1, index +
+                           (1 if key == Qt.Key.Key_Down else -1)))]
+                first, last = sorted((rows.index(anchor), rows.index(target)))
+                # Keep current row and selected *range* separate. No folder
+                # activation, no extra mouse click and no Ctrl selection loss.
+                tree_widget.setCurrentItem(target, 0,
+                    QItemSelectionModel.SelectionFlag.NoUpdate)
+                tree_widget.clearSelection()
+                for selected_row in rows[first:last + 1]:
+                    selected_row.setSelected(True)
+                tree_widget.scrollToItem(target)
+            event.accept()
+            return True
         if event.modifiers() != Qt.KeyboardModifier.NoModifier:
             if pane is self.expanded_view.middle:
                 self._shuriken_keyboard_gate.reset()
             return False
+        if pane is self.expanded_view.middle and key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            pane.tree._frb_shift_anchor = None
         view = self.expanded_view
         keyboard_shuriken = getattr(self, 'shuriken_keyboard_list_key', None)
         if (pane is view.middle and callable(keyboard_shuriken)
@@ -12822,14 +13036,17 @@ class Launcher(QWidget):
 
     def show_expanded_background_paste_menu(self, global_pos, *, remote_folder_list=False,
                                             files_exp_rename_target=None,
-                                            studio_properties_item_id=None):
+                                            studio_properties_item_id=None,
+                                            return_menu=False):
         """One JSON-defined folder menu for the Files background and Remote.
 
         A Files Exp right-click binds EVERY action to its own folder, never
         to whichever row happens to be highlighted in the main Files grid.
         The Remote adds only Filesリスト and 新規作成 (not filesystem verbs).
         """
-        if not self.expanded_view.current_directory():
+        # A / terminal context targets its own explicit directory even if
+        # Files List currently shows a virtual Page without a physical path.
+        if not (files_exp_rename_target or self.expanded_view.current_directory()):
             return False
         try:
             definitions = load_context_menus(CONTEXT_MENU_OPTIONS)['folder']
@@ -12987,6 +13204,10 @@ class Launcher(QWidget):
                 current.setVisible(False)
         if actions and actions[-1].isSeparator():
             actions[-1].setVisible(False)
+        if return_menu:
+            # / navigation owns the native QAction submenu connection.
+            # Do not popup or overwrite the global context-menu controller.
+            return menu
         self._launch_context_menu = menu
         menu.aboutToHide.connect(lambda m=menu: self._forget_launch_context_menu(m))
         # QMenu keeps hover-preview branches open deliberately. Leaf actions
@@ -13068,7 +13289,8 @@ class Launcher(QWidget):
 
     def show_launch_context_menu(self, global_pos, row=None, *, context_parent=None,
                                  selected_paths=None, force_search_context=False,
-                                 list_context=False, exp_context=False):
+                                 list_context=False, exp_context=False,
+                                 return_menu=False):
         """Choose context actions by authoritative source, not displayed item ID."""
         if not self.data:
             return False
@@ -13142,6 +13364,8 @@ class Launcher(QWidget):
                 # A mixed file/folder selection uses the same compact width.
                 menu.setMinimumWidth(218)
                 menu.setMaximumWidth(225)
+                if return_menu:
+                    return menu
                 self._wire_hybrid_context_menu(
                     menu, column='list' if list_context else 'exp' if exp_context else None)
                 menu.popup(global_pos)
@@ -13236,6 +13460,10 @@ class Launcher(QWidget):
             return False
         self.hover_timer.stop()
         self.pending_menu_item = None
+        if return_menu:
+            # The / navigator will attach this native context menu under
+            # its selected leaf; never position it as a detached window.
+            return menu
         self._launch_context_menu = menu
         if origin in ('folder', 'file'):
             # One width contract for files and folders, regardless of whether
