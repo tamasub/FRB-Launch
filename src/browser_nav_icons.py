@@ -113,6 +113,18 @@ def _draw_icon(name: str, color: str) -> QPixmap:
         shape.lineTo(5.2, 18.8)
         shape.lineTo(5.2, 6.7)
         shape.lineTo(9.8, 6.7)
+    elif name == 'maximize':
+        # Launch-local column expansion, not operating-system maximize.
+        shape.addRoundedRect(QRectF(4.5, 4.5, 15, 15), 1, 1)
+    elif name == 'restore':
+        shape.moveTo(8, 6)
+        shape.lineTo(19, 6)
+        shape.lineTo(19, 17)
+        shape.moveTo(15.5, 9)
+        shape.lineTo(15.5, 19)
+        shape.lineTo(5, 19)
+        shape.lineTo(5, 9)
+        shape.closeSubpath()
     elif name == 'close':
         shape.moveTo(8, 8)
         shape.lineTo(16, 16)

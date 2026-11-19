@@ -14,7 +14,7 @@ import uuid
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal, QEventLoop
+from PySide6.QtCore import Qt, QTimer, Signal, QEventLoop, QPoint
 from PySide6.QtWidgets import (QFrame, QWidget, QLabel, QToolButton, QVBoxLayout,
                                QHBoxLayout, QSizePolicy, QStackedWidget, QMessageBox)
 from browser_nav_icons import browser_navigation_icon
@@ -44,6 +44,7 @@ class _NativeHost(QFrame):
 
 class StudioPreviewPanel(QFrame):
     close_requested = Signal()
+    maximize_requested = Signal()
     popout_requested = Signal()
     sakura_close_completed = Signal()
     _launch_switch_completed = Signal(object, str)
@@ -82,6 +83,13 @@ class StudioPreviewPanel(QFrame):
         # Record the authenticated vault at parking time, not via a later path lookup.
         self._obsidian_parked_vaults = {}
         self._external_pending = None
+        # Experimental, isolated VS Code overlay. Reuse one HWND per Launch
+        # session; do not borrow ordinary VS Code windows or their unsaved tabs.
+        self._vscode_profile_dir = None
+        self._vscode_switch_pending = None
+        self._vscode_queued = None
+        self._sakura_guest_switch = None
+        self._sakura_guest_queued = None
         # A positively identified vault MAIN window may be borrowed and docked.
         # Probe through CLI first; never mistake a pop-out for the main HWND.
         self._obsidian_cli_token = None
@@ -96,6 +104,9 @@ class StudioPreviewPanel(QFrame):
         self._obsidian_main_probe_busy = False
         self._obsidian_main_probe_attempts = 0
         self._obsidian_main_open_issued = False
+        self._obsidian_cli_prepared = False
+        self._obsidian_main_verify_misses = 0
+        self._obsidian_main_reopen_count = 0
         # Sakura can open the next document in the SAME tabbed native window.
         # Track a handoff without unparenting the still-visible Sakura host.
         self._sakura_switch_from = None
@@ -119,10 +130,17 @@ class StudioPreviewPanel(QFrame):
         self._embedded_health_timer.setInterval(950)
         self._embedded_health_timer.timeout.connect(self._check_embedded_editor_health)
         self._embedded_health_timer.start()
+        # Opt-in non-parenting window overlay: keep position aligned while
+        # Launch moves, resizes, maximizes or loses focus to another app.
+        self._obsidian_ime_overlay_timer = QTimer(self)
+        self._obsidian_ime_overlay_timer.setInterval(160)
+        self._obsidian_ime_overlay_timer.timeout.connect(self._sync_obsidian_ime_overlay)
+        self._obsidian_ime_overlay_timer.start()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         header = QFrame(self)
+        self.header = header
         header.setObjectName('filesStudioPreviewHeader')
         bar = QHBoxLayout(header)
         bar.setContentsMargins(10, 4, 6, 4)
@@ -141,6 +159,14 @@ class StudioPreviewPanel(QFrame):
         self.popout_button.setToolTip('第3列のエディターを外に出す（終了しません）')
         self.popout_button.clicked.connect(self.pop_out_selected)
         self.popout_button.hide()
+        self.maximize_button = QToolButton(header)
+        self.maximize_button.setObjectName('filesStudioPreviewMaximize')
+        self.maximize_button.setFixedSize(29, 29)
+        self.maximize_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.maximize_button.setToolTip('Launch内で第3列を最大化')
+        self.maximize_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.maximize_button.clicked.connect(self.maximize_requested.emit)
+        bar.addWidget(self.maximize_button)
         bar.addWidget(self.popout_button)
         bar.addWidget(self.close_button)
         layout.addWidget(header)
@@ -156,6 +182,58 @@ class StudioPreviewPanel(QFrame):
         self._timer.setInterval(300)
         self._timer.timeout.connect(self._poll)
         self.apply_theme('light')
+
+    def _launcher_popup_rects(self):
+        """Legacy geometry helper (no longer used to mask the guest window).
+
+        Native Qt.Tool popup HWNDs take priority instead. Kept for migration
+        compatibility and other popup positioning users.
+        """
+        launch = self.window()
+        exp = getattr(launch, 'expanded_view', None)
+        candidates = (getattr(launch, 'history_popup', None),
+                      getattr(exp, 'favorite_popup', None))
+        rects = []
+        for popup in candidates:
+            if popup is None or not popup.isVisible():
+                continue
+            point = self.host.mapFromGlobal(popup.mapToGlobal(QPoint(0, 0)))
+            rects.append((point.x(), point.y(), popup.width(), popup.height()))
+        return tuple(rects)
+
+    def _launcher_popup_hwnds(self):
+        """Collect only visible *native top-level* history popup HWNDs.
+
+        They must outrank a non-parented guest without hiding, clipping, or
+        disturbing the Obsidian process and its IME context.
+        """
+        launch = self.window()
+        exp = getattr(launch, 'expanded_view', None)
+        candidates = (getattr(launch, 'history_popup', None),
+                      getattr(exp, 'favorite_popup', None))
+        result = []
+        for popup in candidates:
+            if popup is not None and popup.isVisible() and popup.isWindow():
+                hwnd = int(popup.winId())
+                if hwnd:
+                    result.append(hwnd)
+        return tuple(result)
+
+    def _sync_obsidian_ime_overlay(self):
+        # Also covers the opt-in VS Code guest: this synchronizes *any*
+        # non-parenting overlay and the native history-popup precedence.
+        attached = getattr(self, '_attached', None)
+        if attached is not None and getattr(attached, 'is_ime_overlay', False):
+            try:
+                # Qt may keep its widget visible while the parent has been
+                # minimized; sync() also checks the Win32 root state.
+                attached.sync(
+                    panel_visible=bool(self.isVisible() and self.host.isVisible()),
+                    popup_hwnds=self._launcher_popup_hwnds(),
+                    qt_host_size=(self.host.width(), self.host.height()),
+                )
+            except (OSError, RuntimeError, ValueError):
+                pass  # Guest diagnostics must never stop the GUI event loop.
 
     def _sakura_trace(self, event, **details):
         # This is telemetry only. All errors are swallowed by the tracer.
@@ -392,6 +470,531 @@ class StudioPreviewPanel(QFrame):
         self._sync_popout_button()
         return True
 
+    def _open_vscode_guest(self, target):
+        """Reuse an isolated VS Code window: never reparent or borrow desktop Code.
+
+        A persistent Launch-only user-data-dir keeps sign-in and theme state.
+        All HWND adoption still requires a new, file-caption-matching window.
+        """
+        from vscode_guest_bridge import (enabled, find_executable, new_profile_root,
+                                         command, caption_matches_file)
+        from vscode_guest_trace import trace
+        if not enabled():
+            return False
+        executable = find_executable()
+        if not executable:
+            self.status_label.setText('Code.exeが見つかりません。FRB_LAUNCH_VSCODE_EXEも指定できます。')
+            self.status_label.show()
+            return False
+        if self._external_pending is not None:
+            if self._external_pending[0].app == 'vscode':
+                self._vscode_queued = target  # last click wins during startup
+                return True
+            return False
+        if self._vscode_switch_pending is not None:
+            self._vscode_queued = target
+            return True
+        attached = self._attached
+        if (self._external_key is not None and self._external_key[0] == 'vscode'
+                and attached is not None and attached.attached):
+            if target.key == self._external_key:
+                attached.resize(self.host.width(), self.host.height())
+                return True
+            if not attached.u.IsWindow(int(attached.hwnd)):
+                self.status_label.setText('VS Codeのウィンドウが終了しました。新たに開き直してください。')
+                self.status_label.show()
+                return False
+            try:
+                subprocess.Popen(command(executable, self._vscode_profile_dir,
+                                         target.path, reuse=True),
+                                 cwd=str(Path(executable).parent))
+            except OSError as exc:
+                self.status_label.setText('VS Codeのファイル切替に失敗: '+str(exc))
+                self.status_label.show()
+                return False
+            self._vscode_switch_pending = (target, time.monotonic())
+            self._external_timer.start()
+            trace('SWITCH_REQUESTED', hwnd=int(attached.hwnd), file=Path(target.path).name)
+            return True
+        # The previous guest, if any, must be safely parked before using host.
+        self._park_current()
+        if self._target is not None or self._external_key is not None:
+            return False
+        self.content_stack.setCurrentWidget(self.host)
+        self.title_label.setText('VS Code — '+Path(target.path).name)
+        self.title_label.setToolTip(target.path)
+        parked = None
+        parked_key = None
+        for key in reversed(tuple(self._external_parked)):
+            if key[0] == 'vscode':
+                parked_key, parked = key, self._external_parked.pop(key)
+                break
+        if parked is not None:
+            try:
+                from guest_window_overlay import GuestWindowOverlay
+                self._attached = GuestWindowOverlay(parked, int(self.host.winId()))
+                self._external_key = parked_key
+                self._attached.resize(self.host.width(), self.host.height())
+                self._sync_popout_button()
+                self.status_label.hide()
+                trace('RESTORED', hwnd=int(parked))
+                if parked_key != target.key:
+                    return self._open_vscode_guest(target)
+                return True
+            except (OSError, RuntimeError, ValueError) as exc:
+                # Keep the old HWND available for safe desktop recovery.
+                self._external_parked[parked_key] = parked
+                self._attached = None
+                self.status_label.setText('VS Codeの復帰に失敗: '+str(exc))
+                self.status_label.show()
+                return False
+        if self._vscode_profile_dir is None:
+            self._vscode_profile_dir = new_profile_root()
+        try:
+            from external_win32_host import snapshot_editor_windows
+            baseline = snapshot_editor_windows('vscode')
+            subprocess.Popen(command(executable, self._vscode_profile_dir,
+                                     target.path, reuse=False),
+                             cwd=str(Path(executable).parent))
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.status_label.setText('VS Codeを起動できません: '+str(exc))
+            self.status_label.show()
+            return False
+        self._external_pending = (target, baseline, None, time.monotonic())
+        self._external_timer.start()
+        self.status_label.setText('VS Codeの専用ウィンドウを確認中…\n既存のVS Codeは取り込みません')
+        self.status_label.show()
+        trace('START_REQUESTED', file=Path(target.path).name,
+              preexisting_hwnds=len(baseline))
+        return True
+
+    def _poll_vscode_guest(self):
+        from vscode_guest_bridge import new_hwnd_for_file, caption_matches_file
+        from vscode_guest_trace import trace
+        switching = self._vscode_switch_pending
+        if switching is not None:
+            target, started = switching
+            attached = self._attached
+            if (attached is None or not attached.attached or
+                    not attached.u.IsWindow(int(attached.hwnd))):
+                self._vscode_switch_pending = None
+                self._external_timer.stop()
+                self.status_label.setText('VS Codeの表示中ウィンドウが見つかりません')
+                self.status_label.show()
+                return
+            from external_win32_host import editor_window_title
+            if caption_matches_file(editor_window_title(attached.hwnd), target.path):
+                self._external_key = target.key
+                self._vscode_switch_pending = None
+                self._external_timer.stop()
+                self.title_label.setText('VS Code — '+Path(target.path).name)
+                self.title_label.setToolTip(target.path)
+                self.status_label.hide()
+                trace('SWITCH_CONFIRMED', hwnd=int(attached.hwnd))
+                queued, self._vscode_queued = self._vscode_queued, None
+                if queued is not None and queued.key != target.key:
+                    self._open_vscode_guest(queued)
+            elif time.monotonic()-started > 12:
+                self._vscode_switch_pending = None
+                self._vscode_queued = None
+                self._external_timer.stop()
+                self.status_label.setText('VS Code内のファイル切替を確認できませんでした。\n'
+                                          '既存ウィンドウは保持します。')
+                self.status_label.show()
+                trace('SWITCH_TIMEOUT', hwnd=int(attached.hwnd))
+            return
+        pending = self._external_pending
+        if pending is None or pending[0].app != 'vscode':
+            return
+        target, baseline, _pid, started = pending
+        try:
+            from external_win32_host import editor_windows
+            hwnd = new_hwnd_for_file(editor_windows('vscode'), baseline, target.path)
+            if hwnd:
+                from guest_window_overlay import GuestWindowOverlay
+                attached = GuestWindowOverlay(hwnd, int(self.host.winId()))
+                self._attached = attached
+                self._external_key = target.key
+                self._external_pending = None
+                self._external_timer.stop()
+                attached.resize(self.host.width(), self.host.height())
+                self.status_label.hide()
+                self._sync_popout_button()
+                trace('DOCKED', hwnd=int(hwnd))
+                queued, self._vscode_queued = self._vscode_queued, None
+                if queued is not None and queued.key != target.key:
+                    self._open_vscode_guest(queued)
+                return
+        except (OSError, RuntimeError, ValueError) as exc:
+            trace('DOCK_RETRY', error=type(exc).__name__)
+        if time.monotonic()-started > 35:
+            self._external_pending = None
+            self._external_timer.stop()
+            self._vscode_queued = None
+            self.status_label.setText('VS Codeの新規専用ウィンドウを一意に確認できません。\n'
+                                      '通常のVS Codeは変更していません。')
+            self.status_label.show()
+            trace('DOCK_TIMEOUT')
+
+    def pop_out_vscode(self):
+        """Release the actual Code window, never terminate its editing session."""
+        attached = self._attached
+        if (self._external_key is None or self._external_key[0] != 'vscode'
+                or attached is None or not attached.attached
+                or self._external_pending is not None
+                or self._vscode_switch_pending is not None):
+            return False
+        try:
+            attached.detach(foreground=True, show_window=True)
+            if attached.attached:
+                return False
+        except (OSError, RuntimeError, ValueError):
+            return False
+        from vscode_guest_trace import trace
+        trace('RELEASED', hwnd=int(attached.hwnd))
+        self._attached = None
+        self._external_key = None
+        # Forget the active session binding, not the saved profile on disk.
+        # A future Launch guest will reopen the same persistent profile.
+        self._vscode_profile_dir = None
+        self._vscode_queued = None
+        self._external_timer.stop()
+        self._sync_popout_button()
+        self.popout_requested.emit()
+        return True
+
+    def _restore_known_sakura_guest(self, target):
+        """Restore ONLY an HWND verified and parked by this Launch session.
+
+        Sakura's tab grouping can keep one native HWND per document.  A second
+        sakura.exe invocation may activate an *existing* tab instead of making
+        a fresh HWND, so the usual new-HWND detection cannot find it.  Reuse
+        the HWND we positively identified on first open, never an arbitrary
+        Sakura window found on the desktop.  Preserve unsaved documents.
+        """
+        from sakura_guest_bridge import caption_matches_file
+        from external_win32_host import editor_window_title
+        from guest_window_overlay import SakuraGuestOverlay
+
+        key = target.key
+        hwnd = self._external_parked.get(key)
+        if hwnd is None:
+            return False
+        attached = self._attached
+        if (attached is None or not attached.attached
+                or self._external_key is None or self._external_key[0] != 'sakura'):
+            return False
+        hwnd = int(hwnd)
+        if (hwnd == int(attached.hwnd) or not attached.u.IsWindow(hwnd)
+                or not caption_matches_file(editor_window_title(hwnd), target.path)):
+            # A stale or retargeted HWND must not be reused as another file.
+            return False
+
+        previous_hwnd = int(attached.hwnd)
+        previous_key = self._external_key
+        attached.detach(foreground=False, show_window=False)
+        if attached.attached:
+            return False
+        try:
+            restored = SakuraGuestOverlay(hwnd, int(self.host.winId()))
+            restored.resize(self.host.width(), self.host.height())
+        except (OSError, RuntimeError, ValueError):
+            # The original HWND is left untouched (not closed); try to show it
+            # again so the user can carry on editing even after a failed swap.
+            try:
+                self._attached = SakuraGuestOverlay(previous_hwnd, int(self.host.winId()))
+                self._attached.resize(self.host.width(), self.host.height())
+            except (OSError, RuntimeError, ValueError):
+                self._attached = None
+                self._external_key = None
+            return False
+
+        self._external_parked.pop(key, None)
+        self._external_parked[previous_key] = previous_hwnd
+        self._attached = restored
+        self._external_key = key
+        self.title_label.setText('サクラエディタ — ' + Path(target.path).name)
+        self.title_label.setToolTip(target.path)
+        self.status_label.hide()
+        self._sync_popout_button()
+        self._schedule_sakura_guest_repaint(hwnd, key)
+        return True
+
+    def _open_sakura_guest(self, target):
+        """Opt-in Sakura top-level overlay; never reparent or adopt desktop HWNDs."""
+        from sakura_guest_bridge import enabled, new_hwnd_for_file, caption_matches_file
+        from external_win32_host import snapshot_editor_windows, editor_windows
+        from external_preview_route import external_start_command
+        if not enabled():
+            return False
+        if self._external_pending is not None:
+            if self._external_pending[0].app == 'sakura':
+                self._sakura_guest_queued = target
+                return True
+            return False
+        if self._sakura_guest_switch is not None:
+            self._sakura_guest_queued = target
+            return True
+        attached = self._attached
+        if (self._external_key is not None and self._external_key[0] == 'sakura'
+                and attached is not None and attached.attached):
+            if target.key == self._external_key:
+                attached.resize(self.host.width(), self.host.height())
+                return True
+            # Reopening a file already shown earlier may reuse its parked
+            # native HWND.  Do not spawn another sakura.exe and then wait for
+            # an impossible "new HWND" event in this case.
+            if self._restore_known_sakura_guest(target):
+                return True
+            try:
+                baseline = snapshot_editor_windows('sakura')
+                subprocess.Popen(external_start_command(target),
+                                 cwd=str(Path(target.executable).parent))
+            except (OSError, ValueError) as exc:
+                self.status_label.setText('サクラエディタの切替に失敗: ' + str(exc))
+                self.status_label.show()
+                return False
+            self._sakura_guest_switch = (target, baseline, time.monotonic())
+            self._external_timer.start()
+            return True
+        self._park_current()
+        if self._target is not None or self._external_key is not None:
+            return False
+        self.content_stack.setCurrentWidget(self.host)
+        self.title_label.setText('サクラエディタ — ' + Path(target.path).name)
+        self.title_label.setToolTip(target.path)
+        # Exact target first: reselecting a parked tab must not pick an
+        # unrelated Sakura window merely because it was most recently parked.
+        parked_keys = list(reversed(tuple(self._external_parked)))
+        if target.key in parked_keys:
+            parked_keys.remove(target.key)
+            parked_keys.insert(0, target.key)
+        for key in parked_keys:
+            if key[0] != 'sakura':
+                continue
+            hwnd = self._external_parked.pop(key)
+            try:
+                # Once released to the desktop the user may have closed or
+                # retargeted the editor. Never capture a stale/repurposed HWND.
+                from external_win32_host import editor_window_title
+                if not caption_matches_file(editor_window_title(hwnd), key[1]):
+                    self._external_parked[key] = hwnd
+                    continue
+                from guest_window_overlay import SakuraGuestOverlay
+                self._attached = SakuraGuestOverlay(hwnd, int(self.host.winId()))
+                self._external_key = key
+                self._attached.resize(self.host.width(), self.host.height())
+                self.status_label.hide()
+                self._sync_popout_button()
+                if key != target.key:
+                    return self._open_sakura_guest(target)
+                return True
+            except (OSError, ValueError, RuntimeError):
+                self._external_parked[key] = hwnd
+                self._attached = None
+                return False
+        try:
+            baseline = snapshot_editor_windows('sakura')
+            subprocess.Popen(external_start_command(target),
+                             cwd=str(Path(target.executable).parent))
+        except (OSError, ValueError) as exc:
+            self.status_label.setText('サクラエディタを起動できません: ' + str(exc))
+            self.status_label.show()
+            return False
+        self._external_pending = (target, baseline, None, time.monotonic())
+        self._external_timer.start()
+        self.status_label.setText('サクラエディタの新規ウィンドウを確認中…\n'
+                                  '既存の編集画面は取り込みません')
+        self.status_label.show()
+        return True
+
+    def _schedule_sakura_guest_repaint(self, hwnd, key):
+        """Repaint a reused GDI editor after its native tab-switch settles.
+
+        A file-open can update Sakura's caption before all child views paint.
+        Check HWND + logical file key again, so a later file/guest is never
+        repainted accidentally. No focus-steal or SetParent operation.
+        """
+        def refresh():
+            attached = self._attached
+            if (self._external_key != key or attached is None
+                    or not attached.attached or int(attached.hwnd) != int(hwnd)
+                    or getattr(self, '_sakura_guest_switch', None) is not None
+                    or getattr(self, '_external_pending', None) is not None
+                    or not getattr(attached, 'is_ime_overlay', False)):
+                return
+            try:
+                attached.refresh_document()
+            except (OSError, RuntimeError, ValueError):
+                pass
+        QTimer.singleShot(200, refresh)
+
+    def _poll_sakura_guest(self):
+        from sakura_guest_bridge import new_hwnd_for_file, caption_matches_file
+        from external_win32_host import editor_windows, editor_window_title
+        switching = self._sakura_guest_switch
+        if switching is not None:
+            target, baseline, started = switching
+            attached = self._attached
+            if attached is None or not attached.attached or not attached.u.IsWindow(int(attached.hwnd)):
+                self._sakura_guest_switch = None
+                self._external_timer.stop()
+                return
+            # Tab-mode Sakura may open the requested document in the SAME HWND.
+            if caption_matches_file(editor_window_title(attached.hwnd), target.path):
+                self._external_key = target.key
+                self.title_label.setText('サクラエディタ — ' + Path(target.path).name)
+                self.title_label.setToolTip(target.path)
+                self._sakura_guest_switch = None
+                self._external_timer.stop()
+                self.status_label.hide()
+                self._schedule_sakura_guest_repaint(attached.hwnd, target.key)
+            else:
+                # Sakura can bring an older tab/HWND forward, not just create
+                # a new one.  Only a Launch-verified parked HWND may be reused.
+                if self._restore_known_sakura_guest(target):
+                    self._sakura_guest_switch = None
+                    self._external_timer.stop()
+                    queued, self._sakura_guest_queued = self._sakura_guest_queued, None
+                    if queued is not None and queued.key != self._external_key:
+                        self._open_sakura_guest(queued)
+                    return
+                hwnd = new_hwnd_for_file(editor_windows('sakura'), baseline, target.path)
+                if hwnd:
+                    try:
+                        from guest_window_overlay import SakuraGuestOverlay
+                        attached.detach(foreground=False, show_window=False)
+                        if attached.attached:
+                            return
+                        self._external_parked[self._external_key] = attached.hwnd
+                        self._attached = SakuraGuestOverlay(hwnd, int(self.host.winId()))
+                        self._attached.resize(self.host.width(), self.host.height())
+                        self._external_key = target.key
+                        self.title_label.setText('サクラエディタ — ' + Path(target.path).name)
+                        self.title_label.setToolTip(target.path)
+                        self._sakura_guest_switch = None
+                        self._external_timer.stop()
+                        self.status_label.hide()
+                        self._schedule_sakura_guest_repaint(hwnd, target.key)
+                    except (OSError, ValueError, RuntimeError):
+                        return
+                elif time.monotonic() - started > 12:
+                    self._sakura_guest_switch = None
+                    self._external_timer.stop()
+                    self.status_label.setText('サクラエディタの切替を確認できませんでした。\n'
+                                              '現在の編集画面は保持しています。')
+                    self.status_label.show()
+            if self._sakura_guest_switch is None:
+                queued, self._sakura_guest_queued = self._sakura_guest_queued, None
+                if queued is not None and queued.key != self._external_key:
+                    self._open_sakura_guest(queued)
+            return
+        pending = self._external_pending
+        if pending is None or pending[0].app != 'sakura':
+            return
+        target, baseline, _, started = pending
+        hwnd = new_hwnd_for_file(editor_windows('sakura'), baseline, target.path)
+        if hwnd:
+            try:
+                from guest_window_overlay import SakuraGuestOverlay
+                attached = SakuraGuestOverlay(hwnd, int(self.host.winId()))
+                self._attached = attached
+                self._external_key = target.key
+                self._external_pending = None
+                self._external_timer.stop()
+                attached.resize(self.host.width(), self.host.height())
+                self.status_label.hide()
+                self._sync_popout_button()
+                self._schedule_sakura_guest_repaint(hwnd, target.key)
+                queued, self._sakura_guest_queued = self._sakura_guest_queued, None
+                if queued is not None and queued.key != target.key:
+                    self._open_sakura_guest(queued)
+                return
+            except (OSError, ValueError, RuntimeError):
+                pass
+        if time.monotonic() - started > 25:
+            self._external_pending = None
+            self._external_timer.stop()
+            self._sakura_guest_queued = None
+            self.status_label.setText('サクラエディタの新規画面を特定できません。\n'
+                                      '既存画面や未保存データは変更していません。')
+            self.status_label.show()
+
+    def _schedule_sakura_desktop_repaint(self, overlay, key, hwnd):
+        """Repaint a verified, still-detached Sakura after Browser reflow.
+
+        Sakura's GDI children sometimes finish their layout after the native
+        top-level window has returned to the desktop. A delayed invalidation
+        repairs them without WM_SIZE fabrication, cross-process SetParent or
+        focus stealing. Ignore the callback if that HWND was re-docked.
+        """
+        def refresh():
+            if (self._external_parked.get(key) != hwnd
+                    or getattr(overlay, 'attached', True)):
+                return
+            try:
+                overlay.refresh_native_frame()
+            except (OSError, RuntimeError, ValueError):
+                pass
+        QTimer.singleShot(120, refresh)
+        QTimer.singleShot(360, refresh)
+
+    def release_sakura_guest_for_browser(self):
+        """Detach Sakura to the desktop while retaining its verified HWND.
+
+        Browser handoff MUST NOT close the editor, ask Sakura to save, or
+        discard the handle needed to re-dock the same unsaved document later.
+        In-flight tab switches are not a safe handoff point.
+        """
+        attached = self._attached
+        key = self._external_key
+        if (key is None or key[0] != 'sakura'
+                or attached is None or not getattr(attached, 'is_ime_overlay', False)
+                or not attached.attached or self._external_pending is not None
+                or self._sakura_guest_switch is not None
+                or self._sakura_guest_queued is not None):
+            return False
+        try:
+            hwnd = int(attached.hwnd)
+            if not attached.u.IsWindow(hwnd):
+                return False
+            # This is not the explicit "外に出す" action: keep the HWND
+            # registered for the next TXT double click. No WM_CLOSE/SAVE.
+            attached.detach(foreground=False, show_window=True)
+            if attached.attached or not attached.u.IsWindow(hwnd):
+                return False
+        except (OSError, RuntimeError, ValueError):
+            return False
+        self._external_parked[key] = hwnd
+        self._attached = None
+        self._external_key = None
+        self._external_timer.stop()
+        self._sync_popout_button()
+        # Browser's Qt reflow runs after this handoff. Give the standalone
+        # editor another native child repaint after that reflow completes.
+        getattr(self, '_schedule_sakura_desktop_repaint',
+                lambda *_: None)(attached, key, hwnd)
+        return True
+
+    def pop_out_sakura_guest(self):
+        attached = self._attached
+        if (self._external_key is None or self._external_key[0] != 'sakura'
+                or attached is None or not getattr(attached, 'is_ime_overlay', False)
+                or not attached.attached or self._external_pending is not None
+                or self._sakura_guest_switch is not None):
+            return False
+        try:
+            attached.detach(foreground=True, show_window=True)
+            if attached.attached:
+                return False
+        except (OSError, ValueError, RuntimeError):
+            return False
+        self._attached = None
+        self._external_key = None
+        self._sync_popout_button()
+        self.popout_requested.emit()
+        return True
+
     def open_external(self, target):
         """Dock the vault's MAIN Obsidian window; do not create pop-outs.
 
@@ -400,6 +1003,12 @@ class StudioPreviewPanel(QFrame):
         never creates a fallback pop-out. Sakura behavior is independent.
         """
         self.content_stack.setCurrentWidget(self.host)
+        if target.app == 'vscode':
+            return self._open_vscode_guest(target)
+        if target.app == 'sakura':
+            from sakura_guest_bridge import enabled as sakura_guest_enabled
+            if sakura_guest_enabled():
+                return self._open_sakura_guest(target)
         if target.app == 'obsidian':
             # Validate BEFORE releasing any existing editor. A missing CLI or
             # unregistered vault must never make the old note disappear.
@@ -512,7 +1121,13 @@ class StudioPreviewPanel(QFrame):
                     break
         if previous:
             try:
-                self._attached = AttachedStudioWindow(previous, int(self.host.winId()))
+                if target.app == 'obsidian':
+                    from obsidian_ime_overlay import overlay_enabled, ObsidianImeOverlay
+                    self._attached = (ObsidianImeOverlay(previous, int(self.host.winId()))
+                                      if overlay_enabled() else
+                                      AttachedStudioWindow(previous, int(self.host.winId())))
+                else:
+                    self._attached = AttachedStudioWindow(previous, int(self.host.winId()))
                 self._attached.resize(self.host.width(), self.host.height())
                 self._external_key = parked_key
                 self._sync_popout_button()
@@ -605,9 +1220,12 @@ class StudioPreviewPanel(QFrame):
             self._obsidian_main_probe_busy = False
             self._obsidian_main_probe_attempts = 0
             self._obsidian_main_open_issued = False
+            self._obsidian_cli_prepared = False
+            self._obsidian_main_verify_misses = 0
+            self._obsidian_main_reopen_count = 0
             self.status_label.setText(
-                'Obsidian本体のウィンドウを確認中…\n'
-                'CLIで対象ノートと本体を確認してから第3列へ収容します')
+                'Obsidianの起動・CLI準備完了を確認中…\n'
+                '準備完了後に対象ノートを開き、本体を第3列へ収容します')
         else:
             self.status_label.setText(
                 '外部エディターの新しいウィンドウを待っています…\n'
@@ -619,50 +1237,58 @@ class StudioPreviewPanel(QFrame):
         return True
 
     def _probe_obsidian_main_window(self, token):
-        """Ask Obsidian which MAIN window now contains the requested note.
+        """Stage 1: wait for real CLI readiness, then open exactly one main leaf.
 
-        This runs off the Qt UI thread and does not use SetParent or scan
-        unrelated HWNDs until the vault explicitly verifies the note.
+        A visible HWND is not proof that Obsidian's CLI eval command exists.
+        In Obsidian 1.15.1 an early eval can return *exit code zero* and
+        'Command "eval" not found'. Never mark the note-open request sent
+        until readiness has been acknowledged on the Qt thread.
         """
         pending = self._external_pending
+        max_attempts = 35
         if (pending is None or pending[0].app != 'obsidian'
                 or token != self._obsidian_main_probe_token
-                or self._obsidian_main_probe_busy or self._obsidian_main_probe_attempts >= 12):
+                or self._obsidian_main_probe_busy
+                or self._obsidian_main_probe_attempts >= max_attempts):
             return
         target = pending[0]
         self._obsidian_main_probe_busy = True
         self._obsidian_main_probe_attempts += 1
-        # One opening request per handoff, then read-only verification.
-        # If main DOM was still loading, allow a later retry to reissue open.
-        request_open = not self._obsidian_main_open_issued
+        waiting_for_ready = not getattr(self, '_obsidian_cli_prepared', False)
+        request_open = (not waiting_for_ready and not self._obsidian_main_open_issued)
         if request_open:
             self._obsidian_main_open_issued = True
         from obsidian_dock_trace import trace
         trace('PROBE_START', attempt=self._obsidian_main_probe_attempts,
+              stage=('startup_ready' if waiting_for_ready else 'main_window'),
               request_open=request_open)
 
         def worker():
             from obsidian_dock_bridge import (registered_note, find_cli,
-                                              main_open_code, main_verify_code, cli_eval)
+                                              main_ready_code, main_open_code,
+                                              main_verify_code, cli_eval)
             note = registered_note(target.path)
             cli = find_cli()
             if note is None or not cli:
                 result = 'FRB_NO_CLI'
+            elif waiting_for_ready:
+                # READ ONLY: do not mutate notes, windows, or CLI session.
+                result = cli_eval(note[0], main_ready_code(note[1]),
+                                  executable=cli, stage='startup_ready')
             else:
                 if request_open:
                     opened = cli_eval(note[0], main_open_code(note[1]),
                                       executable=cli, stage='main_open')
                     trace('MAIN_OPEN_RESULT', result_code=opened.partition(':')[0])
-                    if opened in ('FRB_NOT_FOUND', 'FRB_MAIN_NOT_READY'):
-                        result = ('FRB_MAIN_OPEN_NOT_READY' if opened == 'FRB_MAIN_NOT_READY'
-                                  else opened)
-                        self._obsidian_main_probe_completed.emit(token, target, result)
-                        return
-                # The first CLI command may execute the openFile() but lose its
-                # async reply. Never infer success from the reply: verify state
-                # in a completely separate read-only CLI call instead.
+                    # Obsidian sometimes reports a CLI failure even though
+                    # the first async openFile already took effect. Verify the
+                    # actual main leaf before deciding it needs to be retried.
+                # Read-only proof: the first .md must really be visible in
+                # the MAIN leaf, not merely accepted by a URI or CLI process.
                 result = cli_eval(note[0], main_verify_code(note[1]),
                                   executable=cli, stage='main_verify')
+                if request_open and opened != 'FRB_MAIN_OPENED' and not result.startswith('FRB_MAIN_TITLE:'):
+                    result = 'FRB_MAIN_OPEN_NOT_READY'
             self._obsidian_main_probe_completed.emit(token, target, result)
 
         threading.Thread(target=worker, name='FRBObsidianMainProbe', daemon=True).start()
@@ -677,8 +1303,38 @@ class StudioPreviewPanel(QFrame):
         from obsidian_dock_trace import trace
         trace('PROBE_RESPONSE', attempt=self._obsidian_main_probe_attempts,
               result_code=str(result).partition(':')[0])
+        if result == 'FRB_CLI_READY':
+            self._obsidian_cli_prepared = True
+            trace('CLI_STARTUP_READY', attempts=self._obsidian_main_probe_attempts)
+            QTimer.singleShot(0, lambda t=token: self._probe_obsidian_main_window(t))
+            return
         if result == 'FRB_MAIN_OPEN_NOT_READY':
-            self._obsidian_main_open_issued = False
+            # Either the note was not indexed yet or eval raced startup. The
+            # native window is never recreated; retry the same openFile at
+            # most once, and always recheck readiness before that retry.
+            self._obsidian_cli_prepared = False
+            self._obsidian_main_verify_misses = 0
+            if getattr(self, '_obsidian_main_reopen_count', 0) < 1:
+                self._obsidian_main_reopen_count = 1
+                self._obsidian_main_open_issued = False
+                trace('MAIN_NOTE_OPEN_RETRY', retries=1)
+        elif result == 'FRB_MAIN_NOT_READY' and self._obsidian_main_open_issued:
+            # A one-shot main_open can return success before the leaf redraws.
+            # Allow several read-only checks. If it never appears, replay the
+            # same openFile at most once; never request a new native window.
+            self._obsidian_main_verify_misses = getattr(self, '_obsidian_main_verify_misses', 0) + 1
+            if (self._obsidian_main_verify_misses >= 4 and
+                    getattr(self, '_obsidian_main_reopen_count', 0) < 1):
+                self._obsidian_main_reopen_count = 1
+                self._obsidian_main_open_issued = False
+                self._obsidian_main_verify_misses = 0
+                trace('MAIN_NOTE_OPEN_RETRY', retries=1)
+        elif result == 'FRB_NOT_FOUND':
+            self._obsidian_cli_prepared = False
+            if getattr(self, '_obsidian_main_reopen_count', 0) < 1:
+                self._obsidian_main_reopen_count = 1
+                self._obsidian_main_open_issued = False
+                trace('MAIN_NOTE_OPEN_RETRY', retries=1)
         if result.startswith('FRB_MAIN_TITLE:'):
             from urllib.parse import unquote
             from external_win32_host import editor_windows
@@ -694,7 +1350,7 @@ class StudioPreviewPanel(QFrame):
             # Full native enumeration is comparatively expensive: collect it
             # at the first and last probe only; lightweight candidates log
             # continues on every response without slowing the Qt event loop.
-            if self._obsidian_main_probe_attempts in (1, 12):
+            if self._obsidian_main_probe_attempts in (1, 35):
                 trace_windows('caption_match', expected_caption=caption)
             hwnd = main_window_matches_caption(caption, windows)
             trace('HWND_SELECTION', success=bool(hwnd), hwnd=int(hwnd or 0),
@@ -704,7 +1360,10 @@ class StudioPreviewPanel(QFrame):
                 from studio_win32_host import AttachedStudioWindow
                 try:
                     trace('SETPARENT_BEGIN', hwnd=int(hwnd))
-                    attached = AttachedStudioWindow(hwnd, int(self.host.winId()))
+                    from obsidian_ime_overlay import overlay_enabled, ObsidianImeOverlay
+                    attached = (ObsidianImeOverlay(hwnd, int(self.host.winId()))
+                                if overlay_enabled() else
+                                AttachedStudioWindow(hwnd, int(self.host.winId())))
                     attached.resize(self.host.width(), self.host.height())
                     trace('SETPARENT_SUCCESS', hwnd=int(hwnd))
                 except (OSError, RuntimeError, ValueError) as exc:
@@ -734,12 +1393,12 @@ class StudioPreviewPanel(QFrame):
                     QTimer.singleShot(0, owner.activateWindow)
                 return
         # The URI handoff can take time. Recheck, but never emit another URI.
-        if self._obsidian_main_probe_attempts < 12 and time.monotonic() - pending[3] < 14:
-            QTimer.singleShot(450, lambda t=token: self._probe_obsidian_main_window(t))
+        if self._obsidian_main_probe_attempts < 35 and time.monotonic() - pending[3] < 27:
+            QTimer.singleShot(600, lambda t=token: self._probe_obsidian_main_window(t))
         else:
             self._fail_obsidian_main_dock(
-                'Obsidian本体のウィンドウを一意に確認できませんでした。'
-                'Vault/CLI設定と、同名の別ウィンドウがないか確認してください。')
+                'Obsidianの準備完了または本体ウィンドウの一意確認ができませんでした。'
+                '起動完了後に再試行し、必要ならCLI・ウィンドウ診断ログを確認してください。')
 
     def _fail_obsidian_main_dock(self, reason):
         """Leave the real Obsidian window untouched and visible on failure."""
@@ -751,6 +1410,7 @@ class StudioPreviewPanel(QFrame):
         self._external_key = None
         self._obsidian_main_probe_token = None
         self._obsidian_main_probe_busy = False
+        self._obsidian_cli_prepared = False
         self._obsidian_cli_queued = None
         self.status_label.setText(reason + '\nObsidian本体はデスクトップ側で使用できます。')
         self.status_label.show()
@@ -827,6 +1487,7 @@ class StudioPreviewPanel(QFrame):
         from obsidian_dock_trace import trace
         trace('CLI_HANDSHAKE_COMPLETED', kind=kind, hwnd=int(hwnd or 0),
               result_code=str(result).partition(':')[0], accepted=self._obsidian_cli_ready)
+        self._sync_popout_button()
         if kind == 'bind' and not self._obsidian_cli_ready:
             self._obsidian_cli_queued = None
             self._obsidian_switch_unavailable(
@@ -869,18 +1530,36 @@ class StudioPreviewPanel(QFrame):
             studio_ready = (studio_session and self._attached is not None
                             and self._attached.attached)
             sakura_ready = self.sakura_attached()
+            obsidian_ready = bool(
+                self._external_key is not None
+                and self._external_key[0] == 'obsidian'
+                and self._attached is not None
+                and self._attached.attached)
+            vscode_ready = bool(
+                self._external_key is not None
+                and self._external_key[0] == 'vscode'
+                and self._attached is not None
+                and self._attached.attached)
             # The button is part of the Studio header even during HWND attach:
             # do not make it vanish simply because native reparenting briefly
             # reports detached. The action remains disabled until safe.
-            button.setVisible(bool(sakura_ready or studio_session))
-            button.setEnabled(bool((studio_ready or sakura_ready)
+            button.setVisible(bool(obsidian_ready or vscode_ready or sakura_ready or studio_session))
+            button.setEnabled(bool((obsidian_ready or vscode_ready or studio_ready or sakura_ready)
+                                   and self._external_pending is None
+                                   and getattr(self, '_vscode_switch_pending', None) is None
+                                   and getattr(self, '_sakura_guest_switch', None) is None
+                                   and self._obsidian_cli_busy is None
                                    and not self._studio_popout_pending
                                    and not self._studio_dock_pending))
-            button.setToolTip('Studioを外に出す（編集状態を保持）' if studio_ready
+            button.setToolTip('Obsidianをデスクトップへ外出し（終了しません）' if obsidian_ready
+                              else 'VS Codeをデスクトップへ外出し（終了しません）' if vscode_ready
+                              else 'Studioを外に出す（編集状態を保持）' if studio_ready
                               else 'Studioの収容が完了すると外に出せます' if studio_session
                               else 'サクラエディタを外に出す（終了しません）')
         if getattr(self, 'close_button', None) is not None:
             self.close_button.setToolTip(
+                '第3列を隠す（編集状態を保持）'
+                if (self.sakura_attached() and getattr(self._attached, 'is_ime_overlay', False)) else
                 'サクラエディタへ通常終了を要求（未保存時はエディタ側で確認）'
                 if self.sakura_attached() else '第3列を隠す（編集状態を保持）')
 
@@ -891,10 +1570,49 @@ class StudioPreviewPanel(QFrame):
             '他のプレビューに切り替えるには、右上の「外に出す」か「×」を押してください。')
 
     def pop_out_selected(self):
-        """Use the same Browser external-arrow icon for either native editor."""
+        """Release the currently displayed guest without terminating it."""
+        if (self._external_key is not None
+                and self._external_key[0] == 'vscode'):
+            return self.pop_out_vscode()
+        if (self._external_key is not None
+                and self._external_key[0] == 'obsidian'):
+            return self.pop_out_obsidian()
         if self.sakura_attached():
+            if getattr(self._attached, 'is_ime_overlay', False):
+                return self.pop_out_sakura_guest()
             return self.pop_out_sakura()
         return self.pop_out_studio()
+
+    def pop_out_obsidian(self):
+        """Return the borrowed MAIN window to desktop, including IME overlay.
+
+        Never WM_CLOSE, kill the process or retain it in the parked HWND pool.
+        A late CLI result must not re-dock a detached user-owned window.
+        """
+        attached = self._attached
+        if (self._external_key is None or self._external_key[0] != 'obsidian'
+                or attached is None or not attached.attached
+                or self._external_pending is not None
+                or self._obsidian_cli_busy is not None):
+            return False
+        try:
+            attached.detach(foreground=True, show_window=True)
+            if attached.attached:
+                return False
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.status_label.setText('Obsidianを外に出せませんでした: ' + str(exc))
+            self.status_label.show()
+            return False
+        self._external_timer.stop()
+        self._external_pending = None
+        self._obsidian_main_probe_token = None
+        self._obsidian_main_probe_busy = False
+        self._reset_obsidian_cli()
+        self._attached = None
+        self._external_key = None
+        self._sync_popout_button()
+        self.popout_requested.emit()  # Caller hides the now-empty third column.
+        return True
 
     def pop_out_studio(self):
         """Release Studio's Launch-owner guard BEFORE detaching its HWND.
@@ -981,7 +1699,29 @@ class StudioPreviewPanel(QFrame):
         desktop Obsidian process or an unsaved remaining tab.
         """
         if (self.isHidden() or self._external_pending is not None
-                or self._external_key is None or self._external_key[0] != 'obsidian'):
+                or self._external_key is None):
+            return
+        if self._external_key[0] in ('vscode', 'sakura') and (
+                self._external_key[0] == 'vscode' or
+                getattr(self._attached, 'is_ime_overlay', False)):
+            attached = self._attached
+            try:
+                alive = bool(attached and attached.attached
+                             and attached.u.IsWindow(int(attached.hwnd)))
+            except (OSError, RuntimeError, ValueError, AttributeError):
+                alive = False
+            if not alive:
+                # The guest itself was closed. Do not leave an empty third
+                # column or accidentally adopt another desktop Code window.
+                self._attached = None
+                self._external_key = None
+                self._vscode_switch_pending = None
+                self._vscode_profile_dir = None
+                self._external_timer.stop()
+                self._sync_popout_button()
+                self.popout_requested.emit()
+            return
+        if self._external_key[0] != 'obsidian':
             return
         attached = self._attached
         # An unsuccessful Obsidian handoff must not leave an empty third pane.
@@ -1163,7 +1903,10 @@ class StudioPreviewPanel(QFrame):
         can leave the renderer in an inconsistent state. Keep the document
         session alive, detached and invisible, ready to reattach on reopen.
         """
-        if self._external_key is not None and self._external_key[0] == 'obsidian':
+        if self._external_key is not None and (
+                self._external_key[0] in ('obsidian', 'vscode') or
+                (self._external_key[0] == 'sakura' and
+                 getattr(self._attached, 'is_ime_overlay', False))):
             self._park_external()
 
     def _close_owned_sakura(self, hwnd):
@@ -1200,8 +1943,15 @@ class StudioPreviewPanel(QFrame):
                 '外部エディターの起動・切替中です。表示が確定してから×で閉じてください。')
             self.status_label.show()
             return False
-        if getattr(self, 'sakura_attached', lambda: False)():
+        if getattr(self, 'sakura_attached', lambda: False)() and not getattr(
+                self._attached, 'is_ime_overlay', False):
             return self._request_sakura_normal_close()
+        if self._external_key is not None and (
+                self._external_key[0] == 'vscode' or
+                (self._external_key[0] == 'sakura' and
+                 getattr(self._attached, 'is_ime_overlay', False))):
+            # × hides the guest but NEVER terminates VS Code or unsaved files.
+            return self._park_external()
         self._external_timer.stop()
         self._sakura_switch_from = None
         if self._external_key is not None and self._external_key[0] == 'obsidian':
@@ -1248,15 +1998,29 @@ class StudioPreviewPanel(QFrame):
 
     def _poll_external(self):
         pending = self._external_pending
+        if self._vscode_switch_pending is not None:
+            self._poll_vscode_guest()
+            return
+        if self._sakura_guest_switch is not None:
+            self._poll_sakura_guest()
+            return
         if pending is None:
             self._external_timer.stop()
             return
         target, baseline, launched_pid, started = pending
+        if target.app == 'vscode':
+            self._poll_vscode_guest()
+            return
+        if target.app == 'sakura':
+            from sakura_guest_bridge import enabled as sakura_guest_enabled
+            if sakura_guest_enabled():
+                self._poll_sakura_guest()
+                return
         if target.app == 'obsidian':
             # The main window may predate this URI; it MUST NOT be picked by
             # find_new_editor_window(). Wait for the validated CLI handshake.
-            if time.monotonic() - started > 17:
-                self._fail_obsidian_main_dock('Obsidian本体の確認がタイムアウトしました。')
+            if time.monotonic() - started > 30:
+                self._fail_obsidian_main_dock('Obsidianの起動・CLI／本体確認がタイムアウトしました。')
             return
         if target.app == 'sakura' and not getattr(self, '_sakura_trace_poll_logged', False):
             getattr(self, '_sakura_trace', lambda *a, **k: None)(
@@ -1370,7 +2134,11 @@ class StudioPreviewPanel(QFrame):
     def _park_external(self):
         if self._external_key is None:
             return
-        is_sakura = self._external_key[0] == 'sakura'
+        is_sakura = (self._external_key[0] == 'sakura' and
+                     not getattr(self._attached, 'is_ime_overlay', False))
+        if self._external_key[0] == 'vscode':
+            self._vscode_switch_pending = None
+            self._vscode_queued = None
         if is_sakura:
             # Strict Sakura contract: no implicit WM_CLOSE, detach or parking.
             # The explicit pop-out and × commands own those transitions.
@@ -1480,8 +2248,9 @@ class StudioPreviewPanel(QFrame):
         self._timer.stop()
         # This path is called when the user switches to/from C# Studio as well
         # as between external editors. Preserve the other app before reuse.
-        if getattr(self, 'sakura_attached', lambda: False)():
-            return False  # No automatic Sakura pop-out on document switch.
+        if (getattr(self, 'sakura_attached', lambda: False)() and
+                not getattr(self._attached, 'is_ime_overlay', False)):
+            return False  # Legacy Sakura dock is not auto-parked.
         if getattr(self, '_external_key', None) is not None:
             self._park_external()
             if self._external_key is not None:
@@ -1574,6 +2343,10 @@ class StudioPreviewPanel(QFrame):
 
     def undock(self):
         """Restore all live Studio windows only when Launch itself exits."""
+        self._vscode_switch_pending = None
+        self._vscode_queued = None
+        self._sakura_guest_switch = None
+        self._sakura_guest_queued = None
         self._timer.stop()
         self._external_timer.stop()
         self._sakura_close_timer.stop()
@@ -1625,11 +2398,20 @@ class StudioPreviewPanel(QFrame):
         self.status_label.setText('')
         self.status_label.show()
 
+    def set_maximized(self, maximized):
+        self._third_column_maximized = bool(maximized)
+        self.maximize_button.setIcon(browser_navigation_icon(
+            'restore' if maximized else 'maximize', theme_family(self._theme)))
+        self.maximize_button.setIconSize(self.close_button.iconSize())
+        self.maximize_button.setToolTip(
+            '第3列を元の幅に戻す' if maximized else 'Launch内で第3列を最大化')
+
     def apply_theme(self, theme):
         self._theme = theme
         c = theme_palette(theme)
         self.close_button.setIcon(browser_navigation_icon('close', theme_family(theme)))
         self.popout_button.setIcon(browser_navigation_icon('external', theme_family(theme)))
+        self.set_maximized(getattr(self, '_third_column_maximized', False))
         if self._options_widget is not None:
             self._options_widget.set_theme(theme)
         self.setStyleSheet(f'''

@@ -57,7 +57,7 @@ def _process_name(kernel, pid):
 
 def editor_windows(editor, *, include_hidden=False):
     """List (hwnd, pid, title) of titled editor top-level windows."""
-    expected = {'obsidian': 'obsidian.exe', 'sakura': 'sakura.exe'}.get(editor)
+    expected = {'obsidian': 'obsidian.exe', 'sakura': 'sakura.exe', 'vscode': 'code.exe'}.get(editor)
     if expected is None:
         return []
     user32, kernel = _api()

@@ -33,13 +33,22 @@ class PassiveHeaderDrag(QObject):
         kind = event.type()
         is_workspace_blank = (getattr(widget, 'objectName', lambda: '')()
                               == self._WORKSPACE_DRAG_HANDLE)
-        # This is an Explorer/Chrome-style blank tab-strip surface. Never
-        # interpret a double-click on an actual Files/Browser/Page button.
-        if (is_workspace_blank
+        property_getter = getattr(widget, 'property', None)
+        header_mode = (property_getter('frbHeaderDoubleClick')
+                       if callable(property_getter) else None)
+        # Only explicitly registered, passive title/header areas are draggable.
+        # Children such as the breadcrumb, input boxes, close/maximize buttons
+        # and the Files List column headers remain native Qt controls.
+        allow_double_click = (is_workspace_blank or
+                              header_mode in ('window', 'third'))
+        if (allow_double_click
                 and kind == getattr(QEvent.Type, 'MouseButtonDblClick', None)
                 and event.button() == Qt.MouseButton.LeftButton):
             self._reset_drag()
-            self.window.toggle_maximize_restore()
+            if header_mode == 'third':
+                self.window.maximize_launch_then_third()
+            else:
+                self.window.toggle_maximize_restore()
             event.accept()
             return True
 
@@ -49,10 +58,10 @@ class PassiveHeaderDrag(QObject):
             self._reset_drag()
             self._origin_pointer = event.globalPosition().toPoint()
             self._origin_window = self.window.pos()
-            if is_workspace_blank:
-                # Do not call startSystemMove on a simple press: on Windows
-                # that can consume the second click before Qt recognizes a
-                # MouseButtonDblClick. Start moving only after real motion.
+            if allow_double_click:
+                # A native startSystemMove on mouse DOWN consumes Windows'
+                # second click. Wait for real movement before starting it;
+                # a stationary double click can therefore maximize reliably.
                 self._pending_workspace_drag = True
             else:
                 handle = self.window.windowHandle()

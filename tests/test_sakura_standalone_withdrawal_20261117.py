@@ -63,7 +63,7 @@ def test_sakura_preview_api_fails_closed_before_creating_native_host():
 def test_obsidian_and_studio_embedding_configuration_is_unchanged():
     source = SOURCE.read_text(encoding='utf-8')
     route = source.split('def preview_bookmark_from_list(', 1)[1].split('def show_browser_preview(', 1)[0]
-    assert "external.app != 'sakura' and embedded_editor_enabled(" in route
+    assert "sakura_guest_enabled() if external.app == 'sakura' else" in route
     assert "if external.app != 'obsidian' or find_vault_root(external.path) is not None:" in route
     assert "'studio')):" in route
     assert "return self.show_studio_preview(target)" in route

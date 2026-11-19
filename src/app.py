@@ -3262,9 +3262,12 @@ class Launcher(QWidget):
         # The search_bar itself receives presses on its top/bottom whitespace,
         # and the decorative brand widgets receive presses on the title.
         self._passive_header_drag = PassiveHeaderDrag(self)
+        # The app logo AND 'FRB Launch' caption double-click like a real
+        # Windows titlebar; searching and frame buttons are never intercepted.
         for surface in (self.search_bar, self.brand_widget,
                         self.brand_icon_label, self.brand_title_label,
                         self.header_divider):
+            surface.setProperty('frbHeaderDoubleClick', 'window')
             surface.installEventFilter(self._passive_header_drag)
 
         # Browser-style view navigation is separate from ←/→ keyboard
@@ -3589,9 +3592,13 @@ class Launcher(QWidget):
         # with the slim cascade scrollbar; do not change their policies or sorting.
         self.list.verticalScrollBar().setStyleSheet(MAIN_LIST_SCROLLBAR_QSS)
         self.list.horizontalScrollBar().setStyleSheet(MAIN_LIST_SCROLLBAR_QSS)
-        # Child overlay: no separate top-level Popup window and no Windows
-        # focus handoff, which is important for this frameless Tool launcher.
-        self.history_popup = QFrame(self)
+        # Native *owned* tool window: it can appear above an independent
+        # Obsidian overlay. Unlike Qt.Popup it does not grab the keyboard, so
+        # typing in the main search/Remote remains unchanged.
+        self.history_popup = QFrame(
+            self, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        self.history_popup.setAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.history_popup.setObjectName('historyPopup')
         self._dark_history_qss = history_popup_qss('dark')
         history_layout = QVBoxLayout(self.history_popup)
@@ -3660,6 +3667,8 @@ class Launcher(QWidget):
         self.history_filter.installEventFilter(self)
         history_layout.addWidget(self.history_choices)
         self.history_popup.hide()
+        QApplication.instance().applicationStateChanged.connect(
+            self._dismiss_histories_when_inactive)
         self.history_choices.installEventFilter(self)
         self.history_choices.viewport().installEventFilter(self)
         self.tray = QSystemTrayIcon(tray_icon(), self); self.tray.setToolTip('FRB Launch — Ctrl+Shift+;')
@@ -3837,6 +3846,22 @@ class Launcher(QWidget):
             finally:
                 self._maximizing_window = False
         self.update_header_icons()
+
+    def maximize_launch_then_third(self):
+        """Third-column caption double-click: window first, pane second.
+
+        First double click maximizes the outer Launch; subsequent double
+        clicks toggle only the third-column layout. Window button and main
+        FRB Launch caption remain the independent outer restore controls.
+        """
+        if not (self.isMaximized() or bool(
+                self.windowState() & Qt.WindowState.WindowMaximized)):
+            self.toggle_maximize_restore()
+            return
+        view = getattr(self, 'expanded_view', None)
+        if (view is not None and view.isVisible() and
+                callable(getattr(view, 'toggle_third_column_maximize', None))):
+            view.toggle_third_column_maximize()
 
     def layout_search_inner_controls(self):
         """Keep icon/button inside the pill across DPI, resize and query state.
@@ -5346,9 +5371,12 @@ class Launcher(QWidget):
                          self._current_web_body_area()) if browser_mode else
                         ('directory' if self.files_root_hidden_mode else 'files'))
             if area == 'workspace_files':
-                view.files_mode_tab.setFocus(Qt.FocusReason.OtherFocusReason)
+                view.middle.tree.setFocus(Qt.FocusReason.OtherFocusReason)
             elif area == 'workspace_browser':
-                view.browser_mode_tab.setFocus(Qt.FocusReason.OtherFocusReason)
+                if web_active:
+                    view.web_view.tabs.setFocus(Qt.FocusReason.OtherFocusReason)
+                else:
+                    view.middle.tree.setFocus(Qt.FocusReason.OtherFocusReason)
             elif web_active and str(area).startswith('web_body:'):
                 index = int(area.split(':', 1)[1])
                 if 0 <= index < view.web_view.tabs.count():
@@ -7450,7 +7478,7 @@ class Launcher(QWidget):
             return
         if command == 'REMOTE_NEW_WEB_TAB':
             view = self.expanded_view
-            if view.isVisible() and view._workspace_mode == 'browser' and view.web_view_active():
+            if view.isVisible() and view.web_view_active():
                 view.web_view.add_tab(self.webview_settings.get(
                     'new_tab_url', 'https://www.google.com/'))
             return
@@ -7533,7 +7561,7 @@ class Launcher(QWidget):
             # Reuse Browser's live address-bar heart. It owns URL validation,
             # duplicate handling, JSON persistence, and enabled state.
             view = self.expanded_view
-            if view.isVisible() and view._workspace_mode == 'browser' and view.web_view_active():
+            if view.isVisible() and view.web_view_active():
                 web = view.web_view
                 if web is not None and web.favorite_save.isEnabled() and web.current_url_for_favorite():
                     web.favorite_save.click()
@@ -7580,7 +7608,7 @@ class Launcher(QWidget):
             self._remote_mouse_menu_click = None
         expanded = self.expanded_view.isVisible()
         web_active = expanded and getattr(self.expanded_view, 'web_view_active', lambda: False)()
-        browser_mode = expanded and getattr(self.expanded_view, '_workspace_mode', 'files') == 'browser'
+        browser_mode = expanded and web_active and str(self._remote_area or '').startswith(('web_', 'bookmarks'))
         area = self._remote_area or starting_area(
             self._last_focus_area, expanded=expanded, web=web_active,
             web_tab_count=self._web_tab_count(),
@@ -8246,7 +8274,7 @@ class Launcher(QWidget):
             # webpage preview instead of exposing black right/bottom strips.
             web = getattr(self.expanded_view, 'web_view', None)
             if (self.view_mode == 'expanded'
-                    and self.expanded_view._workspace_mode == 'browser'
+                    and self.expanded_view.web_view_active()
                     and web is not None):
                 web.begin_live_resize()
             event.accept(); return
@@ -8350,6 +8378,14 @@ class Launcher(QWidget):
 
     def moveEvent(self, event):
         super().moveEvent(event)
+        # Native history Tools no longer inherit their SCREEN position from
+        # Launcher; keep their old in-window anchors while dragging Launch.
+        if getattr(self, 'history_popup', None) is not None and self.history_popup.isVisible():
+            self.position_history_popup()
+        expanded = getattr(self, 'expanded_view', None)
+        if (expanded is not None and getattr(expanded, 'favorite_popup', None) is not None
+                and expanded.favorite_popup.isVisible()):
+            expanded.position_directory_favorites()
         # Follow the Launch frame immediately, including the 1.5-column
         # mode where Remote itself is realigned on the next Qt event turn.
         # With kana hidden, Remote retains its original independent placement.
@@ -10079,7 +10115,7 @@ class Launcher(QWidget):
         # popup destination is handled separately in run_menu_item().
         if getattr(self.expanded_view, 'bookmark_new_tab', False):
             return self.expanded_view.show_web_url(url, new_tab=True)
-        return self.expanded_view.show_web_url(url)
+        return self.expanded_view.show_web_url(url, new_tab=False)
 
     def navigate_home(self):
         if not self.data or not self.pages:
@@ -11191,7 +11227,10 @@ class Launcher(QWidget):
         height = popup_tree_height(self.history_choices, self.history_visible_rows(),
                                    minimum_row_height=35, chrome_height=48 + 33,
                                    available_height=available)
-        self.history_popup.setGeometry(x, y, width, height)
+        # This is now a native top-level tool window: geometry is SCREEN
+        # coordinates, not Launcher-child coordinates.
+        origin = self.mapToGlobal(QPoint(x, y))
+        self.history_popup.setGeometry(origin.x(), origin.y(), width, height)
 
     def populate_history_popup(self, selected=None):
         """Folders are visual containers; original keyword text stays intact."""
@@ -11467,6 +11506,7 @@ class Launcher(QWidget):
         self.position_history_popup()
         self.history_popup.show()
         self.history_popup.raise_()
+        self.expanded_view.refresh_guest_popup_priority()
         # Showing a non-modal history overlay must NOT steal focus/IME input.
         # The user explicitly clicks the small local filter to edit it.
         self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
@@ -11476,6 +11516,7 @@ class Launcher(QWidget):
             return
         was_visible = self.history_popup.isVisible()
         self.history_popup.hide()
+        self.expanded_view.refresh_guest_popup_priority()
         self._history_popup_anchor = None
         # Start each invocation with the full history; local filter is not a
         # global search and must not silently hide entries on next open.
@@ -11485,6 +11526,22 @@ class Launcher(QWidget):
         self._search_history_warp_generation += 1
         if was_visible and focus_search and self.isVisible():
             self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+
+    def _dismiss_histories_when_inactive(self, state):
+        """Close transient history windows on focus leaving FRB Launch.
+
+        A Qt.Tool remains an independent HWND; an outside Windows app cannot
+        be observed by the Launcher-local mouse event filter. Do not dismiss
+        while focus moves between Launch and its owned popup widgets.
+        """
+        if state == Qt.ApplicationState.ApplicationActive:
+            return
+        if getattr(self, 'history_popup', None) is not None and self.history_popup.isVisible():
+            self.hide_history_popup()
+        exp = getattr(self, 'expanded_view', None)
+        if (exp is not None and getattr(exp, 'favorite_popup', None) is not None
+                and exp.favorite_popup.isVisible()):
+            exp.hide_favorite_popup()
 
     def toggle_history_popup(self):
         if self.history_popup.isVisible():
@@ -11883,9 +11940,12 @@ class Launcher(QWidget):
              (view.workspace_page_buttons[0] if view.workspace_page_buttons
               else view.files_mode_tab)).setFocus(Qt.FocusReason.TabFocusReason)
         elif target == 'workspace_files':
-            view.files_mode_tab.setFocus(Qt.FocusReason.TabFocusReason)
+            view.middle.tree.setFocus(Qt.FocusReason.TabFocusReason)
         elif target == 'workspace_browser':
-            view.browser_mode_tab.setFocus(Qt.FocusReason.TabFocusReason)
+            if web_active:
+                view.web_view.tabs.setFocus(Qt.FocusReason.TabFocusReason)
+            else:
+                view.middle.tree.setFocus(Qt.FocusReason.TabFocusReason)
         elif target == 'roots':
             view.focus_root()
         elif target == 'breadcrumb':

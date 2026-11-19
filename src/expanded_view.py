@@ -1490,6 +1490,10 @@ class ExpandedLauncherView(QWidget):
                        self.toolbar_scroller):
             source.installEventFilter(self)
         outer.addWidget(self.toolbar_scroller)
+        # Files/Browser workspace selector is obsolete: Files always stays on
+        # the left, and the full Browser lives in the optional third column.
+        # Remove its entire 44px strip (not merely its two tab buttons).
+        self.toolbar_scroller.hide()
         # Shared Explorer header sits ACROSS Files and directory; only the
         # content below is divided. The bookmark panel stays independent.
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -1524,6 +1528,8 @@ class ExpandedLauncherView(QWidget):
         self.shared_title = QLabel('Files', self.shared_header)
         self.shared_title.setObjectName('expandedCombinedTitle')
         shared_layout.addWidget(self.shared_title)
+        self._install_launch_header_drag('window', self.shared_header,
+                                         self.shared_icon, self.shared_title)
         self.density_button = QToolButton(self.shared_header)
         self.density_button.setObjectName('expandedDensityToggle')
         self.density_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -1594,7 +1600,13 @@ class ExpandedLauncherView(QWidget):
         # Exactly the same navigation/validation contract as pressing Enter.
         self.directory_apply.clicked.connect(self.address_bar._submit)
         self.address_bar.attach_path_apply(self.directory_apply)
-        self.favorite_popup = QFrame(self.launcher)
+        # Top-level, Launcher-owned tool window: independently stacked
+        # ABOVE the Obsidian desktop overlay but non-grabbing (Ctrl+G, Remote
+        # and the editable breadcrumb keep their existing focus behavior).
+        self.favorite_popup = QFrame(
+            self.launcher, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        self.favorite_popup.setAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.favorite_popup.setObjectName('expandedFavoritesPopup')
         favorite_layout = QVBoxLayout(self.favorite_popup)
         favorite_layout.setContentsMargins(5, 5, 5, 5)
@@ -1658,6 +1670,8 @@ class ExpandedLauncherView(QWidget):
         files_list_title_layout.setContentsMargins(8, 0, 5, 0)
         self.files_list_title_label = QLabel('Files List', self.files_list_title_box)
         self.files_list_title_label.setObjectName('filesListTitle')
+        self._install_launch_header_drag('window', self.files_list_title_box,
+                                         self.files_list_title_label)
         # Title/right-click and blank-area/right-click share ONE List entry.
         # Do not route these events to the filesystem when a JSON Page is open.
         for header in (self.files_list_title_box, self.files_list_title_label):
@@ -1888,6 +1902,8 @@ class ExpandedLauncherView(QWidget):
         self.studio_preview = None
         self._studio_preview_base_sizes = None
         self._preview_layout_restoring = False
+        self._preview_maximized = False
+        self._preview_normal_columns = None
         self.middle.tree.bookmark_preview_double_click = self.preview_bookmark_from_list
         # Files Exp replaces only the old first-column CONTENT. The splitter,
         # old authored root tree and all of its data/selection logic survive.
@@ -1895,6 +1911,12 @@ class ExpandedLauncherView(QWidget):
         self.embedded_files_exp = RemoteFilesExplorer(
             None, launcher.color_theme, launcher=launcher, embedded=True)
         self.left.layout_box.addWidget(self.embedded_files_exp, 1)
+        # The visible Exp title is owned by RemoteFilesExplorer, not the
+        # hidden legacy first-column header. Do not filter its HOME button.
+        exp_header = self.embedded_files_exp.exp_header
+        self._install_launch_header_drag('window', exp_header,
+            *[child for child in exp_header.findChildren(QLabel)
+              if child.objectName() == 'filesExpTitle'])
         # The two headers form a matching pair. Their widths follow the
         # *actual* Files Exp column (never the combined Exp+Remote host).
         self.left.installEventFilter(self)
@@ -1908,6 +1930,10 @@ class ExpandedLauncherView(QWidget):
         # after native third-column docking/undocking.
         self.files_splitter.splitterMoved.connect(
             lambda *_: QTimer.singleShot(50, self.queue_rail_wheel_position))
+        # The wheel is attached to the Exp/List divider, never the third pane.
+        # Layout may also settle after a maximize or external HWND resize.
+        self.files_splitter.splitterMoved.connect(
+            lambda *_: QTimer.singleShot(120, self.queue_rail_wheel_position))
         # FRB ぐりぐりボタン：Remoteの実物WheelPadを再利用する。
         # 親はこのFiles画面。別Windowで座標を同期する方式は使わない。
         from launch_remote import RoundRailWheelPad
@@ -2085,6 +2111,15 @@ class ExpandedLauncherView(QWidget):
         self.set_files_operating_area(
             'directory' if launcher.files_exp_embedded_mode else 'files')
 
+    def _install_launch_header_drag(self, mode, *surfaces):
+        """Register noninteractive column caption surfaces as drag handles."""
+        handler = self.launcher._passive_header_drag
+        for surface in surfaces:
+            if surface is None:
+                continue
+            surface.setProperty('frbHeaderDoubleClick', mode)
+            surface.installEventFilter(handler)
+
     def select_bookmark_tab(self, new_tab):
         """Select the destination for direct and nested bookmark clicks.
 
@@ -2112,9 +2147,10 @@ class ExpandedLauncherView(QWidget):
 
     def _save_active_preview_width(self):
         """Persist a user-sized third pane even if Launch dies without Quit."""
-        if getattr(self, '_preview_layout_restoring', False):
+        if (getattr(self, '_preview_layout_restoring', False)
+                or getattr(self, '_preview_maximized', False)):
             return
-        for attr, key in (('browser_preview', 'workspace_files_browser_preview_width'),
+        for attr, key in (('browser_preview', 'workspace_files_full_browser_width_v1'),
                           ('studio_preview', 'workspace_files_studio_preview_width')):
             panel = getattr(self, attr, None)
             if panel is None or panel.isHidden():
@@ -2176,6 +2212,8 @@ class ExpandedLauncherView(QWidget):
             self._preview_layout_restoring = False
 
     def save_splitter_sizes(self, *_):
+        if getattr(self, '_preview_maximized', False):
+            return  # temporary Launch-local maximization is never persisted
         # Store the optional third pane independently from original 2-column
         # Files/Remote/Browser splitter state.
         preview = getattr(self, 'browser_preview', None)
@@ -2688,6 +2726,7 @@ class ExpandedLauncherView(QWidget):
             self.files_mode_tab.clicked.connect(lambda _checked=False: self.switch_workspace('files'))
             self.browser_mode_tab.clicked.connect(lambda _checked=False: self.switch_workspace('browser'))
             self._update_workspace_tabs()
+            self.toolbar_scroller.hide()
             # Launch Page buttons live alongside the two workspaces rather
             # than up in the title header or on the remote control. Unlike
             # QTabBar selection, they open the same Page cascade as Remote.
@@ -3505,7 +3544,10 @@ class ExpandedLauncherView(QWidget):
         height = popup_tree_height(self.favorite_choices, rows,
                                    minimum_row_height=34, chrome_height=16,
                                    available_height=available)
-        self.favorite_popup.setGeometry(x, y, width, height)
+        # QFrame is now a native window; convert the old Launcher-relative
+        # anchor to desktop coordinates without changing the visual location.
+        origin = self.launcher.mapToGlobal(QPoint(x, y))
+        self.favorite_popup.setGeometry(origin.x(), origin.y(), width, height)
 
     def wheel_directory_favorite_history(self, obj, event):
         """Browse favorite popup rows, or preview a path inside the address edit.
@@ -3583,6 +3625,16 @@ class ExpandedLauncherView(QWidget):
         bar.editor.setFocus(Qt.FocusReason.MouseFocusReason)
         return True
 
+    def refresh_guest_popup_priority(self):
+        """Update native popup/guest Z-order immediately after visibility changes.
+
+        The regular 160ms guest poll is the fallback for moves/resizes. No
+        SetWindowRgn masking: history popups have independent native HWNDs.
+        """
+        preview = getattr(self, 'studio_preview', None)
+        if preview is not None:
+            preview._sync_obsidian_ime_overlay()
+
     def toggle_directory_favorites(self):
         if self.favorite_popup.isVisible():
             self.hide_favorite_popup()
@@ -3595,10 +3647,12 @@ class ExpandedLauncherView(QWidget):
         self.position_directory_favorites()
         self.favorite_popup.show()
         self.favorite_popup.raise_()
+        self.refresh_guest_popup_priority()
         self.favorite_choices.setFocus(Qt.FocusReason.MouseFocusReason)
 
     def hide_favorite_popup(self):
         self.favorite_popup.hide()
+        self.refresh_guest_popup_priority()
         self._favorite_popup_wheel_delta = 0
         self._favorite_popup_warp_generation += 1
 
@@ -4682,7 +4736,10 @@ class ExpandedLauncherView(QWidget):
         elif area == 'main_search':
             launcher.search.setFocus(Qt.FocusReason.TabFocusReason)
         elif area == 'browser':
-            self.browser_mode_tab.setFocus(Qt.FocusReason.TabFocusReason)
+            if self.web_view_active():
+                self.web_view.tabs.setFocus(Qt.FocusReason.TabFocusReason)
+            else:
+                self.focus_panel(self.middle)
 
     def keyboard_files_shortcuts(self, obj, event):
         """Files keyboard contract: Home, Ctrl+I and six-stop Tab ring.
@@ -4740,7 +4797,7 @@ class ExpandedLauncherView(QWidget):
             if area is None:
                 return False
             order = ('exp', 'list', 'folder_search', 'breadcrumb',
-                     'main_search', 'browser')
+                     'main_search') + (('browser',) if self.web_view_active() else ())
             delta = -1 if key == Qt.Key.Key_Backtab or mods == Qt.KeyboardModifier.ShiftModifier else 1
             target = order[(order.index(area) + delta) % len(order)]
             # Dismiss non-grabbing popup menus rather than leaving keyboard
@@ -4857,6 +4914,13 @@ class ExpandedLauncherView(QWidget):
                 event.type() in (QEvent.Type.Resize, QEvent.Type.Move,
                                  QEvent.Type.Show)):
             self.queue_rail_wheel_position()
+            # Keep Exp/List at their minimum when the Launch window itself
+            # is resized *during* Launch-local third-column maximization.
+            if (event.type() == QEvent.Type.Resize and
+                    getattr(self, '_preview_maximized', False) and
+                    not getattr(self, '_maximized_resize_pending', False)):
+                self._maximized_resize_pending = True
+                QTimer.singleShot(0, self._after_maximized_splitter_resize)
         if (obj is getattr(self, 'remote_15_lane', None) and
                 event.type() in (QEvent.Type.Resize, QEvent.Type.Move,
                                  QEvent.Type.Show)):
@@ -6188,6 +6252,16 @@ class ExpandedLauncherView(QWidget):
         row = self.row_data(item)
         if not row:
             return
+        # A keyboard Enter and a mouse double-click must use the SAME
+        # third-column resolver, including managed JSON, Obsidian Markdown,
+        # physical files, and authored/browser bookmark URLs.  The resolver
+        # returns True when it handled the row, even for an external-editor
+        # fallback, so no second launcher.activate() may follow.
+        preview = getattr(self, 'preview_bookmark_from_list', None)
+        if (pane is self.middle and
+                row.get('item_kind') not in ('category', 'directory') and
+                callable(preview) and preview(row)):
+            return
         virtual = row.get('_launch_virtual_node')
         if virtual is not None:
             if virtual['kind'] == 'file':
@@ -6325,23 +6399,32 @@ class ExpandedLauncherView(QWidget):
                 'new_tab_url', 'https://www.google.com/'))
 
     def _ensure_web_view(self):
-        """Build the embedded browser once; preserve every tab on mode switches."""
-        if self.web_view is not None:
+        """Create the full Browser in the third column; never use the old tab."""
+        if self.web_view is not None and self.browser_preview is not None:
             return True
         try:
-            from launch_web_view import LaunchWebView
-            self.web_view = LaunchWebView(
-                self.files_content_stack, settings=self.launcher.webview_settings)
+            from browser_preview_panel import BrowserPreviewPanel
+            panel = BrowserPreviewPanel(
+                self.files_splitter, settings=self.launcher.webview_settings,
+                profile=None)
+            panel.close_requested.connect(self.close_browser_preview)
+            panel.maximize_requested.connect(self.toggle_third_column_maximize)
+            self._install_launch_header_drag('third', panel.header,
+                                             panel.title_label)
+            self.browser_preview = panel
+            self.files_splitter.addWidget(self.browser_preview)
+            panel.hide()
+            self.web_view = panel.web_view
             self.web_view.tabs.tabBar().area_tab_requested.connect(
                 self.launcher.web_keyboard_tab)
             self.web_view.surface_selected.connect(self.launcher.web_surface_selected)
             self.web_view.bookmarks_show_requested.connect(self.show_browser_bookmarks)
             self.web_view.set_bookmarks_visible(False)
-            self.files_content_stack.addWidget(self.web_view)
             self.refresh_horizontal_bookmarks()
-            self.web_view.apply_theme(self.launcher.color_theme)
+            self.web_view.bookmark_strip.hide()
+            panel.apply_theme(self.launcher.color_theme)
         except (ImportError, RuntimeError) as exc:
-            self.launcher.error('WebViewを起動できません。PySide6 WebEngineを確認してください: ' + str(exc))
+            self.launcher.error('Browserを起動できません。PySide6 WebEngineを確認してください: ' + str(exc))
             return False
         return True
 
@@ -6362,6 +6445,7 @@ class ExpandedLauncherView(QWidget):
                 lambda: getattr(self.launcher, 'pointer_warp_enabled', True))
             web.bookmark_strip.update_bookmark_bar(
                 rows, self.launcher.children, self.open_horizontal_bookmark)
+            web.bookmark_strip.hide()  # The full Browser occupies the third column.
         external_bar = getattr(self, '_external_bookmark_strip', None)
         if external_bar is not None:
             external_bar.pointer_follow_enabled = (
@@ -6458,79 +6542,29 @@ class ExpandedLauncherView(QWidget):
             update_count()
 
     def switch_workspace(self, mode):
-        """Explicit Files/Browser tabs, initially mouse-driven (Remote later)."""
+        """Compatibility with Remote: no visible Files/Browser workspace tabs."""
         if mode == 'files':
             self.show_files_view()
             return True
-        if mode != 'browser':
+        if mode != 'browser' or self.launcher.webview_settings.get('mode') != 'embedded':
             return False
-        if self.launcher.webview_settings.get('mode') != 'embedded':
-            # Company/external mode: never instantiate Qt WebEngine.
-            if self._browser_empty_page is None:
-                # External mode has no QWebEngineView toolbar. Keep a reopen
-                # control here too, otherwise a persisted collapsed bookmark
-                # panel would become impossible to reopen on company PCs.
-                self._browser_empty_page = QWidget(self.files_content_stack)
-                empty_layout = QVBoxLayout(self._browser_empty_page)
-                from browser_bookmark_bar import HorizontalBookmarkBar
-                self._external_bookmark_strip = HorizontalBookmarkBar(self._browser_empty_page)
-                empty_layout.addWidget(self._external_bookmark_strip)
-                self._browser_empty_bookmark_button = QToolButton(self._browser_empty_page)
-                self._browser_empty_bookmark_button.setObjectName('expandedExternalShowBookmarks')
-                self._browser_empty_bookmark_button.setFixedSize(30, 29)
-                self._browser_empty_bookmark_button.setIconSize(QSize(19, 19))
-                self._browser_empty_bookmark_button.setToolTip('ブックマークを表示')
-                self._browser_empty_bookmark_button.setIcon(browser_navigation_icon(
-                    'bookmark_outline', theme_family(self.launcher.color_theme)))
-                self._browser_empty_bookmark_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-                self._browser_empty_bookmark_button.clicked.connect(self.show_browser_bookmarks)
-                self._browser_empty_bookmark_button.setEnabled(
-                    not self._browser_bookmarks_visible)
-                # The horizontal bar is permanently visible; the old
-                # left-column opener is obsolete in external Browser mode.
-                self._browser_empty_bookmark_button.hide()
-                placeholder = QLabel(
-                    'Browser は外部ブラウザモードです。\n'
-                    'ブックマークをクリックすると外部ブラウザで開きます。',
-                    self._browser_empty_page)
-                placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                empty_layout.addWidget(placeholder, 1)
-                self.files_content_stack.addWidget(self._browser_empty_page)
-            self.files_content_stack.setCurrentWidget(self._browser_empty_page)
-            self._activate_browser_layout()
-            self.refresh_horizontal_bookmarks()
-            return True
         if not self._ensure_web_view():
-            self._update_workspace_tabs()
             return False
         if not self.web_view.tabs.count():
             self.web_view.add_tab(self.launcher.webview_settings.get(
                 'new_tab_url', 'https://www.google.com/'))
-        self.files_content_stack.setCurrentWidget(self.web_view)
-        self._activate_browser_layout()
-        return True
+        return self._show_browser_third_column()
 
-    def show_web_url(self, url, *, new_tab=False):
-        """Open a bookmark in Browser using the requested tab destination."""
-        if self.launcher.webview_settings.get('mode') != 'embedded':
-            return False
-        if not self._ensure_web_view():
-            return False
-        self.files_content_stack.setCurrentWidget(self.web_view)
-        self._activate_browser_layout()
-        if new_tab:
-            self.web_view.show_url(url, new_tab=True)
-        else:
-            self.web_view.show_url(url)
-        return True
+    def show_web_url(self, url, *, new_tab=None):
+        """URL requests from any entry point go to the *full* third-column Browser."""
+        return self.show_browser_preview(url, new_tab=new_tab)
 
     def preview_bookmark_from_list(self, row):
-        """Physical Studio documents or virtual bookmark URL leaves.
+        """Shared Files List leaf resolver for double-click AND Enter.
 
-        Only a Files List *double-click* enters this route. Virtual Launch
-        URLs are resolved by the Launcher from authoritative current data;
-        physical paths are checked for the same Studio-managed eligibility
-        already used by the standalone Studio launcher.
+        Virtual URLs use the authoritative current Launch data. Physical
+        files keep the same managed Studio JSON / Obsidian / external-editor
+        routing, including the existing standalone fallback policy.
         """
         if self._workspace_mode != 'files' or not isinstance(row, dict):
             return False
@@ -6542,15 +6576,29 @@ class ExpandedLauncherView(QWidget):
                                    ('_browse_file', '_indexed_file', '_file')):
             from external_preview_route import external_preview_target
             from third_column_host_options import embedded_editor_enabled
+            # Preserve the existing two-argument-free route for .md/.txt and
+            # code files. For JSON alone, a second explicit check lets VS Code
+            # handle non-managed JSON without stealing Studio-managed JSON.
             external = external_preview_target(row)
+            if external is None:
+                from vscode_guest_bridge import enabled as vscode_guest_enabled
+                raw_path = row.get('_browse_file') or row.get('_indexed_file') or row.get('_file')
+                if (vscode_guest_enabled() and isinstance(raw_path, str)
+                        and raw_path.casefold().endswith('.json')):
+                    studio_root = self.launcher.expander().values.get('studio_root', '')
+                    external = external_preview_target(row, studio_root=studio_root)
             if external is not None:
                 # Sakura third-column embedding is retired. Always use the
                 # editor's ordinary external launch, even if an old user
                 # state.ini still contains embed_sakura=true. Never borrow,
                 # reparent or close another Sakura window from this route.
-                enabled = (external.app != 'sakura' and embedded_editor_enabled(
-                    os.environ.get('FRB_LAUNCH_HOME', Path(__file__).resolve().parents[1]),
-                    external.app))
+                from vscode_guest_bridge import enabled as vscode_guest_enabled
+                from sakura_guest_bridge import enabled as sakura_guest_enabled
+                enabled = (vscode_guest_enabled() if external.app == 'vscode' else
+                           sakura_guest_enabled() if external.app == 'sakura' else
+                           embedded_editor_enabled(
+                               os.environ.get('FRB_LAUNCH_HOME', Path(__file__).resolve().parents[1]),
+                               external.app))
                 if external.app == 'sakura':
                     from sakura_window_trace import trace
                     trace('ROUTE_FROM_FILES_LIST', file=Path(external.path).name,
@@ -6585,34 +6633,54 @@ class ExpandedLauncherView(QWidget):
             return False  # Installed apps and future runtime catalogs are not URLs.
         return bool(self.launcher.preview_authored_launch_url(virtual.get('row')))
 
-    def show_browser_preview(self, url):
-        """Preview a URL alongside Files List, without switching workspace."""
+    def show_browser_preview(self, url, *, new_tab=None):
+        """Show URL in the third column, safely releasing Sakura if needed.
+
+        A failed Sakura-to-Browser handoff is a HANDLED refusal: never pass a
+        double click on to normal Launch activation (which launches Chrome).
+        """
         from webview_settings import valid_http_url
         if (self._workspace_mode != 'files' or
                 self.launcher.webview_settings.get('mode') != 'embedded' or
                 not valid_http_url(url)):
             return False
         studio = getattr(self, 'studio_preview', None)
+        sakura_owns_column = bool(
+            studio is not None and not studio.isHidden()
+            and getattr(studio, 'sakura_attached', lambda: False)())
+        if not self._show_browser_third_column():
+            if sakura_owns_column:
+                self.launcher.info_notice(
+                    'サクラエディタの安全な外出しを確認できませんでした。'
+                    '編集中の画面を保持したため、URLは開いていません。')
+                return True  # Refusal consumed: never launch Chrome.
+            return False
+        self.browser_preview.navigate(url, new_tab=new_tab)
+        return True
+
+    def _show_browser_third_column(self):
+        """Show the single Browser; retain Exp/List selection and Web tabs."""
+        if self._workspace_mode != 'files':
+            return False
+        studio = getattr(self, 'studio_preview', None)
         if studio is not None and not studio.isHidden():
+            keep_maximized = self._preview_maximized
+            keep_normal = self._preview_normal_columns
             if getattr(studio, 'sakura_attached', lambda: False)():
-                studio._explain_sakura_switch_blocked()
-                return False
-            self.close_studio_preview()
-        if self.browser_preview is None:
-            try:
-                from browser_preview_panel import BrowserPreviewPanel
-                existing = getattr(self, 'web_view', None)
-                profile = existing.profile if existing is not None else None
-                self.browser_preview = BrowserPreviewPanel(
-                    self.files_splitter, settings=self.launcher.webview_settings,
-                    profile=profile)
-                self.browser_preview.close_requested.connect(self.close_browser_preview)
-                self.files_splitter.addWidget(self.browser_preview)
-                self.browser_preview.hide()
-                self.browser_preview.apply_theme(self.launcher.color_theme)
-            except (ImportError, RuntimeError) as exc:
-                self.launcher.error('Browser Previewを開けません: ' + str(exc))
-                return False
+                # Release to desktop, retain verified HWND for re-docking.
+                # Never use normal close/WM_CLOSE for this automatic handoff.
+                if not studio.release_sakura_guest_for_browser():
+                    return False
+                self._hide_studio_preview_only()
+            else:
+                self.close_studio_preview()
+            if not studio.isHidden():
+                return False  # Editor was not safely released.
+            if keep_maximized:
+                self._preview_maximized = True
+                self._preview_normal_columns = keep_normal
+        if not self._ensure_web_view():
+            return False
         keep_list_focus = self.middle.tree.hasFocus()
         was_open = not self.browser_preview.isHidden()
         if not was_open:
@@ -6620,38 +6688,100 @@ class ExpandedLauncherView(QWidget):
             self._browser_preview_base_sizes = sizes[:]
             self.browser_preview.show()
             total = sum(sizes)
-            from preview_splitter_layout import restored_preview_width
-            stored_width = getattr(getattr(self.launcher, 'settings', None), 'value',
-                                   lambda *_: None)('workspace_files_preview_width', None)
-            stored_width = getattr(getattr(self.launcher, 'settings', None), 'value',
-                                   lambda _key, fallback: fallback)(
-                'workspace_files_browser_preview_width', stored_width)
-            preview_width = restored_preview_width(
-                stored_width, max(270, min(490, int(total * 0.40))), sizes, 230)
-            from preview_splitter_layout import preview_sizes
-            count = (self.files_splitter.count() if hasattr(self.files_splitter, 'count')
-                     else 2 + int(self.browser_preview is not None)
-                            + int(getattr(self, 'studio_preview', None) is not None))
-            index = (self.files_splitter.indexOf(self.browser_preview)
-                     if hasattr(self.files_splitter, 'indexOf') else count - 1)
+            from preview_splitter_layout import restored_preview_width, preview_sizes
+            # Full Browser starts at ~50%, independent of the old narrow
+            # Browser Preview preference. Subsequent manual resize persists.
+            stored_width = self.launcher.settings.value(
+                'workspace_files_full_browser_width_v1', None)
+            desired = restored_preview_width(
+                stored_width, max(350, min(690, int(total * 0.50))), sizes, 190)
+            count = self.files_splitter.count()
+            index = self.files_splitter.indexOf(self.browser_preview)
             widths = preview_sizes(
-                sizes, count, index, preview_width, min_list_width=230)
+                sizes, count, index, desired, min_list_width=190)
             self.files_splitter.setSizes(widths)
-        self.browser_preview.navigate(url)
-        # The new Chromium surface must not steal Files List arrow navigation.
+            if self._preview_maximized:
+                self._apply_third_column_maximized()
         if keep_list_focus:
             self.middle.tree.setFocus(Qt.FocusReason.OtherFocusReason)
-        reflow = getattr(self, 'queue_rail_wheel_position', None)
-        if callable(reflow):
-            reflow()
-            QTimer.singleShot(80, reflow)
+        self._queue_third_column_reflow()
         return True
+
+    def _visible_third_column(self):
+        for panel in (self.browser_preview, self.studio_preview):
+            if panel is not None and not panel.isHidden():
+                return panel
+        return None
+
+    def _queue_third_column_reflow(self):
+        """QSplitter.setSizes() emits no splitterMoved; re-anchor the wheel."""
+        self.queue_rail_wheel_position()
+        QTimer.singleShot(0, self.queue_rail_wheel_position)
+        QTimer.singleShot(80, self.queue_rail_wheel_position)
+        QTimer.singleShot(160, self.queue_rail_wheel_position)
+        QTimer.singleShot(0, self._align_files_list_title_width)
+
+    def _sync_preview_maximize_buttons(self):
+        for panel in (self.browser_preview, self.studio_preview):
+            if panel is not None and hasattr(panel, 'set_maximized'):
+                panel.set_maximized(self._preview_maximized and not panel.isHidden())
+
+    def _after_maximized_splitter_resize(self):
+        self._maximized_resize_pending = False
+        if self._preview_maximized:
+            self._apply_third_column_maximized()
+
+    def _apply_third_column_maximized(self):
+        panel = self._visible_third_column()
+        if panel is None:
+            return
+        from third_column_maximize import maximize_sizes
+        sizes = self.files_splitter.sizes()
+        first_min = (386 if getattr(self.launcher, 'remote_15_mode', False)
+                     else 190 if not getattr(self.launcher, 'files_root_hidden_mode', False)
+                                   or getattr(self.launcher, 'files_exp_embedded_mode', False)
+                     else 0)
+        list_min = max(190, self.middle.minimumWidth())
+        widths = maximize_sizes(
+            sizes, self.files_splitter.indexOf(panel), first_min, list_min)
+        if sizes != widths:
+            self.files_splitter.setSizes(widths)
+        self._sync_preview_maximize_buttons()
+        self._queue_third_column_reflow()
+
+    def toggle_third_column_maximize(self):
+        """Launch-local maximize/restore; NEVER resize the Launch window."""
+        panel = self._visible_third_column()
+        if panel is None:
+            return
+        if not self._preview_maximized:
+            sizes = self.files_splitter.sizes()
+            index = self.files_splitter.indexOf(panel)
+            self._preview_normal_columns = (sizes[0], sizes[1], sizes[index])
+            self._preview_maximized = True
+            self._apply_third_column_maximized()
+            return
+        from third_column_maximize import restore_sizes
+        sizes = self.files_splitter.sizes()
+        original = self._preview_normal_columns
+        self._preview_maximized = False
+        self._preview_normal_columns = None
+        self.files_splitter.setSizes(
+            restore_sizes(sizes, self.files_splitter.indexOf(panel), original))
+        self._sync_preview_maximize_buttons()
+        self._queue_third_column_reflow()
+
+    def _restore_third_column_before_hide(self):
+        """× preserves the normal divider preference, not maximized sizes."""
+        if self._preview_maximized:
+            self.toggle_third_column_maximize()
 
     def close_browser_preview(self):
         """Close only the optional third pane, restoring the prior two widths."""
         panel = self.browser_preview
         if panel is None or panel.isHidden():
             return
+        getattr(self, '_restore_third_column_before_hide', lambda: None)()
         getattr(self, '_save_active_preview_width', lambda: None)()
         panel.stop_preview()
         panel.hide()
@@ -6674,13 +6804,21 @@ class ExpandedLauncherView(QWidget):
         if self._workspace_mode != 'files' or os.name != 'nt':
             return False
         if self.browser_preview is not None and not self.browser_preview.isHidden():
+            keep_maximized = self._preview_maximized
+            keep_normal = self._preview_normal_columns
             self.close_browser_preview()
+            if keep_maximized:
+                self._preview_maximized = True
+                self._preview_normal_columns = keep_normal
         if self.studio_preview is None:
             from studio_preview_panel import StudioPreviewPanel
             self.studio_preview = StudioPreviewPanel(self.files_splitter)
             # The embedded editor uses Launch's shared dialog contract.
             self.studio_preview.launcher = self.launcher
             self.studio_preview.close_requested.connect(self.close_studio_preview)
+            self.studio_preview.maximize_requested.connect(self.toggle_third_column_maximize)
+            self._install_launch_header_drag('third', self.studio_preview.header,
+                                             self.studio_preview.title_label)
             self.studio_preview.popout_requested.connect(self._hide_studio_preview_only)
             self.studio_preview.sakura_close_completed.connect(self._hide_studio_preview_only)
             self.files_splitter.addWidget(self.studio_preview)
@@ -6725,9 +6863,14 @@ class ExpandedLauncherView(QWidget):
             # QTimer is imported at module scope. Importing it locally would
             # shadow that name for the entire method and crash on a later
             # preview when this first-open block is skipped.
-            QTimer.singleShot(0, lambda p=self.studio_preview, w=preview_width,
-                              saved=saved_columns:
-                              self._restore_visible_preview_width(p, w, 170, saved))
+            if self._preview_maximized:
+                self._preview_layout_restoring = False
+                self._apply_third_column_maximized()
+            else:
+                QTimer.singleShot(0, lambda p=self.studio_preview, w=preview_width,
+                                  saved=saved_columns:
+                                  self._restore_visible_preview_width(p, w, 170, saved))
+        getattr(self, '_sync_preview_maximize_buttons', lambda: None)()
         self.queue_rail_wheel_position()
         QTimer.singleShot(80, self.queue_rail_wheel_position)
         return True
@@ -6761,7 +6904,9 @@ class ExpandedLauncherView(QWidget):
         # Fail closed if a future caller bypasses preview_bookmark_from_list.
         # Do not create a pane or touch any existing Sakura window here.
         if target.app == 'sakura':
-            return False
+            from sakura_guest_bridge import enabled as sakura_guest_enabled
+            if not sakura_guest_enabled():
+                return False
         was_open = bool(self.studio_preview and not self.studio_preview.isHidden())
         prepared = self._ensure_studio_preview()
         if target.app == 'sakura':
@@ -6771,6 +6916,7 @@ class ExpandedLauncherView(QWidget):
         if not prepared:
             return False
         if (getattr(self.studio_preview, 'sakura_attached', lambda: False)()
+                and not getattr(self.studio_preview._attached, 'is_ime_overlay', False)
                 and target.app != 'sakura'):
             self.studio_preview._explain_sakura_switch_blocked()
             return False
@@ -6817,6 +6963,7 @@ class ExpandedLauncherView(QWidget):
         panel = self.studio_preview
         if panel is None or panel.isHidden():
             return
+        self._restore_third_column_before_hide()
         getattr(self, '_save_active_preview_width', lambda: None)()
         panel.hide()
         sizes = self._studio_preview_base_sizes
@@ -6842,7 +6989,9 @@ class ExpandedLauncherView(QWidget):
                 yes_text='外に出して終了', no_text='キャンセル')
             if reply != QMessageBox.StandardButton.Yes:
                 return False
-            if not panel.pop_out_sakura():
+            if (not panel.pop_out_sakura_guest() if getattr(
+                    panel._attached, 'is_ime_overlay', False) else
+                    not panel.pop_out_sakura()):
                 return False
         self._save_active_preview_width()
         self.launcher.settings.sync()
@@ -7044,8 +7193,9 @@ class ExpandedLauncherView(QWidget):
         self.middle.tree.viewport().update()
 
     def web_view_active(self):
-        return (self._workspace_mode == 'browser' and self.web_view is not None
-                and self.files_content_stack.currentWidget() is self.web_view)
+        panel = getattr(self, 'browser_preview', None)
+        return (self.web_view is not None and panel is not None
+                and not panel.isHidden() and self._workspace_mode == 'files')
 
     def schedule_web_bookmark_preview(self, item, _previous):
         """Selection means *only selection*, including wheel and Up/Down."""
@@ -7065,7 +7215,7 @@ class ExpandedLauncherView(QWidget):
             # new-tab selection explicitly asks the WebView for another tab.
             opened = (self.show_web_url(url, new_tab=True)
                       if getattr(self, 'bookmark_new_tab', False)
-                      else self.show_web_url(url))
+                      else self.show_web_url(url, new_tab=False))
             if not opened:
                 # Do not route through activate()/execute() again: that would
                 # retry the failed WebEngine import and show the same error twice.
@@ -7088,6 +7238,16 @@ class ExpandedLauncherView(QWidget):
             return
         row = self.row_data(item)
         if not row:
+            return
+        # A keyboard Enter and a mouse double-click must use the SAME
+        # third-column resolver, including managed JSON, Obsidian Markdown,
+        # physical files, and authored/browser bookmark URLs.  The resolver
+        # returns True when it handled the row, even for an external-editor
+        # fallback, so no second launcher.activate() may follow.
+        preview = getattr(self, 'preview_bookmark_from_list', None)
+        if (pane is self.middle and
+                row.get('item_kind') not in ('category', 'directory') and
+                callable(preview) and preview(row)):
             return
         virtual = row.get('_launch_virtual_node')
         if virtual is not None:

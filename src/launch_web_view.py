@@ -1102,6 +1102,33 @@ class LaunchWebView(QFrame):
         menu.addAction('既定ブラウザで開く', self.open_external)
         return menu
 
+    def open_launch_url(self, url, *, new_tab=None):
+        """Open a Files URL without overwriting unrelated web-form content.
+
+        None: auto-new-tab for distinct URL (default Files double click).
+        True: explicitly new tab, except existing URL gets re-selected.
+        False: explicitly selected 'current tab' mode, except a matching
+               already-open tab is still re-selected without reloading.
+        Address-bar navigation continues to use show_url() unchanged.
+        """
+        from browser_tab_policy import matching_tab_index, empty_tab
+
+        tab_urls = [self.tabs.widget(i).url().toString()
+                    for i in range(self.tabs.count())]
+        index = matching_tab_index(tab_urls, url)
+        if index is not None:
+            # No setUrl() here: even reloading the same page may lose a draft.
+            self.tabs.setCurrentIndex(index)
+            return
+        if new_tab is False:
+            # Only an explicit current-tab selection can replace a page.
+            self.show_url(url, new_tab=False)
+            return
+        view = self.current_view()
+        use_new_tab = new_tab is True or (
+            view is not None and not empty_tab(view.url().toString()))
+        self.show_url(url, new_tab=use_new_tab)
+
     def show_url(self, url, *, new_tab=False):
         # Bookmarks navigate the current tab; Ctrl/right-click links open tabs.
         view = self.current_view()

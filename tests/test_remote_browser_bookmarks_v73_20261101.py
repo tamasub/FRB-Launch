@@ -125,5 +125,5 @@ def test_cascade_builder_uses_bookmark_rows_only_for_browser_root():
 
 def test_existing_bookmark_click_routing_is_used():
     assert 'if self.open_bookmark_web_view(row):' in APP
-    assert 'return self.expanded_view.show_web_url(url)' in APP
+    assert 'return self.expanded_view.show_web_url(url, new_tab=False)' in APP
     assert 'if self.menu:self.menu.close()\n        self.activate(row)' in APP

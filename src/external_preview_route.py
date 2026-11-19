@@ -124,7 +124,7 @@ def find_sakura_executable():
     return None
 
 
-def external_preview_target(row, *, sakura_lookup=None, vault_lookup=None):
+def external_preview_target(row, *, sakura_lookup=None, vault_lookup=None, studio_root=None):
     """Map only concrete Files List leaves; other actions are never intercepted."""
     path = _real_file_from_row(row)
     if path is None:
@@ -135,6 +135,18 @@ def external_preview_target(row, *, sakura_lookup=None, vault_lookup=None):
         executable = (sakura_lookup or find_sakura_executable)()
         if executable:
             return ExternalPreviewTarget('sakura', str(path), executable)
+    # Trial-only route: no changes to Studio JSON, Obsidian Markdown, or Sakura.
+    from vscode_guest_bridge import enabled, accepts_file
+    if enabled() and accepts_file(path):
+        if path.suffix.casefold() == '.json':
+            # Managed JSON must continue to use FRB Studio. Without the
+            # active Studio root we cannot safely decide; fail closed.
+            if not studio_root:
+                return None
+            from file_index import studio_managed_json
+            if studio_managed_json(path, Path(studio_root)):
+                return None
+        return ExternalPreviewTarget('vscode', str(path))
     return None
 
 
@@ -223,6 +235,12 @@ def standalone_editor_command(target, *, obsidian_lookup=None):
         # Obsidian 1.14+ with a current installer supports standalone .md.
         # Passing an explicit absolute path keeps Vault-outside files intact.
         return [executable, target.path]
+    if target.app == 'vscode':
+        from vscode_guest_bridge import find_executable
+        executable = find_executable()
+        if not executable:
+            raise FileNotFoundError('Visual Studio Code (Code.exe) が見つかりません')
+        return [executable, target.path]  # Failure fallback: ordinary desktop open.
     raise ValueError('サポートされていない外部エディターです')
 
 

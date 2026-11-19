@@ -29,7 +29,10 @@ def test_popup_matches_input_width_and_content_not_twice_the_history_height():
     assert 'popup_tree_height(' in code
     assert 'footer_top = self.launcher.footer.mapTo(' in code
     assert '* 2' not in code
-    assert 'self.favorite_popup.setGeometry(x, y, width, height)' in code
+    # The owned native Tool uses desktop coordinates, but the anchor and
+    # content sizing are unchanged.
+    assert 'origin = self.launcher.mapToGlobal(QPoint(x, y))' in code
+    assert 'self.favorite_popup.setGeometry(origin.x(), origin.y(), width, height)' in code
 
 
 def test_drag_defers_mutation_until_after_qt_move_cleanup():

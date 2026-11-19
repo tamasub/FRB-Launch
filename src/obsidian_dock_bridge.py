@@ -123,6 +123,33 @@ def main_probe_code(note_path):
 
 
 
+
+def main_ready_code(note_path=None):
+    """Read-only cold-start barrier for the *specific* requested Markdown.
+
+    Obsidian may register ``eval`` and display a main window before vault
+    metadata has indexed the requested file. Readiness requires all three:
+    CLI eval, the actual note visible to the vault API, and one main root leaf.
+    Never send openFile until these conditions are satisfied.
+    """
+    note_guard = "" if note_path is None else """
+      const file=app.vault?.getAbstractFileByPath?.(PATH);
+      if(!file || file.extension!=='md') return 'FRB_MAIN_NOT_READY';
+    """.replace('PATH', json.dumps(note_path, ensure_ascii=False))
+    return """(()=>{
+      if(typeof app==='undefined' || !app.workspace ||
+         typeof app.workspace.iterateRootLeaves!=='function')
+        return 'FRB_MAIN_NOT_READY';
+      NOTE_GUARD
+      let mainLeaves=0;
+      app.workspace.iterateRootLeaves(leaf=>{
+        if(leaf?.view?.containerEl?.ownerDocument?.defaultView === window)
+          mainLeaves++;
+      });
+      return mainLeaves ? 'FRB_CLI_READY' : 'FRB_MAIN_NOT_READY';
+    })()""".replace('NOTE_GUARD', note_guard)
+
+
 def main_open_code(note_path):
     """ONE-TIME request: reuse the main leaf and open one note, no pop-outs/tabs.
 
@@ -252,10 +279,16 @@ def cli_eval(vault_id, script, *, executable=None, runner=None, stage='eval'):
              lines[0] if len(lines) == 1 and not marker_lines else '')
     value = value.strip('"\' ')
     allowed = ('FRB_BOUND', 'FRB_SWITCHED', 'FRB_MAIN_OPENED', 'FRB_NOT_UNIQUE',
-               'FRB_NOT_BOUND', 'FRB_NOT_FOUND', 'FRB_MAIN_NOT_READY')
+               'FRB_NOT_BOUND', 'FRB_NOT_FOUND', 'FRB_MAIN_NOT_READY',
+               'FRB_CLI_READY')
     if proc.returncode:
         result = 'FRB_CLI_FAILED'
         reason = 'nonzero_returncode'
+    elif re.search(r'''Error:\s+Command\s+["']eval["']\s+not\s+found''', output, re.I):
+        # Obsidian CLI 1.15.1 can return code 0 while its command registry
+        # is still initializing. Treat this as retryable, never as success.
+        result = 'FRB_CLI_NOT_READY'
+        reason = 'eval_not_registered_yet'
     elif value.startswith('FRB_MAIN_TITLE:') and len(value) > len('FRB_MAIN_TITLE:'):
         result = value
         reason = 'main_title'
