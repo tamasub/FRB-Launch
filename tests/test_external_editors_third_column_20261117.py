@@ -97,7 +97,7 @@ def test_obsidian_uri_encodes_unicode_spaces_and_windows_path():
     uri = obsidian_open_uri(r'F:\FRB\note vault\釣りと FFT.md')
     assert uri.startswith('obsidian://open?path=F%3A%5CFRB%5C')
     assert '%20' in uri and '%E9%87%A3' in uri
-    assert uri.endswith('&paneType=window')
+    assert 'paneType=' not in uri
 
 
 def test_obsidian_uri_is_not_sakura_command():

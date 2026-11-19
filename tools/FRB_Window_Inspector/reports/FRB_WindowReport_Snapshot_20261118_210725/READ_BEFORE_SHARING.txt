@@ -1,0 +1,5 @@
+﻿FRB Window Inspector - sharing guidance
+This ZIP contains only focus-matched process/window records, not the all-process inventory.
+It can still contain process paths, document titles, and local file names.
+Please inspect before sharing. Nothing is uploaded by this tool.
+For the full inventory, consult the unzipped local report directory instead.

@@ -1,0 +1,10 @@
+FRB Window / Process Inspector v1.0 差分パッケージ
+
+対象: 既存のFRB_Window_Inspectorフォルダー内の同名ファイルを上書きしてください。
+修正ファイル:
+- collect_windows.ps1: param初期値からJoin-Pathを撤去し、param評価後にreportsパスを解決。
+- FRB_Window_Inspector.bat: PowerShell失敗時に成功案内を出さない。
+README_使い方.mdは修正内容・確認方法を補足（フル版に同梱）。
+
+必要なら元のファイルをバックアップしてから上書きしてください。
+Windows実機動作確認は未実施。

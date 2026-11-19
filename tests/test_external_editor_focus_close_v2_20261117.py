@@ -126,7 +126,7 @@ def test_obsidian_prefers_vault_id_for_a_registered_document(tmp_path, monkeypat
     monkeypatch.setenv('APPDATA', str(appdata))
     uri = route.obsidian_open_uri(str(note))
     assert uri.startswith('obsidian://open?vault=approved-vault-id&file=my%20files%2F')
-    assert uri.endswith('&paneType=window')
+    assert 'paneType=' not in uri
     assert 'path=' not in uri
     assert '%E3%83%86' in uri
 

@@ -139,7 +139,7 @@ def external_preview_target(row, *, sakura_lookup=None, vault_lookup=None):
 
 
 def obsidian_open_uri(file, *, require_registered=False):
-    """Open one pop-out in an explicitly registered Obsidian vault.
+    """Open a note in the main Obsidian vault window (never a pop-out).
 
     The documented `path=` URI searches vaults again inside Obsidian and can
     show "Vault not found" for a registered-but-ambiguous absolute path.
@@ -163,13 +163,12 @@ def obsidian_open_uri(file, *, require_registered=False):
             if candidates:
                 _, vault_id, relative = max(candidates, key=lambda candidate: candidate[0])
                 return ('obsidian://open?vault=' + quote(vault_id, safe='') +
-                        '&file=' + quote(relative.as_posix(), safe='') +
-                        '&paneType=window')
+                        '&file=' + quote(relative.as_posix(), safe=''))
         except (OSError, ValueError, TypeError, RuntimeError, AttributeError):
             pass
     if require_registered:
         raise ValueError('Obsidianに登録済みのVaultが見つかりません。Markdown Studioで開いてください。')
-    return 'obsidian://open?path=' + quote(str(file), safe='') + '&paneType=window'
+    return 'obsidian://open?path=' + quote(str(file), safe='')
 
 
 def external_start_command(target):

@@ -1,0 +1,22 @@
+﻿FRB Window / Process Inspector v1.0 — 2026-11-18 追加修正
+
+原因:
+  PowerShell の $PID は読み取り専用の自動変数です。変数名の大小文字は区別されないため、$pid への代入に失敗しました。
+
+修正:
+  collect_windows.ps1 内の New-WindowEntry で $pid を $windowProcessId に変更。
+  参照箇所も変更。CSV/JSON の PID 項目名は変更なし。
+  前回修正の $OutputRoot 初期値処理・BAT のエラー判定は維持。
+
+適用:
+  差分ZIPは collect_windows.ps1 のみ上書きしてください。
+  完全版ZIPは既存フォルダーへの展開または新規展開ができます。
+
+確認:
+  FRB_Window_Inspector.bat 起動 → [1] Snapshot now → DONE表示
+  reports\FRB_WindowReport_Snapshot_YYYYMMDD_HHMMSS\ 内の
+  FRB_WindowReport_FOCUS_SHARE.zip が生成されることを確認してください。
+
+注意:
+  PowerShellの静的点検は実施。Windows実機の実行はこの環境では未確認です。
+  FOCUS_SHARE.zipにもローカルファイル名等が含まれる可能性があるため、共有前に内容確認をお願いします。

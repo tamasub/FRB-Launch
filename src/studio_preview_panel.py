@@ -1,9 +1,10 @@
 """Third Files column: native FRB Studio and external editor previews.
 
 FRB Studio sessions keep unsaved edits when the pane is hidden. Sakura's
-pre-existing desktop windows are never taken over: only a newly launched
-editor HWND from a previously absent PID can be docked. × asks the editor
-to close normally; explicit pop-out restores its desktop window.
+existing desktop windows are never auto-borrowed: only independently verified
+new Sakura HWNDs can be docked. Obsidian instead borrows its MAIN vault window
+through a CLI-verified document and unique native caption (no pop-outs).
+Closing the Obsidian pane returns its main window to the desktop, never WM_CLOSE.
 """
 import subprocess
 import os
@@ -49,6 +50,8 @@ class StudioPreviewPanel(QFrame):
     _studio_popout_ack = Signal(str)
     _studio_dock_completed = Signal(int, str)
     _launch_exit_completed = Signal(str)
+    _obsidian_cli_completed = Signal(str, object, str, int, str)
+    _obsidian_main_probe_completed = Signal(str, object, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -75,7 +78,24 @@ class StudioPreviewPanel(QFrame):
         # sessions. They are never killed by Preview's × button.
         self._external_key = None
         self._external_parked = {}
+        # Never borrow a parked Obsidian HWND for a DIFFERENT registered vault.
+        # Record the authenticated vault at parking time, not via a later path lookup.
+        self._obsidian_parked_vaults = {}
         self._external_pending = None
+        # A positively identified vault MAIN window may be borrowed and docked.
+        # Probe through CLI first; never mistake a pop-out for the main HWND.
+        self._obsidian_cli_token = None
+        self._obsidian_cli_vault = None
+        self._obsidian_cli_hwnd = None
+        self._obsidian_cli_ready = False
+        self._obsidian_cli_busy = None
+        self._obsidian_cli_queued = None
+        self._obsidian_cli_completed.connect(self._on_obsidian_cli_completed)
+        self._obsidian_main_probe_completed.connect(self._on_obsidian_main_probe_completed)
+        self._obsidian_main_probe_token = None
+        self._obsidian_main_probe_busy = False
+        self._obsidian_main_probe_attempts = 0
+        self._obsidian_main_open_issued = False
         # Sakura can open the next document in the SAME tabbed native window.
         # Track a handoff without unparenting the still-visible Sakura host.
         self._sakura_switch_from = None
@@ -323,9 +343,71 @@ class StudioPreviewPanel(QFrame):
         self._timer.start()
         return True
 
+    def _obsidian_switch_unavailable(self, reason=''):
+        """Keep the existing Obsidian main window; never spawn a pop-out.
+
+        The caller treats True as 'the existing pane remains usable', not as
+        confirmation that the requested document switched. The warning is
+        deliberately visible until a successful switch or explicit close.
+        """
+        self.status_label.setText(
+            'Obsidian本体のウィンドウを保持しています。\n'
+            'ファイル切替は実行できませんでした。新しい窓は作成しません。\n'
+            + (reason or 'Obsidian CLIの設定・対象Vaultを確認してください。'))
+        self.status_label.show()
+        return True
+
+    def _release_obsidian_for_vault_change(self):
+        """Undo only Launch's embedding of the current MAIN window.
+
+        A different vault has its own MAIN HWND. The old window must remain a
+        working desktop Obsidian with all notes/unsaved changes intact. Never
+        send WM_CLOSE, quit Obsidian or transplant a window between vaults.
+        """
+        attached = self._attached
+        if (self._external_key is None or self._external_key[0] != 'obsidian'
+                or attached is None or not attached.attached):
+            return False
+        try:
+            attached.detach(foreground=False, show_window=True)
+            if attached.attached:
+                return False
+            # AttachedStudioWindow.detach() does not raise for every Win32
+            # failure. A residual Qt-parented HWND MUST NOT be abandoned.
+            native = getattr(attached, 'u', None)
+            if (native is not None and native.IsWindow(int(attached.hwnd))
+                    and int(native.GetParent(int(attached.hwnd)) or 0) ==
+                    int(attached.host_hwnd)):
+                return False
+        except (OSError, RuntimeError, ValueError):
+            return False
+        from obsidian_dock_trace import trace
+        trace('VAULT_CHANGE_RELEASE', hwnd=int(attached.hwnd))
+        self._attached = None
+        self._external_key = None
+        self._external_timer.stop()
+        self._external_pending = None
+        self._obsidian_main_probe_token = None
+        self._reset_obsidian_cli()
+        self._sync_popout_button()
+        return True
+
     def open_external(self, target):
-        """Open a NEW editor window, never adopt an existing Sakura session."""
+        """Dock the vault's MAIN Obsidian window; do not create pop-outs.
+
+        The CLI verifies both file and main-window caption before any HWND is
+        adopted. Repeated opens use the tagged main Markdown leaf. Failure
+        never creates a fallback pop-out. Sakura behavior is independent.
+        """
         self.content_stack.setCurrentWidget(self.host)
+        if target.app == 'obsidian':
+            # Validate BEFORE releasing any existing editor. A missing CLI or
+            # unregistered vault must never make the old note disappear.
+            from obsidian_dock_bridge import registered_note, find_cli
+            selected_note = registered_note(target.path)
+            if selected_note is None or not find_cli():
+                return self._obsidian_switch_unavailable(
+                    '対象の保管庫が未登録、またはObsidian CLIが利用できません。')
         if target.app == 'sakura':
             getattr(self, '_sakura_trace', lambda *a, **k: None)(
                 'OPEN_BEGIN', file=Path(target.path).name,
@@ -333,6 +415,38 @@ class StudioPreviewPanel(QFrame):
                 current_app=self._external_key[0] if self._external_key else '',
                 attached_hwnd=getattr(self._attached, 'hwnd', None),
                 parked=len(self._external_parked))
+        if (target.app == 'obsidian' and self._external_pending is not None
+                and self._external_pending[0].app == 'obsidian'):
+            # A second click while the main-window handshake is pending.
+            self._obsidian_cli_queued = target
+            return True
+        if (target.app == 'obsidian' and self._external_key is not None
+                and self._external_key[0] == 'obsidian'):
+            attached = self._attached
+            if attached is None or not attached.attached:
+                return self._obsidian_switch_unavailable('第3列の収容状態を確認できません。')
+            if self._obsidian_cli_busy in ('bind', 'switch'):
+                self._obsidian_cli_queued = target  # latest click wins after bind/switch
+                return True
+            if self._obsidian_cli_vault != selected_note[0]:
+                from obsidian_dock_trace import fingerprint, trace
+                trace('VAULT_CHANGE_REQUEST',
+                      old_vault_hash=fingerprint(self._obsidian_cli_vault or ''),
+                      new_vault_hash=fingerprint(selected_note[0]))
+                # Another vault is a DIFFERENT native MAIN window. Restore the
+                # previous vault to the desktop first; a new CLI+HWND handshake
+                # below must positively identify the requested vault.
+                if not self._release_obsidian_for_vault_change():
+                    return self._obsidian_switch_unavailable(
+                        '旧保管庫のウィンドウを安全に復元できませんでした。')
+            else:
+                # Same vault: stay in one editing leaf, no new native window.
+                if target.key == self._external_key:
+                    attached.resize(self.host.width(), self.host.height())
+                    return True
+                if self._obsidian_cli_ready and self._switch_obsidian_inside(target):
+                    return True
+                return self._obsidian_switch_unavailable()
         if self._external_pending is not None:
             if target.app == 'sakura':
                 getattr(self, '_sakura_trace', lambda *a, **k: None)(
@@ -372,8 +486,21 @@ class StudioPreviewPanel(QFrame):
                                   else 'サクラエディタ') + ' — ' + Path(target.path).name)
         self.title_label.setToolTip(target.path)
         from studio_win32_host import AttachedStudioWindow
-        previous = self._external_parked.pop(target.key, None)
+        previous = None
         parked_key = target.key
+        if target.app == 'obsidian':
+            # The file path is NOT the native window identity. Reuse only an
+            # HWND previously verified for the selected registered vault.
+            # Never pick the last parked Obsidian window across vaults.
+            for key in reversed(tuple(self._external_parked)):
+                if (key[0] == 'obsidian' and
+                        self._obsidian_parked_vaults.get(key) == selected_note[0]):
+                    parked_key = key
+                    previous = self._external_parked.pop(key)
+                    self._obsidian_parked_vaults.pop(key, None)
+                    break
+        else:
+            previous = self._external_parked.pop(target.key, None)
         # In Sakura tab mode, several files can share one HWND. Reuse our own
         # parked Sakura session even when it was last used for another file.
         # Never take an unrelated existing Sakura desktop window.
@@ -392,9 +519,31 @@ class StudioPreviewPanel(QFrame):
                 self.status_label.hide()
                 if target.app == 'sakura' and parked_key != target.key:
                     return self._open_sakura_next(target)
+                if target.app == 'obsidian':
+                    from external_preview_route import ExternalPreviewTarget
+                    # Show the actual parked note until CLI confirms a switch;
+                    # do not label the old document as the requested new one.
+                    self.title_label.setText('Obsidian — ' + Path(parked_key[1]).name)
+                    self.title_label.setToolTip(parked_key[1])
+                    # The parked HWND still displays its OLD document. Bind
+                    # that original leaf first, then switch if requested.
+                    original = (target if parked_key == target.key else
+                                ExternalPreviewTarget('obsidian', parked_key[1]))
+                    bound = self._begin_obsidian_cli_bind(original, int(previous))
+                    if parked_key != target.key:
+                        if bound:
+                            self._obsidian_cli_queued = target
+                        else:
+                            return self._obsidian_switch_unavailable()
                 return True
-            except (OSError, RuntimeError, ValueError):
-                self._attached = None  # Native window was closed while parked.
+            except (OSError, RuntimeError, ValueError) as exc:
+                self._attached = None  # Never create a second window on failure.
+                if target.app == 'obsidian':
+                    self._external_parked[parked_key] = previous
+                    self._obsidian_parked_vaults[parked_key] = selected_note[0]
+                    self._external_key = None
+                    return self._obsidian_switch_unavailable(
+                        '退避済みウィンドウへ再接続できません: ' + str(exc))
         try:
             from external_win32_host import (snapshot_editor_windows,
                                              snapshot_editor_process_ids, editor_windows)
@@ -412,14 +561,17 @@ class StudioPreviewPanel(QFrame):
                                          if target.app == 'sakura' else None)
             launched_pid = None
             if target.app == 'obsidian':
-                import os
-                from external_preview_route import obsidian_open_uri
-                # Existing Obsidian may briefly foreground itself before its
-                # new, verified HWND is ready for SetParent. Request Launch's
-                # focus back during this short handoff, not indefinitely.
-                os.startfile(obsidian_open_uri(target.path, require_registered=True))
-                for delay in (120, 400):
-                    QTimer.singleShot(delay, self._restore_launch_focus_during_handoff)
+                from obsidian_dock_bridge import registered_note, find_cli
+                # A CLI handshake is mandatory: it positively identifies the
+                # main window instead of stealing any visible Obsidian HWND.
+                if registered_note(target.path) is None or not find_cli():
+                    raise ValueError('Obsidian CLIを有効にし、対象Vaultを登録してください。')
+                from urllib.parse import quote
+                # Ask Obsidian to open/focus the registered VAULT only. The
+                # CLI then opens the note in a verified MAIN root leaf, never
+                # the last active pop-out tab. No paneType/window URI exists.
+                vault_id, _note = registered_note(target.path)
+                os.startfile('obsidian://open?vault=' + quote(vault_id, safe=''))
             elif target.app == 'sakura':
                 from external_preview_route import external_start_command
                 process = subprocess.Popen(external_start_command(target),
@@ -444,12 +596,266 @@ class StudioPreviewPanel(QFrame):
                 excluded_pids=sorted(self._sakura_baseline_pids or ()),
                 launched_pid=launched_pid)
             self._sakura_trace_poll_logged = False
-        self.status_label.setText(
-            '外部エディターの新しいウィンドウを待っています…\n'
-            '既存ウィンドウを奪わず、安全に収容できた場合だけ表示します')
+        if target.app == 'obsidian':
+            from obsidian_dock_trace import trace, trace_windows
+            trace('DOCK_REQUEST', existing_window_count=len(baseline),
+                  note_registered=True, cli_found=True)
+            trace_windows('dock_request_before_probe')
+            self._obsidian_main_probe_token = uuid.uuid4().hex
+            self._obsidian_main_probe_busy = False
+            self._obsidian_main_probe_attempts = 0
+            self._obsidian_main_open_issued = False
+            self.status_label.setText(
+                'Obsidian本体のウィンドウを確認中…\n'
+                'CLIで対象ノートと本体を確認してから第3列へ収容します')
+        else:
+            self.status_label.setText(
+                '外部エディターの新しいウィンドウを待っています…\n'
+                '既存ウィンドウを奪わず、安全に収容できた場合だけ表示します')
         self.status_label.show()
         self._external_timer.start()
+        if target.app == 'obsidian':
+            self._probe_obsidian_main_window(self._obsidian_main_probe_token)
         return True
+
+    def _probe_obsidian_main_window(self, token):
+        """Ask Obsidian which MAIN window now contains the requested note.
+
+        This runs off the Qt UI thread and does not use SetParent or scan
+        unrelated HWNDs until the vault explicitly verifies the note.
+        """
+        pending = self._external_pending
+        if (pending is None or pending[0].app != 'obsidian'
+                or token != self._obsidian_main_probe_token
+                or self._obsidian_main_probe_busy or self._obsidian_main_probe_attempts >= 12):
+            return
+        target = pending[0]
+        self._obsidian_main_probe_busy = True
+        self._obsidian_main_probe_attempts += 1
+        # One opening request per handoff, then read-only verification.
+        # If main DOM was still loading, allow a later retry to reissue open.
+        request_open = not self._obsidian_main_open_issued
+        if request_open:
+            self._obsidian_main_open_issued = True
+        from obsidian_dock_trace import trace
+        trace('PROBE_START', attempt=self._obsidian_main_probe_attempts,
+              request_open=request_open)
+
+        def worker():
+            from obsidian_dock_bridge import (registered_note, find_cli,
+                                              main_open_code, main_verify_code, cli_eval)
+            note = registered_note(target.path)
+            cli = find_cli()
+            if note is None or not cli:
+                result = 'FRB_NO_CLI'
+            else:
+                if request_open:
+                    opened = cli_eval(note[0], main_open_code(note[1]),
+                                      executable=cli, stage='main_open')
+                    trace('MAIN_OPEN_RESULT', result_code=opened.partition(':')[0])
+                    if opened in ('FRB_NOT_FOUND', 'FRB_MAIN_NOT_READY'):
+                        result = ('FRB_MAIN_OPEN_NOT_READY' if opened == 'FRB_MAIN_NOT_READY'
+                                  else opened)
+                        self._obsidian_main_probe_completed.emit(token, target, result)
+                        return
+                # The first CLI command may execute the openFile() but lose its
+                # async reply. Never infer success from the reply: verify state
+                # in a completely separate read-only CLI call instead.
+                result = cli_eval(note[0], main_verify_code(note[1]),
+                                  executable=cli, stage='main_verify')
+            self._obsidian_main_probe_completed.emit(token, target, result)
+
+        threading.Thread(target=worker, name='FRBObsidianMainProbe', daemon=True).start()
+
+    def _on_obsidian_main_probe_completed(self, token, target, result):
+        """Reparent ONLY the unique native HWND named by the verified main DOM."""
+        pending = self._external_pending
+        if (pending is None or pending[0] != target or pending[0].app != 'obsidian'
+                or self._obsidian_main_probe_token != token):
+            return
+        self._obsidian_main_probe_busy = False
+        from obsidian_dock_trace import trace
+        trace('PROBE_RESPONSE', attempt=self._obsidian_main_probe_attempts,
+              result_code=str(result).partition(':')[0])
+        if result == 'FRB_MAIN_OPEN_NOT_READY':
+            self._obsidian_main_open_issued = False
+        if result.startswith('FRB_MAIN_TITLE:'):
+            from urllib.parse import unquote
+            from external_win32_host import editor_windows
+            from obsidian_dock_bridge import main_window_matches_caption
+            caption = unquote(result.partition(':')[2])
+            windows = editor_windows('obsidian', include_hidden=True)
+            from obsidian_dock_trace import fingerprint, trace_windows
+            trace('CAPTION_MATCH', expected_hash=fingerprint(caption),
+                  expected_length=len(caption), candidate_count=len(windows),
+                  candidates=[{'hwnd': int(h), 'pid': int(p),
+                               'caption_hash': fingerprint(t), 'caption_length': len(t)}
+                              for h,p,t in windows[:35]])
+            # Full native enumeration is comparatively expensive: collect it
+            # at the first and last probe only; lightweight candidates log
+            # continues on every response without slowing the Qt event loop.
+            if self._obsidian_main_probe_attempts in (1, 12):
+                trace_windows('caption_match', expected_caption=caption)
+            hwnd = main_window_matches_caption(caption, windows)
+            trace('HWND_SELECTION', success=bool(hwnd), hwnd=int(hwnd or 0),
+                  exact_matches=sum(str(t).strip().casefold()==caption.strip().casefold()
+                                    for h,p,t in windows))
+            if hwnd:
+                from studio_win32_host import AttachedStudioWindow
+                try:
+                    trace('SETPARENT_BEGIN', hwnd=int(hwnd))
+                    attached = AttachedStudioWindow(hwnd, int(self.host.winId()))
+                    attached.resize(self.host.width(), self.host.height())
+                    trace('SETPARENT_SUCCESS', hwnd=int(hwnd))
+                except (OSError, RuntimeError, ValueError) as exc:
+                    trace('SETPARENT_FAILED', hwnd=int(hwnd), error_type=type(exc).__name__,
+                          winerror=getattr(exc, 'winerror', None))
+                    self._fail_obsidian_main_dock('本体の収容に失敗しました: ' + str(exc))
+                    return
+                self._attached = attached
+                self._external_key = target.key
+                self._external_pending = None
+                self._external_timer.stop()
+                self._obsidian_main_probe_token = None
+                from embedded_obsidian_presentation import prefer_light_native_frame
+                prefer_light_native_frame(hwnd)
+                # Tagged leaf in the MAIN DOM also closes its left sidebar.
+                trace('MAIN_ATTACHED', hwnd=int(hwnd))
+                if not self._begin_obsidian_cli_bind(target, hwnd):
+                    self._attached = None
+                    self._external_key = None
+                    attached.detach(foreground=False, show_window=True)
+                    self._fail_obsidian_main_dock('Obsidian CLIへ再接続できません')
+                    return
+                self.status_label.hide()
+                self._sync_popout_button()
+                owner = getattr(self, 'launcher', None)
+                if owner is not None and owner.isVisible():
+                    QTimer.singleShot(0, owner.activateWindow)
+                return
+        # The URI handoff can take time. Recheck, but never emit another URI.
+        if self._obsidian_main_probe_attempts < 12 and time.monotonic() - pending[3] < 14:
+            QTimer.singleShot(450, lambda t=token: self._probe_obsidian_main_window(t))
+        else:
+            self._fail_obsidian_main_dock(
+                'Obsidian本体のウィンドウを一意に確認できませんでした。'
+                'Vault/CLI設定と、同名の別ウィンドウがないか確認してください。')
+
+    def _fail_obsidian_main_dock(self, reason):
+        """Leave the real Obsidian window untouched and visible on failure."""
+        from obsidian_dock_trace import trace
+        trace('MAIN_DOCK_FAILED', attempts=self._obsidian_main_probe_attempts,
+              reason_kind='not_uniquely_verified')
+        self._external_timer.stop()
+        self._external_pending = None
+        self._external_key = None
+        self._obsidian_main_probe_token = None
+        self._obsidian_main_probe_busy = False
+        self._obsidian_cli_queued = None
+        self.status_label.setText(reason + '\nObsidian本体はデスクトップ側で使用できます。')
+        self.status_label.show()
+
+    def _reset_obsidian_cli(self):
+        self._obsidian_cli_token = None
+        self._obsidian_cli_vault = None
+        self._obsidian_cli_hwnd = None
+        self._obsidian_cli_ready = False
+        self._obsidian_cli_busy = None
+        self._obsidian_cli_queued = None
+
+    def _begin_obsidian_cli_bind(self, target, hwnd):
+        """Bind only a main-window HWND verified by CLI and Win32 caption.
+
+        CLI is required for main-window docking; vault settings are untouched.
+        """
+        from obsidian_dock_bridge import registered_note, find_cli, bind_main_code
+        note = registered_note(target.path)
+        cli = find_cli()
+        # Preserve clicks that arrived while the first main HWND was pending.
+        # Finish the bind before switching to the most recent note.
+        queued = self._obsidian_cli_queued
+        self._reset_obsidian_cli()
+        self._obsidian_cli_queued = queued
+        if note is None or not cli:
+            return False
+        self._obsidian_cli_vault = note[0]
+        self._obsidian_cli_token = uuid.uuid4().hex
+        self._obsidian_cli_hwnd = int(hwnd)
+        from obsidian_dock_trace import trace
+        trace('BIND_START', hwnd=int(hwnd))
+        self._run_obsidian_cli('bind', target, note[0],
+                               bind_main_code(note[1], self._obsidian_cli_token), cli)
+        return True
+
+    def _switch_obsidian_inside(self, target):
+        from obsidian_dock_bridge import registered_note, find_cli, switch_main_code
+        note = registered_note(target.path)
+        cli = find_cli()
+        if (note is None or cli is None or note[0] != self._obsidian_cli_vault
+                or not self._obsidian_cli_token):
+            return False
+        from obsidian_dock_trace import trace
+        trace('SWITCH_START', hwnd=int(self._obsidian_cli_hwnd or 0))
+        self._run_obsidian_cli('switch', target, note[0],
+                               switch_main_code(note[1], self._obsidian_cli_token), cli)
+        return True
+
+    def _run_obsidian_cli(self, kind, target, vault, script, cli):
+        """Never make a blocking CLI call on the Qt GUI thread."""
+        self._obsidian_cli_busy = kind
+        hwnd = self._obsidian_cli_hwnd
+        token = self._obsidian_cli_token
+
+        def worker():
+            from obsidian_dock_bridge import cli_eval
+            result = cli_eval(vault, script, executable=cli, stage=kind)
+            self._obsidian_cli_completed.emit(kind, target, result, hwnd, token)
+
+        threading.Thread(target=worker, name='FRBObsidianDock', daemon=True).start()
+
+    def _on_obsidian_cli_completed(self, kind, target, result, hwnd, token):
+        attached = self._attached
+        if (self._obsidian_cli_token != token or self._obsidian_cli_hwnd != hwnd or attached is None
+                or int(attached.hwnd) != hwnd or not attached.attached
+                or self._external_key is None or self._external_key[0] != 'obsidian'):
+            return  # An earlier worker must never mutate a replaced preview.
+        if self._obsidian_cli_busy != kind:
+            return
+        self._obsidian_cli_busy = None
+        self._obsidian_cli_ready = (result == ('FRB_BOUND' if kind == 'bind'
+                                             else 'FRB_SWITCHED'))
+        from obsidian_dock_trace import trace
+        trace('CLI_HANDSHAKE_COMPLETED', kind=kind, hwnd=int(hwnd or 0),
+              result_code=str(result).partition(':')[0], accepted=self._obsidian_cli_ready)
+        if kind == 'bind' and not self._obsidian_cli_ready:
+            self._obsidian_cli_queued = None
+            self._obsidian_switch_unavailable(
+                'Obsidian本体をCLIで特定できません (' + result + ')。')
+            return
+        if kind == 'switch':
+            if result == 'FRB_SWITCHED':
+                self._external_key = target.key
+                self.title_label.setText('Obsidian — ' + Path(target.path).name)
+                self.title_label.setToolTip(target.path)
+                self.status_label.hide()
+            else:
+                # A CLI timeout can mean the async open completed despite a
+                # missing reply. Do not automatically create a second popup:
+                # that would risk a duplicate window/tab and confuse editing.
+                self.status_label.setText(
+                    'Obsidianの切替完了を確認できませんでした。\n'
+                    '現在の表示内容はLaunch側では確認できません。別のファイルを再度選ぶか、'
+                    '必要なら第3列を閉じて開き直してください。')
+                self.status_label.show()
+                self._obsidian_cli_queued = None
+                self._obsidian_cli_ready = False
+                return
+        queued = self._obsidian_cli_queued
+        self._obsidian_cli_queued = None
+        if queued is not None and queued.key != self._external_key:
+            # Only an authenticated main leaf may receive this request.
+            # Never open another native window as a fallback.
+            self.open_external(queued)
 
     def sakura_attached(self):
         return bool(self._external_key is not None and self._external_key[0] == 'sakura'
@@ -581,6 +987,7 @@ class StudioPreviewPanel(QFrame):
         # An unsuccessful Obsidian handoff must not leave an empty third pane.
         if attached is None:
             self._external_key = None
+            self._reset_obsidian_cli()
             self._sync_popout_button()
             self.popout_requested.emit()
             return
@@ -592,6 +999,7 @@ class StudioPreviewPanel(QFrame):
             return
         self._attached = None
         self._external_key = None
+        self._reset_obsidian_cli()
         self._sync_popout_button()
         self.popout_requested.emit()
 
@@ -796,6 +1204,8 @@ class StudioPreviewPanel(QFrame):
             return self._request_sakura_normal_close()
         self._external_timer.stop()
         self._sakura_switch_from = None
+        if self._external_key is not None and self._external_key[0] == 'obsidian':
+            getattr(self, '_reset_obsidian_cli', lambda: None)()
         windows = []
         if self._external_key is not None:
             attached = self._attached
@@ -818,14 +1228,16 @@ class StudioPreviewPanel(QFrame):
                     # Preserve failed HWNDs for a future recovery attempt.
                     return False
             self._external_parked.clear()
+            getattr(self, '_obsidian_parked_vaults', {}).clear()
         if windows:
             from studio_win32_host import request_editor_window_close
             for hwnd, app in set(windows):
                 try:
-                    if app != 'sakura':
+                    if app not in ('sakura', 'obsidian'):
                         request_editor_window_close(hwnd)
-                    # Stale Sakura entries from older sessions are restored,
-                    # never closed without an explicit currently docked ×.
+                    # Obsidian MAIN is borrowed, not Launch-owned. × restores
+                    # it to desktop; NEVER send WM_CLOSE or lose unsaved work.
+                    # Sakura likewise follows its own explicit close protocol.
                 except (OSError, RuntimeError, ValueError):
                     return False
         return True
@@ -840,6 +1252,12 @@ class StudioPreviewPanel(QFrame):
             self._external_timer.stop()
             return
         target, baseline, launched_pid, started = pending
+        if target.app == 'obsidian':
+            # The main window may predate this URI; it MUST NOT be picked by
+            # find_new_editor_window(). Wait for the validated CLI handshake.
+            if time.monotonic() - started > 17:
+                self._fail_obsidian_main_dock('Obsidian本体の確認がタイムアウトしました。')
+            return
         if target.app == 'sakura' and not getattr(self, '_sakura_trace_poll_logged', False):
             getattr(self, '_sakura_trace', lambda *a, **k: None)(
                 'POLL_FIRST_TICK', elapsed_ms=int((time.monotonic() - started)*1000),
@@ -892,13 +1310,6 @@ class StudioPreviewPanel(QFrame):
                         '第3列のウィンドウはそのまま維持しています。')
                     self.status_label.show()
                     return
-                if target.app == 'obsidian':
-                    # Window has been positively identified as the NEW
-                    # editor HWND; hide it immediately before reparenting to
-                    # reduce the exposed desktop flash. Never hide existing
-                    # editor windows or any unrelated process.
-                    from studio_win32_host import _user32, SW_HIDE
-                    _user32().ShowWindow(int(hwnd), SW_HIDE)
                 self._attached = AttachedStudioWindow(hwnd, int(self.host.winId()))
                 self._attached.resize(self.host.width(), self.host.height())
                 if target.app == 'sakura' and sakura_pid:
@@ -906,14 +1317,6 @@ class StudioPreviewPanel(QFrame):
                     self._sakura_attached_pid = sakura_pid
                     self._sakura_transfer_consented = True
                 self._external_key = target.key
-                if target.app == 'obsidian':
-                    from embedded_obsidian_presentation import prefer_light_native_frame
-                    prefer_light_native_frame(hwnd)
-                    # A newly launched editor may briefly become foreground
-                    # before SetParent. Return focus to Launch only after dock.
-                    owner = getattr(self, 'launcher', None)
-                    if owner is not None and owner.isVisible():
-                        QTimer.singleShot(0, owner.activateWindow)
                 self._sync_popout_button()
                 self.status_label.hide()
                 self._external_pending = None
@@ -933,9 +1336,9 @@ class StudioPreviewPanel(QFrame):
             self.status_label.setText('第3列への収容に失敗しました。外側のアプリで編集できます。\n' + str(exc))
             self.status_label.show()
             return
-        # A failed obsidian:// URI may only show a Vault error dialog.
-        # Do not block the Preview close action for 30 seconds in that case.
-        timeout = 6 if switching_sakura else (12 if target.app == 'obsidian' else 25)
+        # The Obsidian main-window path returns above and has its own
+        # CLI-probe timeout; this remaining legacy timer is for Sakura.
+        timeout = 6 if switching_sakura else 25
         if time.monotonic() - started > timeout:
             if target.app == 'sakura':
                 getattr(self, '_sakura_trace', lambda *a, **k: None)(
@@ -974,12 +1377,19 @@ class StudioPreviewPanel(QFrame):
             return False
         self._external_timer.stop()
         self._external_pending = None
+        self._obsidian_main_probe_token = None
         self._sakura_switch_from = None
+        old_obsidian_vault = (getattr(self, '_obsidian_cli_vault', None)
+                              if self._external_key[0] == 'obsidian' else None)
+        if self._external_key[0] == 'obsidian':
+            getattr(self, '_reset_obsidian_cli', lambda: None)()
         attached = self._attached
         if attached is not None:
             try:
                 attached.detach(foreground=False, show_window=False)
                 self._external_parked[self._external_key] = attached.hwnd
+                if old_obsidian_vault:
+                    self._obsidian_parked_vaults[self._external_key] = old_obsidian_vault
             except (OSError, RuntimeError):
                 return False
             self._attached = None
@@ -1198,6 +1608,7 @@ class StudioPreviewPanel(QFrame):
                 except (OSError, RuntimeError, ValueError):
                     pass
             self._external_parked.clear()
+        getattr(self, '_obsidian_parked_vaults', {}).clear()
         self._external_key = None
         self._sakura_owned_windows.clear()
         self._sakura_baseline_pids = None
