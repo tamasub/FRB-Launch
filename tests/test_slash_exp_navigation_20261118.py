@@ -299,6 +299,11 @@ def nav(monkeypatch):
             return self._icon
         def toolTip(self):
             return getattr(self, '_tooltip', self.name)
+        def appendRow(self, child):
+            self.children.append(child)
+            child._parent = self
+        def parent(self):
+            return getattr(self, '_parent', None)
     qtgui.QStandardItem = FakeStandardItem
     qtgui.QColor = lambda *args: None
     qtgui.QKeyEvent = lambda _type, key, mods: Event(key, modifiers=mods)
@@ -455,7 +460,7 @@ def test_only_the_slash_character_starts_the_new_mode(nav):
     assert not mod.is_slash_shortcut(key.Key_Right, '', 0)
 
 
-def test_enter_is_inert_in_all_intermediate_folders_and_right_moves(nav, tmp_path):
+def test_right_moves_without_committing_intermediate_folders(nav, tmp_path):
     mod, key = nav
     path = str(tmp_path)
     leaf = Item('Final', {'path': path, 'pc': False}, Item('inner', {'file': True, 'path': str(tmp_path / 'x.txt')}))
@@ -469,19 +474,10 @@ def test_enter_is_inert_in_all_intermediate_folders_and_right_moves(nav, tmp_pat
     menu.popup((5, 5))
     menu.setActiveAction(next(iter(menu._action_items)))
 
-    event = Event(key.Key_Enter)
-    menu.keyPressEvent(event)
-    assert event.accepted
-    assert calls == []
-    assert menu.visible  # Intermediate Enter must not dismiss.
-
+    # Right traverses; Enter now intentionally opens the branch in Files List.
     menu.keyPressEvent(Event(key.Key_Right))
     second = menu.activeAction().menu()
     assert second.visible
-    second.keyPressEvent(Event(key.Key_Return))
-    assert calls == []
-    assert second.visible
-
     second.keyPressEvent(Event(key.Key_Right))
     third = second.activeAction().menu()
     assert third.visible
@@ -579,9 +575,10 @@ def test_json_virtual_executable_leaves_visible_and_enter_executes(nav):
     menu.populate()
     menu.popup((0, 0))
     menu.setActiveAction(next(iter(menu._action_items)))
-    # Intermediate ENTER never commits.
+    # New requirement: ENTER on a branch shows it in Files List.
     menu.keyPressEvent(Event(key.Key_Enter))
-    assert calls == []
+    assert calls == [('commit_virtual', zip_node)]
+    calls.clear()
     menu.keyPressEvent(Event(key.Key_Right))
     sub = menu._submenus[next(iter(menu._action_items))]
     assert sub.visible
@@ -921,6 +918,8 @@ def test_launch_first_slash_column_opens_at_files_exp_top_not_wheel_height():
         def y(self): return self._y
     calls = []
     namespace['QPoint'] = Point
+    source = object()  # Already resolved from the logical breadcrumb.
+    namespace['slash_source_from_breadcrumb'] = lambda launcher, view, panel: source
     namespace['popup_exp_navigator'] = lambda launcher, panel, anchor, **kw: calls.append((anchor, kw)) or True
     expression = ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
     exec(compile(expression, '<Launch slash position>', 'exec'), namespace)
@@ -940,6 +939,7 @@ def test_launch_first_slash_column_opens_at_files_exp_top_not_wheel_height():
     assert len(calls) == 1
     assert calls[0][0].x() == 30  # Exp frame x=25 + 5px inner margin.
     assert calls[0][0].y() == 182
+    assert calls[0][1]['source_item'] is source
     assert calls[0][1]['first_column_width'] == 230
 
 
@@ -1145,7 +1145,9 @@ def test_first_slash_menu_stays_over_files_exp_without_visible_wheel():
         def x(self): return self._x
         def y(self): return self._y
     seen=[]
+    source = object()
     namespace={'QPoint': Point,
+               'slash_source_from_breadcrumb': lambda obj, view, panel: source,
                'popup_exp_navigator': lambda obj, panel, anchor, **kw: seen.append((anchor, kw)) or True}
     compiled=ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
     exec(compile(compiled,'<slash overlay test>','exec'),namespace)
@@ -1165,6 +1167,7 @@ def test_first_slash_menu_stays_over_files_exp_without_visible_wheel():
     assert namespace['show_slash_exp_navigation_menu'](obj)
     assert (seen[0][0].x(),seen[0][0].y()) == (130,217)
     assert seen[0][1]['first_column_width'] == 254
+    assert seen[0][1]['source_item'] is source
 
 
 def test_root_never_invents_current_folder_action(nav, tmp_path):
@@ -1197,7 +1200,8 @@ def test_opened_virtual_folder_adds_self_context_without_os_root_new(nav):
     assert sub._action_items[action].text() == '（カレントフォルダー）'
     assert len(sub._action_items) == 2
     sub.keyPressEvent(Event(key.Key_Enter))
-    assert calls == []
+    assert calls == [('commit_virtual', node)]
+    calls.clear()
     sub.keyPressEvent(Event(key.Key_Right))
     assert calls == [('context_virtual', {'source': 'launch_json', 'node_id': 'folder'})]
 
@@ -1239,3 +1243,56 @@ def test_multi_selection_disables_single_item_launch_json_actions():
     assert "reference.setEnabled(bool(item_id) and len(selected_unregister) <= 1)" in text
     assert "launch_unregister_many_action(targets)" in text
 
+
+
+def test_folder_branch_and_current_folder_enter_open_files_list(nav, tmp_path):
+    mod, key = nav
+    parent = tmp_path / 'parent'
+    child = parent / 'child'
+    child.mkdir(parents=True)
+    branch = Item('Parent', {'path': str(parent), 'pc': False},
+                  Item('Child', {'path': str(child), 'pc': False}))
+    launcher, calls = make_launcher()
+    root = mod.SlashExpMenu(launcher, Panel([branch]))
+    root.populate()
+    root.popup(mod.QPoint(0, 0))
+    root.setActiveAction(next(iter(root._action_items)))
+    root.keyPressEvent(Event(key.Key_Enter))
+    assert calls == [('commit_folder', str(parent))]
+    calls.clear()
+    # Right still opens children and the (カレントフォルダー) entry.
+    root.keyPressEvent(Event(key.Key_Right))
+    sub = root._submenus[next(iter(root._action_items))]
+    sub.keyPressEvent(Event(key.Key_Enter))
+    assert calls == [('commit_folder', str(parent))]
+
+
+def test_slash_context_hides_files_list_only_not_original_source(nav):
+    mod, _ = nav
+    launcher, _calls = make_launcher()
+    source = FakeQMenu()
+    source.addAction('Filesリスト')
+    source.addSeparator()
+    source.addAction('新規作成')
+    source.addAction('プロパティ')
+    projected = mod.SlashExpMenu(launcher, Panel([]), context_source=source)
+    projected.populate()
+    assert [item.text() for item in projected._action_items.values()] == [
+        '新規作成', 'プロパティ']
+    assert [action.text() for action in source.actions() if not action.isSeparator()] == [
+        'Filesリスト', '新規作成', 'プロパティ']
+    assert not projected.actions()[1].isSeparator()  # No leading separator.
+
+
+def test_slash_density_matches_files_list_not_launch_height(nav):
+    mod, _ = nav
+    launcher, _ = make_launcher()
+    launcher.expanded_view = SimpleNamespace(row_density='compact')
+    launcher.height = lambda: 140
+    compact = mod.SlashExpMenu(launcher, Panel([]))
+    assert compact._item_height == 27
+    assert compact._popup_height >= 600  # Not 70% of 140px Launch height.
+    launcher.height = lambda: 1500
+    assert mod.SlashExpMenu(launcher, Panel([]))._item_height == 27
+    launcher.expanded_view.row_density = 'normal'
+    assert mod.SlashExpMenu(launcher, Panel([]))._item_height == 37

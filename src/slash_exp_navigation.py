@@ -1,9 +1,9 @@
 """Keyboard-first / navigator projected from the *existing* Files Exp tree.
 
-Unlike ordinary Exp, this temporary menu never commits a directory while
-walking a branch. Right traverses a branch or opens the existing context menu
-at a terminal node; Enter only commits a terminal node. No secondary store or
-filesystem mutation is introduced by navigation.
+Unlike ordinary Exp, this temporary menu uses Right only to traverse
+branches or open an existing context menu. Enter on a physical/virtual folder
+shows that folder in Files List, while Enter on a file executes its usual
+Launch action. No secondary store or filesystem mutation is introduced.
 """
 
 import os
@@ -28,6 +28,88 @@ _LOADED_ROLE = Qt.ItemDataRole.UserRole + 2
 SLASH_STANDARD_WIDTH = 270
 SLASH_LONG_WIDTH = 380
 SLASH_LONG_TEXT_THRESHOLD = 212
+
+# Files List's 三 button is the ONLY density authority. Menu row height is
+# never derived from the *Launch window height* (which formerly changed the
+# QMenu's native item distribution on a small Launch window).
+SLASH_MENU_ROWS = {'compact': 27, 'normal': 37}
+
+def slash_source_from_breadcrumb(launcher, view, panel):
+    """Resolve the / starting directory from the *displayed logical crumb*.
+
+    Exp/List selection and keyboard focus are deliberately irrelevant.  The
+    breadcrumb owns the current place; this builds a read-only snapshot for
+    the existing SlashExpMenu without adding/expanding an Exp model root.
+    Returns None for an absent/stale location, NEVER the registered-root list.
+    """
+    bar = getattr(view, 'address_bar', None)
+    segments = getattr(bar, '_segments', ()) if bar is not None else ()
+    target = segments[-1][1] if segments else None
+    if isinstance(target, tuple) and target and target[0] == 'virtual':
+        node = getattr(view, '_virtual_directory_node', None)
+        if (not isinstance(node, dict) or node.get('source') != 'launch_json'
+                or node.get('kind') == 'file' or len(target) != 3
+                or str(node.get('page_id') or '') != str(target[1])
+                or str(node.get('item_id') or '') != str(target[2])):
+            return None
+        # A detached source preserves JSON children, including runnable leaves.
+        source = QStandardItem(QIcon(), str(node.get('title') or ''))
+        source.setData({'virtual': node, 'pc': False, 'path': None}, _DATA_ROLE)
+        source.setData(True, _LOADED_ROLE)
+        return source
+
+    directory = (target[1] if isinstance(target, tuple)
+                 and len(target) == 2 and target[0] == 'physical'
+                 else target if isinstance(target, str) else None)
+    if directory:
+        # Reject a stale breadcrumb instead of silently using a different
+        # highlighted Exp/List row. Compare Windows paths case-insensitively.
+        import ntpath
+        current = getattr(view, 'current_directory', lambda: None)()
+        if (not current or ntpath.normcase(ntpath.normpath(str(current)))
+                != ntpath.normcase(ntpath.normpath(str(directory)))
+                or not os.path.isdir(str(directory))):
+            return None
+        source = QStandardItem(QIcon(), os.path.basename(str(directory).rstrip('\\/'))
+                               or str(directory))
+        source.setData({'path': str(directory), 'pc': False,
+                        'slash_transient': True}, _DATA_ROLE)
+        source.setData(True, _LOADED_ROLE)
+        return source
+
+    # PC is the only non-directory breadcrumb: its current List shows drives
+    # but it has no physical path or JSON node. Read the PC navigation state,
+    # never a stale selection in Exp or List.
+    current_row = (view.path[-1] if getattr(view, 'path', None) else None)
+    if (not segments and isinstance(current_row, dict)
+            and current_row.get('_system_drives_root')):
+        root = panel.model.invisibleRootItem()
+        for pos in range(root.rowCount()):
+            item = root.child(pos)
+            info = item.data(_DATA_ROLE) if item is not None else None
+            if isinstance(info, dict) and info.get('pc'):
+                return item
+    return None
+
+
+
+def slash_menu_row_height(launcher):
+    view = getattr(launcher, 'expanded_view', None)
+    mode = getattr(view, 'row_density', None)
+    if mode not in SLASH_MENU_ROWS:
+        settings = getattr(launcher, 'settings', None)
+        mode = settings.value('expanded_row_density', 'normal') if settings else 'normal'
+    return SLASH_MENU_ROWS.get(str(mode), SLASH_MENU_ROWS['normal'])
+
+
+def slash_screen_height():
+    """Monitor geometry, not Launch geometry, determines popup scroll bounds."""
+    screen = QApplication.primaryScreen()
+    if screen is None:
+        return 660
+    geometry = screen.availableGeometry()
+    height = getattr(geometry, 'height', None)
+    return max(240, int(height()) - 40) if callable(height) else 660
 
 
 def is_slash_shortcut(key, text, modifiers):
@@ -118,12 +200,16 @@ class SlashExpMenu(QMenu):
         # Final width is selected once from this column's contents BEFORE it
         # is shown, avoiding any width changes while Up/Down scrolls.
         self.setFixedWidth(SLASH_STANDARD_WIDTH)
-        # One compact viewport contract for every / menu column (not 70%
-        # of the monitor, which is usually much taller than Launch).
-        height = getattr(launcher, 'height', lambda: 620)()
-        self.setMaximumHeight(max(180, int(height * 0.70)))
+        # Use the SAME row density as Files List, regardless of Launch height.
+        # Scroll overflow follows screen size, not a resized Launch window.
+        self._item_height = slash_menu_row_height(launcher)
+        self._popup_height = slash_screen_height()
+        self.setMaximumHeight(self._popup_height)
         style_context_menu(self, getattr(launcher, 'color_theme', 'light'))
-        self.setStyleSheet(self.styleSheet() + '\nQMenu { menu-scrollable: 1; }')
+        self.setStyleSheet(self.styleSheet() +
+            f'\nQMenu#slashExpNavigationMenu {{ menu-scrollable: 1; }}'
+            f'\nQMenu#slashExpNavigationMenu::item {{ height:{self._item_height}px; '
+            f'padding:0px 9px; }}')
         # A QMenu's native Popup focus/keyboard ownership is intentional:
         # non-grabbing Files Exp menus leave their arrow keys in the tree.
         self.aboutToShow.connect(self.populate)
@@ -140,9 +226,40 @@ class SlashExpMenu(QMenu):
         leaf = QStandardItem(icon, str(node.get('title') or ''))
         leaf.setEditable(False)
         leaf.setToolTip(str(row.get('description') or node.get('title') or ''))
-        leaf.setData({'virtual': node, 'pc': False, 'path': None}, _DATA_ROLE)
+        linked_path = None
+        if node.get('kind') == 'linked_directory':
+            raw = (node.get('row') or {}).get('launch_browse_target')
+            if raw:
+                linked_path = self.launcher.expander().expand(raw)
+        leaf.setData({'virtual': node, 'pc': False, 'path': None,
+                      'linked_path': linked_path}, _DATA_ROLE)
         leaf.setData(True, _LOADED_ROLE)
         return leaf
+
+    def _transient_physical_folders(self, parent, path):
+        """Read child folders without touching the Exp model or mount alias."""
+        info = parent.data(_DATA_ROLE) or {}
+        mount = info.get('slash_mount_origin')
+        node = info.get('virtual')
+        if (mount is None and isinstance(node, dict)
+                and node.get('kind') == 'linked_directory'):
+            mount = {'node': node, 'entry_path': str(path)}
+        try:
+            with os.scandir(path) as entries:
+                children = sorted(((entry.name, entry.path) for entry in entries
+                                   if entry.is_dir(follow_symlinks=False)),
+                                  key=lambda pair: pair[0].casefold())
+        except (OSError, ValueError):
+            return
+        for name, child_path in children:
+            item = QStandardItem(self.launcher.row_icon({'icon_key': 'folder.yellow'}), name)
+            item.setEditable(False)
+            item.setToolTip(child_path)
+            item.setData({'path': child_path, 'pc': False,
+                          'slash_transient': True,
+                          'slash_mount_origin': mount}, _DATA_ROLE)
+            item.setData(True, _LOADED_ROLE)
+            parent.appendRow(item)
 
     def _physical_file_item(self, path):
         """Read-only file entry from a physical directory's Files List."""
@@ -162,8 +279,9 @@ class SlashExpMenu(QMenu):
         top-level namespace. The source of a child column is the only safe
         authority; the unrelated currently highlighted List row is not.
         """
-        if self.source_item is None or self._context_source is not None:
-            return None
+        if (self.source_item is None or self._context_source is not None
+                or self is self.root_menu):
+            return None  # / initial column is exactly this directory's children.
         info = self.source_item.data(_DATA_ROLE) or {}
         node = info.get('virtual')
         if info.get('file') or info.get('pc'):
@@ -222,11 +340,17 @@ class SlashExpMenu(QMenu):
                 if node.get('kind') == 'linked_directory':
                     path = info.get('linked_path')
                     if path and os.path.isdir(path):
-                        for child in range(parent.rowCount()):
-                            item = parent.child(child)
-                            child_info = item.data(_DATA_ROLE) if item is not None else None
-                            if isinstance(child_info, dict) and child_info.get('path'):
-                                result.append(item)
+                        physical = [parent.child(child) for child in range(parent.rowCount())
+                                    if isinstance((parent.child(child).data(_DATA_ROLE) or {}), dict)
+                                    and (parent.child(child).data(_DATA_ROLE) or {}).get('path')]
+                        if physical:
+                            result.extend(physical)
+                        else:
+                            # A detached JSON node has no loaded Exp children.
+                            # Materialize only the ephemeral menu rows.
+                            self._transient_physical_folders(parent, path)
+                            result.extend(parent.child(i) for i in range(parent.rowCount())
+                                          if (parent.child(i).data(_DATA_ROLE) or {}).get('slash_transient'))
                         result.extend(self._file_entries(path))
                 rows = [item for item in result if item is not None and item.isEnabled()]
                 current = self._current_folder_item()
@@ -237,6 +361,10 @@ class SlashExpMenu(QMenu):
             # roots and PC drive resolution, not our menu.
             if not parent.data(_LOADED_ROLE):
                 self.panel._expand_index(parent.index())
+            if info.get('slash_transient') and not parent.rowCount():
+                path = info.get('path')
+                if path and os.path.isdir(path):
+                    self._transient_physical_folders(parent, path)
         result = []
         for row in range(parent.rowCount()):
             item = parent.child(row)
@@ -290,7 +418,7 @@ class SlashExpMenu(QMenu):
         QTreeWidget scrollToItem() moves *only the content*, with the frame,
         search field and popup position all stationary.
         """
-        limit = max(6, (max(180, int(self.launcher.height() * 0.70)) - 66) // 31)
+        limit = max(6, (self._popup_height - 66) // self._item_height)
         if len(self._action_items) <= limit:
             return
         tree = QTreeWidget(self)
@@ -320,19 +448,19 @@ class SlashExpMenu(QMenu):
                 background: transparent; border: 0; outline: 0;
             }
             QTreeWidget#slashExpFixedScrollList::item {
-                min-height: 28px; padding: 2px 3px;
+                min-height: ROW_HEIGHTpx; padding: 0px 3px;
             }
             QTreeWidget#slashExpFixedScrollList::item:selected {
                 background: #d6e7f8; color: #1d3b4b;
             }
-        """)
+        """.replace('ROW_HEIGHT', str(self._item_height)))
         # The action records remain available for filtering and dispatch, but
         # the native menu must not also render them beneath the scroll widget.
         for action in list(self._action_items):
             self.removeAction(action)
             title = action.text()
             row = QTreeWidgetItem([title, '›' if action in self._submenus or action in self._context_hint_actions else ''])
-            row.setSizeHint(0, QSize(0, 29))
+            row.setSizeHint(0, QSize(0, self._item_height))
             row.setTextAlignment(1, Qt.AlignmentFlag.AlignRight |
                                     Qt.AlignmentFlag.AlignVCenter)
             if (action.icon() is not None and
@@ -347,8 +475,8 @@ class SlashExpMenu(QMenu):
             self._scroll_rows[row] = action
         # Leave headroom for the permanent search line, popup style padding,
         # and DPI rounding. Qt must never engage QMenu's *window* scroll arrows.
-        tree.setFixedHeight(min(max(125, int(self.launcher.height() * 0.70) - 90),
-                                len(self._action_items) * 29 + 4))
+        tree.setFixedHeight(min(max(125, self._popup_height - 90),
+                                len(self._action_items) * self._item_height + 4))
         holder = QWidgetAction(self)
         holder.setDefaultWidget(tree)
         self.addAction(holder)
@@ -510,7 +638,8 @@ class SlashExpMenu(QMenu):
         if self._context_source is not None:
             self._pick_column_width([action.text() for action in
                                      self._context_source.actions()
-                                     if not action.isSeparator() and action.isVisible()])
+                                     if not action.isSeparator() and action.isVisible()
+                                     and action.text().strip() != 'Filesリスト'])
             self._ensure_search()
             self._populate_context_actions()
             return
@@ -545,7 +674,7 @@ class SlashExpMenu(QMenu):
             self._action_items[action] = item
             if not has_children and not (item.data(_DATA_ROLE) or {}).get('current_folder'):
                 # Mouse activation uses exactly the same terminal executor as
-                # keyboard Enter. Nonterminal rows are navigation only.
+                # keyboard Enter. Branches still open their child on click.
                 action.triggered.connect(
                     lambda checked=False, target=item:
                     self._close_then(lambda: self._commit_terminal(target)))
@@ -569,8 +698,13 @@ class SlashExpMenu(QMenu):
         projected recursively; Enter ultimately triggers their real QAction.
         """
         for command in self._context_source.actions():
+            if not command.isSeparator() and command.text().strip() == 'Filesリスト':
+                continue  # / Enter opens List directly; ordinary Exp menu unchanged.
             if command.isSeparator():
-                self.addSeparator()
+                # Slash-only Filesリスト filtering may leave a separator at
+                # the top. Preserve the original source menu unchanged.
+                if self._action_items:
+                    self.addSeparator()
                 continue
             if not command.isVisible():
                 continue
@@ -865,9 +999,17 @@ class SlashExpMenu(QMenu):
         submenu.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _commit_terminal(self, item):
-        """Only the last Enter may change the List. Never execute on Right."""
+        """Enter commits a folder to Files List; Right is navigation only."""
         info = item.data(_DATA_ROLE) or {}
         node = info.get('virtual')
+        if info.get('current_folder'):
+            path = info.get('linked_path') or info.get('path')
+            if path and os.path.isdir(path):
+                return self.launcher.navigate_files_exp_folder(
+                    path, origin_panel=self.panel, origin_item=self.source_item)
+            if isinstance(node, dict):
+                return self.launcher.navigate_virtual_launch_folder(node)
+            return False
         if node is not None:
             if node.get('kind') == 'file':
                 # Files List's double-click URL route displays the embedded
@@ -883,7 +1025,7 @@ class SlashExpMenu(QMenu):
             return self.launcher.navigate_virtual_launch_folder(node)
         if info.get('pc'):
             return self.launcher.navigate_files_exp_pc()
-        path = info.get('path')
+        path = info.get('linked_path') or info.get('path')
         if info.get('file') and path and os.path.isfile(path):
             # Exactly the same decision as Files List *double-click*: .md may
             # use Obsidian, Studio-managed JSON the embedded Studio host, and
@@ -982,7 +1124,8 @@ class SlashExpMenu(QMenu):
                 submenu = self._attach_context(action, item)
                 if submenu is not None:
                     self._open_explicit_submenu(action, submenu, event)
-            # Enter deliberately does not execute a folder-context command.
+            else:
+                self._close_then(lambda target=item: self._commit_terminal(target))
             event.accept()
             return
         # Determine the terminal boundary ONLY when this row is activated.
@@ -990,7 +1133,11 @@ class SlashExpMenu(QMenu):
         if submenu is not None:
             if key == Qt.Key.Key_Right:
                 self._open_explicit_submenu(action, submenu, event)
-            # Enter does NOTHING in an intermediate branch.
+            elif self._context_source is None:
+                # Folder Enter opens it in Files List; Right explores children.
+                # Context submenus still require a final command: a QAction is
+                # not an Exp model item and must never be committed as one.
+                self._close_then(lambda target=item: self._commit_terminal(target))
             event.accept()
             return
         if self._context_source is not None:
@@ -1009,8 +1156,9 @@ class SlashExpMenu(QMenu):
         event.accept()
 
 
-def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None):
-    """Create one new session; no persistent alternative Exp navigation state."""
+def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
+                        source_item=None):
+    """Create one breadcrumb-rooted session; never register a new Exp root."""
     previous = getattr(launcher, '_slash_exp_navigation_menu', None)
     if previous is not None:
         try:
@@ -1019,7 +1167,7 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None):
             pass
     # Parent to Launch's topmost window so the native Popup remains above
     # Launch/Remote on Windows and returns focus when dismissed.
-    menu = SlashExpMenu(launcher, panel, parent=launcher)
+    menu = SlashExpMenu(launcher, panel, source_item=source_item, parent=launcher)
     if first_column_width is not None:
         # Must be in force BEFORE populate() creates a scrolling viewport.
         # Resizing only QMenu afterwards leaves an oversized child viewport.

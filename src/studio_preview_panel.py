@@ -14,7 +14,7 @@ import uuid
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal, QEventLoop, QPoint
+from PySide6.QtCore import Qt, QTimer, Signal, QEventLoop, QPoint, QSize
 from PySide6.QtWidgets import (QFrame, QWidget, QLabel, QToolButton, QVBoxLayout,
                                QHBoxLayout, QSizePolicy, QStackedWidget, QMessageBox)
 from browser_nav_icons import browser_navigation_icon
@@ -45,6 +45,7 @@ class _NativeHost(QFrame):
 class StudioPreviewPanel(QFrame):
     close_requested = Signal()
     maximize_requested = Signal()
+    folder_requested = Signal()  # Launch-owned origin; no foreign HWND probing.
     popout_requested = Signal()
     sakura_close_completed = Signal()
     _launch_switch_completed = Signal(object, str)
@@ -144,6 +145,19 @@ class StudioPreviewPanel(QFrame):
         header.setObjectName('filesStudioPreviewHeader')
         bar = QHBoxLayout(header)
         bar.setContentsMargins(10, 4, 6, 4)
+        # Explicit jump back to the parent of a file opened through Launch.
+        # The button does not navigate automatically and never takes focus
+        # from the guest editor except on the user's click.
+        self.folder_button = QToolButton(header)
+        self.folder_button.setObjectName('filesStudioPreviewFolder')
+        self.folder_button.setFixedSize(35, 32)
+        self.folder_button.setIconSize(QSize(25, 25))
+        self.folder_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.folder_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.folder_button.setToolTip('Launchで開いたファイルの親フォルダーをFiles Listに表示')
+        self.folder_button.clicked.connect(self.folder_requested.emit)
+        bar.addWidget(self.folder_button)
+        self.folder_button.hide()  # No known physical file until an explicit open.
         self.title_label = QLabel('FRB Studio', header)
         self.title_label.setObjectName('filesStudioPreviewTitle')
         bar.addWidget(self.title_label, 1)
@@ -2411,6 +2425,7 @@ class StudioPreviewPanel(QFrame):
         c = theme_palette(theme)
         self.close_button.setIcon(browser_navigation_icon('close', theme_family(theme)))
         self.popout_button.setIcon(browser_navigation_icon('external', theme_family(theme)))
+        self.folder_button.setIcon(browser_navigation_icon('folder_open', theme_family(theme)))
         self.set_maximized(getattr(self, '_third_column_maximized', False))
         if self._options_widget is not None:
             self._options_widget.set_theme(theme)

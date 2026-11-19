@@ -361,8 +361,14 @@ class RoundRailWheelPad(WheelPad):
         self._circle_fill = QColor('#e7f4ee')
         self._circle_outline = QColor('#519d78')
         self._circle_ink = QColor('#155c3f')
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        # This is an ordinary *child* hit target, not a transparent popup.
+        # WA_TranslucentBackground on Windows may make the native hit-test
+        # forward a second click to the Exp tree UNDER the circular button.
+        # The elliptical mask + our opaque ellipse painter supply the shape;
+        # leave the underlying QFrame mouse-opaque.
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
         self.setAutoFillBackground(False)
         # 既存Remoteの「🔘」を円の中心へ。元のlayoutラベルは隠し、
         # アイコンだけ独立した子ラベルにして、左右のマウス判定を妨げない。

@@ -1562,7 +1562,7 @@ class ExpandedLauncherView(QWidget):
         # engine, the Files List filter, or the history keyboard routes.
         self.files_history_button.hide()
         self.address_bar = DirectoryAddressBar(
-            lambda path: self.go_to_directory(path, direct_anchor=True),
+            lambda path: self.go_to_directory(path),
             self.shared_header, navigate_logical=self.navigate_logical_crumb)
         shared_layout.addWidget(self.address_bar, 1)
         # Move the existing three-lines/density action to the breadcrumb's
@@ -1901,6 +1901,11 @@ class ExpandedLauncherView(QWidget):
         self._browser_preview_base_sizes = None
         self.studio_preview = None
         self._studio_preview_base_sizes = None
+        # Session-only, editor-scoped origins. Opening a file must NEVER
+        # navigate Files List; only an explicit third-column folder click may.
+        from third_column_folder_history import ThirdColumnFolderHistory
+        self._third_column_folder_history = ThirdColumnFolderHistory()
+        self._third_column_folder_menu = None
         self._preview_layout_restoring = False
         self._preview_maximized = False
         self._preview_normal_columns = None
@@ -3670,7 +3675,7 @@ class ExpandedLauncherView(QWidget):
                 self.hide_favorite_popup()
             return
         self.hide_favorite_popup()
-        if not self.go_to_directory(path, direct_anchor=True):
+        if not self.go_to_directory(path):
             self.launcher.error('フォルダーが見つかりません: ' + path)
 
     def directory_favorites_reordered(self, paths):
@@ -4085,7 +4090,7 @@ class ExpandedLauncherView(QWidget):
 
     def go_to_directory(self, path, *, preserve_remote_popup=False,
                         source_virtual=None, direct_anchor=False,
-                        registered_root=None):
+                        registered_root=None, mount_origin=None):
         """Breadcrumb/edit/favorite navigation stays inside FRB Launch.
 
         A folder *clicked inside an open Remote context submenu* must update
@@ -4101,7 +4106,21 @@ class ExpandedLauncherView(QWidget):
         # The currently displayed virtual folder is NOT the parent of an
         # unrelated physical root clicked elsewhere in Files Exp.
         from directory_entry_origin import within_entry
-        if source_virtual is not None and not direct_anchor:
+        # Right traverses without committing intermediate virtual folders.
+        # If Enter lands directly in a child of a JSON linked-directory,
+        # keep the *linked root* as the breadcrumb's logical mount boundary.
+        mount_node = (mount_origin.get('node') if isinstance(mount_origin, dict)
+                      else None)
+        mount_root = (mount_origin.get('entry_path') if isinstance(mount_origin, dict)
+                      else None)
+        if (isinstance(mount_node, dict)
+                and mount_node.get('source') == 'launch_json'
+                and mount_node.get('kind') == 'linked_directory'
+                and mount_root and within_entry(target, mount_root)):
+            self._filesystem_entry_origin = next_entry_origin(None, mount_node, mount_root)
+            self._direct_entry_root = None
+            self._registered_root_origin = None
+        elif source_virtual is not None and not direct_anchor:
             self._filesystem_entry_origin = next_entry_origin(None, source_virtual, target)
             self._direct_entry_root = None
             self._registered_root_origin = None
@@ -4841,7 +4860,40 @@ class ExpandedLauncherView(QWidget):
         event.accept()
         return True
 
+    def _guard_rail_underlay_click(self, obj, event):
+        """Prevent a circular wheel click from selecting the Exp row beneath.
+
+        On Windows/Qt a masked/translucent child may pass its native double
+        click to the underlying Exp viewport. Guard only the 60px ellipse;
+        normal Exp/List clicks and normal wheel commands remain untouched.
+        """
+        if event.type() not in (QEvent.Type.MouseButtonPress,
+                                QEvent.Type.MouseButtonRelease,
+                                QEvent.Type.MouseButtonDblClick):
+            return False
+        if getattr(self, '_workspace_mode', None) != 'files':
+            return False
+        pad = getattr(self, 'rail_wheel', None)
+        exp = getattr(self, 'embedded_files_exp', None)
+        if pad is None or exp is None or not pad.isVisible():
+            return False
+        targets = (exp.tree, exp.tree.viewport(), self.middle.tree,
+                   self.middle.tree.viewport())
+        if obj not in targets:
+            return False
+        cursor = QCursor.pos()
+        local = pad.mapFromGlobal(cursor)
+        dx = local.x() - (pad.width() - 1) / 2.0
+        dy = local.y() - (pad.height() - 1) / 2.0
+        if (dx / (pad.width() / 2.0)) ** 2 + (dy / (pad.height() / 2.0)) ** 2 > 1.0:
+            return False
+        event.accept()
+        pad.raise_()  # Keep the real ぐりぐり hit target above both viewports.
+        return True
+
     def eventFilter(self, obj, event):
+        if self._guard_rail_underlay_click(obj, event):
+            return True
         if self.keyboard_files_shortcuts(obj, event):
             return True
         if self.clear_middle_search_on_escape(obj, event):
@@ -6817,6 +6869,7 @@ class ExpandedLauncherView(QWidget):
             self.studio_preview.launcher = self.launcher
             self.studio_preview.close_requested.connect(self.close_studio_preview)
             self.studio_preview.maximize_requested.connect(self.toggle_third_column_maximize)
+            self.studio_preview.folder_requested.connect(self.show_third_column_file_folder)
             self._install_launch_header_drag('third', self.studio_preview.header,
                                              self.studio_preview.title_label)
             self.studio_preview.popout_requested.connect(self._hide_studio_preview_only)
@@ -6875,6 +6928,60 @@ class ExpandedLauncherView(QWidget):
         QTimer.singleShot(80, self.queue_rail_wheel_position)
         return True
 
+    def _remember_third_column_file(self, owner, path):
+        """Only successful Launch file-open requests provide folder candidates.
+
+        This is NOT an inspection of external editor tabs.  Preserve the
+        independent Files List breadcrumb until the user clicks the icon.
+        """
+        history = self._third_column_folder_history
+        if history.remember(owner, path):
+            panel = getattr(self, 'studio_preview', None)
+            if panel is not None:
+                panel.folder_button.setVisible(True)
+                panel.folder_button.setToolTip(
+                    'Launch経由で開いたファイルの親フォルダーをFiles Listで開く'
+                    '（候補が複数なら選択）')
+
+    def _open_third_column_folder(self, folder):
+        """Change Files List only on an explicit folder-button selection."""
+        if not os.path.isdir(folder):
+            self.launcher.footer.setText('親フォルダーが見つかりません: ' + str(folder))
+            return False
+        if not self.go_to_directory(folder):
+            self.launcher.footer.setText('Files Listを開けません: ' + str(folder))
+            return False
+        self.launcher.footer.setText('Files Listを表示: ' + str(folder))
+        return True
+
+    def show_third_column_file_folder(self):
+        """Single candidate opens immediately; multiple parents show a menu."""
+        panel = getattr(self, 'studio_preview', None)
+        if panel is None or panel.isHidden():
+            return False
+        folders = [folder for folder in self._third_column_folder_history.candidates()
+                   if os.path.isdir(folder)]
+        if not folders:
+            self.launcher.footer.setText(
+                'Launchから開いたファイルの親フォルダーが見つかりません')
+            return False
+        if len(folders) == 1:
+            return self._open_third_column_folder(folders[0])
+        # Own this popup until it closes. The target is always the physical
+        # directory selected here, never Files List's prior/current row.
+        menu = QMenu(panel.folder_button)
+        menu.setToolTipsVisible(True)
+        for folder in folders:
+            action = menu.addAction('📁  ' + folder)
+            action.setToolTip(folder)
+            action.triggered.connect(
+                lambda checked=False, path=folder: self._open_third_column_folder(path))
+        self._third_column_folder_menu = menu
+        menu.aboutToHide.connect(menu.deleteLater)
+        menu.popup(panel.folder_button.mapToGlobal(
+            QPoint(0, panel.folder_button.height())))
+        return True
+
     def show_studio_preview(self, target):
         """Dock the real C# Studio with its original WebView2 save bridge."""
         was_open = bool(self.studio_preview and not self.studio_preview.isHidden())
@@ -6888,6 +6995,7 @@ class ExpandedLauncherView(QWidget):
             if not was_open:
                 self.close_studio_preview()
             return False
+        self._remember_third_column_file('studio', target[0])
         if keep_list_focus:
             self.middle.tree.setFocus(Qt.FocusReason.OtherFocusReason)
         self.queue_rail_wheel_position()
@@ -6924,6 +7032,7 @@ class ExpandedLauncherView(QWidget):
             if not was_open:
                 self.close_studio_preview()
             return False
+        self._remember_third_column_file(target.app, target.path)
         self.queue_rail_wheel_position()
         QTimer.singleShot(80, self.queue_rail_wheel_position)
         return True
@@ -6940,6 +7049,9 @@ class ExpandedLauncherView(QWidget):
             if not was_open:
                 self.close_studio_preview()
             raise
+        # Options has no physical file origin; never advertise a stale jump.
+        self._third_column_folder_history.clear_active()
+        self.studio_preview.folder_button.hide()
         return True
 
     def close_studio_preview(self):
@@ -7062,6 +7174,10 @@ class ExpandedLauncherView(QWidget):
             # left alone until activated/reloaded.
             if explicit_panel is None and not panel.isVisible():
                 continue
+            # A folder visit is never a request to add an Exp root. Remove
+            # legacy session-only direct roots left by older address actions.
+            if direct is None:
+                panel.clear_direct_roots()
             if virtual is not None:
                 panel.remote_select_virtual_node(virtual)
             elif origin is not None and directory:

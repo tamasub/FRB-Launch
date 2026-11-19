@@ -846,8 +846,36 @@ class RemoteFilesExplorer(QWidget):
                 'title': item.text(),
                 'root_id': str(identity.get('item_id') or root)}
 
+    def clear_direct_roots(self):
+        """Discard transient Exp roots without modifying configured roots.
+
+        Older releases created these rows while navigating by address,
+        favorites or the third-column folder icon. They are session-only,
+        but must not remain visible after ordinary folder navigation.
+        Suppress selection callbacks while removing a previously selected row.
+        """
+        parent = self.model.invisibleRootItem()
+        rows = []
+        for index in range(parent.rowCount()):
+            item = parent.child(index)
+            data = item.data(_DATA_ROLE) if item is not None else None
+            if isinstance(data, dict) and data.get('direct_root'):
+                rows.append(index)
+        if not rows:
+            return False
+        self._selection_timer.stop()
+        previous_sync = self._syncing_directory
+        self._syncing_directory = True
+        try:
+            for index in reversed(rows):
+                parent.removeRow(index)
+        finally:
+            self._syncing_directory = previous_sync
+        self._schedule_tree_state_save()
+        return True
+
     def ensure_direct_root(self, path):
-        """Typed address creates one standalone logical filesystem root."""
+        """Legacy direct-anchor helper; never called for ordinary navigation."""
         import ntpath
         root = ntpath.normcase(ntpath.normpath(str(path or '')))
         if not root or not os.path.isdir(path):

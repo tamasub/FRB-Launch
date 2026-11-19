@@ -24,7 +24,7 @@ from frb_update.contracts import read_sources, version_tuple
 from frb_update.bootstrap import check_feeds
 from remote_text_dialog import RemoteTextDialog
 from remote_context_wheel import RemoteContextWheel
-from slash_exp_navigation import popup_exp_navigator
+from slash_exp_navigation import popup_exp_navigator, slash_source_from_breadcrumb
 from rod_foreground import foreground_owned_by_process
 from shuriken_model import configured_entries
 from shuriken_scroll_handoff import handoff_current_at_scroll_stop
@@ -4248,12 +4248,22 @@ class Launcher(QWidget):
         if view._workspace_mode != 'files':
             view.show_files_view()
         panel = origin_panel if origin_panel is not None else self._current_remote_files_exp()
+        # A breadcrumb-started / menu uses temporary, read-only items.
+        # They are NOT authored registered roots; preserve the breadcrumb's
+        # existing logical origin through go_to_directory instead.
+        transient = bool(origin_item is not None and
+                         (origin_item.data(Qt.ItemDataRole.UserRole + 1) or {}).get(
+                             'slash_transient'))
+        info = (origin_item.data(Qt.ItemDataRole.UserRole + 1) or {}) if transient else {}
+        mounted_from_menu = info.get('slash_mount_origin')
         registered_root = (panel.current_registered_root(
             directory, source_item=origin_item)
-            if panel is not None else None)
-        return bool(view.go_to_directory(
-            directory, preserve_remote_popup=True,
-            registered_root=registered_root))
+            if panel is not None and not transient else None)
+        options = {'preserve_remote_popup': True,
+                   'registered_root': registered_root}
+        if mounted_from_menu is not None:
+            options['mount_origin'] = mounted_from_menu
+        return bool(view.go_to_directory(directory, **options))
 
     def show_files_exp_folder_menu(self, directory, position):
         """The existing Remote blank-strip menu, bound to the chosen folder.
@@ -4494,6 +4504,12 @@ class Launcher(QWidget):
             panel = getattr(view, 'embedded_files_exp', None)
         if panel is None or panel.model.rowCount() == 0:
             return False
+        # The rendered logical breadcrumb is the single authority for /.
+        # Never start from Exp/List selection, focus, or the global root list.
+        source_item = slash_source_from_breadcrumb(self, view, panel)
+        if source_item is None:
+            self.footer.setText('Exp Keyboard Ex: パンくずの現在地を解決できません')
+            return False
         # Do not leave overlapping non-grabbing Tool/QMenu chains behind.
         self.close_remote_folder_menu()
         self.close_remote_page_menu()
@@ -4520,7 +4536,12 @@ class Launcher(QWidget):
         frame_gutter = 5
         anchor = exp_tree.mapToGlobal(QPoint(frame_gutter, 2))
         exp_width = max(190, exp_tree.width() - 2 * frame_gutter)
-        return popup_exp_navigator(self, panel, anchor, first_column_width=exp_width)
+        opened = popup_exp_navigator(self, panel, anchor,
+                                     first_column_width=exp_width,
+                                     source_item=source_item)
+        if not opened:
+            self.footer.setText('Exp Keyboard Ex: この先に表示できる項目がありません')
+        return opened
 
     def show_remote_files_first_column_menu(self):
         """Right-click Files: switch to Files and open its first-column roots.
@@ -4635,6 +4656,10 @@ class Launcher(QWidget):
         def align(exp_panel):
             if exp_panel is None or not exp_panel.isVisible():
                 return
+            # Navigating to a folder (address, favorite or third-column 📂)
+            # must not keep/create a session-only root in Files Exp.
+            if direct_root is None:
+                exp_panel.clear_direct_roots()
             if origin and directory:
                 exp_panel.remote_select_mounted_directory(
                     origin['node'], origin['entry_path'], directory)

@@ -45,6 +45,7 @@ def make_panel():
               remote_select_pc_root=lambda: selected('pc'),
               remote_select_mounted_directory=lambda n, e, p: selected('mount', n['node_id']),
               ensure_direct_root=lambda p: selected('direct-root', p),
+              clear_direct_roots=lambda: None,
               sync_current_directory=lambda p, **kw: selected('physical', (p, kw)),
               restore_previous_tree_state=lambda: selected('restored-stale'))
 
