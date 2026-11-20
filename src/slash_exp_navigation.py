@@ -92,6 +92,76 @@ def slash_source_from_breadcrumb(launcher, view, panel):
     return None
 
 
+def slash_source_with_filled_list_folder(launcher, view, breadcrumb_source):
+    """Optionally descend ONE level from the breadcrumb's logical location.
+
+    The green *filled* Files List current folder is an explicit target;
+    a remembered outline, a file, or an inactive List is not.  Never infer a
+    directory from the Exp selection, the focus widget, or an unrelated row.
+    The selected folder must be a direct logical child of the breadcrumb.
+    """
+    if breadcrumb_source is None:
+        return None
+    tree = getattr(getattr(view, 'middle', None), 'tree', None)
+    if (tree is None or getattr(tree, 'deliberate_blank_selection', False)
+            or tree.property('remoteInactive') is True):
+        return breadcrumb_source
+    selected = tree.selectedItems()
+    if len(selected) != 1 or selected[0] is not tree.currentItem():
+        return breadcrumb_source
+    item = selected[0]
+    if not item.isSelected():
+        return breadcrumb_source
+    row = view.row_data(item)
+    if not isinstance(row, dict):
+        return breadcrumb_source
+
+    # Launch JSON folders belong to the logical breadcrumb tree.  Keep the
+    # page/item identity, including a linked-directory mount and its aliases.
+    node = row.get('_launch_virtual_node')
+    parent_node = getattr(view, '_virtual_directory_node', None)
+    if isinstance(node, dict) and isinstance(parent_node, dict):
+        if node.get('kind') == 'file' or not any(
+                child.get('node_id') == node.get('node_id')
+                for child in parent_node.get('children', ())):
+            return breadcrumb_source
+        linked_path = None
+        if node.get('kind') == 'linked_directory':
+            raw = (node.get('row') or {}).get('launch_browse_target')
+            if raw:
+                linked_path = launcher.expander().expand(raw)
+        source = QStandardItem(launcher.row_icon(row), str(node.get('title') or ''))
+        source.setData({'virtual': node, 'pc': False, 'path': None,
+                        'linked_path': linked_path}, _DATA_ROLE)
+        source.setData(True, _LOADED_ROLE)
+        return source
+
+    if row.get('item_kind') != 'directory':
+        return breadcrumb_source  # File / URL / action; never descend.
+    raw = row.get('launch_browse_target')
+    if not raw:
+        return breadcrumb_source
+    directory = launcher.expander().expand(raw)
+    if not directory or not os.path.isdir(directory):
+        return breadcrumb_source
+    parent_directory = view.current_directory()
+    import ntpath
+    if parent_directory:
+        # Prevent a stale or unrelated selected row becoming another god.
+        if (ntpath.normcase(ntpath.normpath(ntpath.dirname(directory)))
+                != ntpath.normcase(ntpath.normpath(parent_directory))):
+            return breadcrumb_source
+    elif not ((breadcrumb_source.data(_DATA_ROLE) or {}).get('pc')
+              and row.get('_system_drive')):
+        return breadcrumb_source
+    source = QStandardItem(launcher.row_icon(row),
+                           str(row.get('title') or os.path.basename(directory)))
+    source.setData({'path': directory, 'pc': False, 'slash_transient': True,
+                    'slash_mount_origin': getattr(view, '_filesystem_entry_origin', None)},
+                   _DATA_ROLE)
+    source.setData(True, _LOADED_ROLE)
+    return source
+
 
 def slash_menu_row_height(launcher):
     view = getattr(launcher, 'expanded_view', None)
@@ -192,8 +262,10 @@ class SlashExpMenu(QMenu):
         self._scroll_items = {}
         self._scroll_rows = {}
         self._scroll_selected_action = None
-        # Only the first column is constrained by the Exp border.
-        self._max_first_column_width = None
+        # The root column can mirror Files List's resizable Name section.
+        # Descendant/context columns retain independent width selection.
+        self._exact_first_column_width = None
+        self._max_first_column_width = None  # Legacy cap for standalone menus.
         self.setObjectName('slashExpNavigationMenu')
         self.setToolTipsVisible(True)
         self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
@@ -204,6 +276,9 @@ class SlashExpMenu(QMenu):
         # Scroll overflow follows screen size, not a resized Launch window.
         self._item_height = slash_menu_row_height(launcher)
         self._popup_height = slash_screen_height()
+        # The first column receives Files List's visible vertical bounds at
+        # popup time. Descendants inherit that same bounded navigation area.
+        self._list_vertical_bounds = None
         self.setMaximumHeight(self._popup_height)
         style_context_menu(self, getattr(launcher, 'color_theme', 'light'))
         self.setStyleSheet(self.styleSheet() +
@@ -213,6 +288,14 @@ class SlashExpMenu(QMenu):
         # A QMenu's native Popup focus/keyboard ownership is intentional:
         # non-grabbing Files Exp menus leave their arrow keys in the tree.
         self.aboutToShow.connect(self.populate)
+
+    def _inherit_list_vertical_bounds(self):
+        """Keep cascade columns inside the same List vertical area."""
+        bounds = self.root_menu._list_vertical_bounds
+        if bounds is not None:
+            self._list_vertical_bounds = bounds
+            self._popup_height = max(1, bounds[1] - bounds[0])
+            self.setMaximumHeight(self._popup_height)
 
     def _virtual_leaf_item(self, node):
         """Temporary displayed leaf; never mutate the Files Exp model.
@@ -418,7 +501,9 @@ class SlashExpMenu(QMenu):
         QTreeWidget scrollToItem() moves *only the content*, with the frame,
         search field and popup position all stationary.
         """
-        limit = max(6, (self._popup_height - 66) // self._item_height)
+        # Count search + frame/padding in the budget so a long list NEVER
+        # forces native QMenu window-scroll below the Files List viewport.
+        limit = max(1, (self._popup_height - 90) // self._item_height)
         if len(self._action_items) <= limit:
             return
         tree = QTreeWidget(self)
@@ -475,7 +560,7 @@ class SlashExpMenu(QMenu):
             self._scroll_rows[row] = action
         # Leave headroom for the permanent search line, popup style padding,
         # and DPI rounding. Qt must never engage QMenu's *window* scroll arrows.
-        tree.setFixedHeight(min(max(125, self._popup_height - 90),
+        tree.setFixedHeight(min(max(34, self._popup_height - 90),
                                 len(self._action_items) * self._item_height + 4))
         holder = QWidgetAction(self)
         holder.setDefaultWidget(tree)
@@ -620,7 +705,9 @@ class SlashExpMenu(QMenu):
                      for name in titles), default=0)
         desired = (SLASH_LONG_WIDTH if width > SLASH_LONG_TEXT_THRESHOLD
                    else SLASH_STANDARD_WIDTH)
-        if self._max_first_column_width is not None:
+        if self._exact_first_column_width is not None:
+            desired = self._exact_first_column_width
+        elif self._max_first_column_width is not None:
             desired = min(desired, self._max_first_column_width)
         self.setFixedWidth(desired)
 
@@ -683,6 +770,7 @@ class SlashExpMenu(QMenu):
             if has_children:
                 sub = SlashExpMenu(self.launcher, self.panel,
                                    root=self.root_menu, source_item=item, parent=self)
+                sub._inherit_list_vertical_bounds()
                 self._submenus[action] = sub
         if not self._action_items:
             empty = self.addAction('（項目なし）')
@@ -724,6 +812,7 @@ class SlashExpMenu(QMenu):
                 sub = SlashExpMenu(self.launcher, self.panel,
                                    root=self.root_menu, parent=self,
                                    context_source=command.menu())
+                sub._inherit_list_vertical_bounds()
                 self._submenus[action] = sub
             else:
                 # A mouse click on the new column must still invoke the real
@@ -897,6 +986,7 @@ class SlashExpMenu(QMenu):
             context = SlashExpMenu(self.launcher, self.panel,
                                    root=self.root_menu, parent=self,
                                    context_source=source)
+            context._inherit_list_vertical_bounds()
             context.populate()
             self._context_menus[action] = context
         return context
@@ -959,8 +1049,13 @@ class SlashExpMenu(QMenu):
         if x + width > available.right() + 1:
             x = self.mapToGlobal(QPoint(0, 0)).x() - width + 1
         x = max(available.left(), min(x, available.right() - width + 1))
-        y = min(max(point.y(), available.top()),
-                max(available.top(), available.bottom() - height + 1))
+        # Cascades may open at a row near the bottom; slide the column UP
+        # rather than letting it extend outside the Files List navigation area.
+        top, bottom = (self.root_menu._list_vertical_bounds
+                       or (available.top(), available.bottom() + 1))
+        top = max(top, available.top())
+        bottom = min(bottom, available.bottom() + 1)
+        y = min(max(point.y(), top), max(top, bottom - height))
         submenu._pin_popup_position(QPoint(x, y))
 
     def _open_explicit_submenu(self, action, submenu, event):
@@ -1157,7 +1252,7 @@ class SlashExpMenu(QMenu):
 
 
 def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
-                        source_item=None):
+                        list_bottom_y=None, source_item=None):
     """Create one breadcrumb-rooted session; never register a new Exp root."""
     previous = getattr(launcher, '_slash_exp_navigation_menu', None)
     if previous is not None:
@@ -1168,10 +1263,18 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
     # Parent to Launch's topmost window so the native Popup remains above
     # Launch/Remote on Windows and returns focus when dismissed.
     menu = SlashExpMenu(launcher, panel, source_item=source_item, parent=launcher)
+    if list_bottom_y is not None:
+        bottom = int(list_bottom_y)
+        top = int(anchor.y())
+        if bottom > top:
+            menu._list_vertical_bounds = (top, bottom)
+            menu._popup_height = bottom - top
+            menu.setMaximumHeight(menu._popup_height)
     if first_column_width is not None:
-        # Must be in force BEFORE populate() creates a scrolling viewport.
-        # Resizing only QMenu afterwards leaves an oversized child viewport.
-        menu._max_first_column_width = max(190, int(first_column_width))
+        # Mirror the Name header's ACTUAL width, even for unusually long
+        # filenames or a user-resized narrow column. Set before populate()
+        # so both native rows and the long-list scrolling viewport agree.
+        menu._exact_first_column_width = int(first_column_width)
     menu.populate()
     if not menu._action_items:
         menu.deleteLater()
@@ -1186,10 +1289,9 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
         QTimer.singleShot(250, menu.deleteLater)
 
     menu.aboutToHide.connect(on_hidden)
-    # The caller deliberately anchors the FIRST column over Files Exp.
-    # Do not shift that column left to reserve four hypothetical columns:
-    # doing so undoes the user's chosen Exp overlay location. Every actual
-    # child column is independently placed beside the current selection.
+    # The caller anchors only the FIRST column at Files List's Name header.
+    # Do not shift it to reserve hypothetical columns: each actual child
+    # column is independently placed beside the current selection.
     screen = (QApplication.screenAt(anchor) or
               getattr(launcher, 'screen', lambda: None)() or
               QApplication.primaryScreen())

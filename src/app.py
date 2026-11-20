@@ -24,7 +24,8 @@ from frb_update.contracts import read_sources, version_tuple
 from frb_update.bootstrap import check_feeds
 from remote_text_dialog import RemoteTextDialog
 from remote_context_wheel import RemoteContextWheel
-from slash_exp_navigation import popup_exp_navigator, slash_source_from_breadcrumb
+from slash_exp_navigation import (popup_exp_navigator, slash_source_from_breadcrumb,
+                                  slash_source_with_filled_list_folder)
 from rod_foreground import foreground_owned_by_process
 from shuriken_model import configured_entries
 from shuriken_scroll_handoff import handoff_current_at_scroll_stop
@@ -4504,9 +4505,11 @@ class Launcher(QWidget):
             panel = getattr(view, 'embedded_files_exp', None)
         if panel is None or panel.model.rowCount() == 0:
             return False
-        # The rendered logical breadcrumb is the single authority for /.
-        # Never start from Exp/List selection, focus, or the global root list.
+        # The breadcrumb owns the logical path. A green-FILLED Files List
+        # folder is the one explicit, direct-child extension of that path.
+        # Passive green outline and file selection leave the path unchanged.
         source_item = slash_source_from_breadcrumb(self, view, panel)
+        source_item = slash_source_with_filled_list_folder(self, view, source_item)
         if source_item is None:
             self.footer.setText('Exp Keyboard Ex: パンくずの現在地を解決できません')
             return False
@@ -4522,22 +4525,28 @@ class Launcher(QWidget):
         existing_cascade = getattr(self, 'menu', None)
         if existing_cascade is not None and existing_cascade.isVisible():
             existing_cascade.close()
-        # / is an overlay of Files Exp itself, NOT a popup next to the
-        # wheel or Files List. Place its first column over Exp's first row.
-        # This remains stable whether the wheel moves or Remote is hidden.
-        exp_tree = getattr(panel, 'tree', None)
-        exp_viewport = getattr(exp_tree, 'viewport', None)
-        exp_viewport = exp_viewport() if callable(exp_viewport) else None
-        if exp_tree is None or not exp_tree.isVisible():
+        # Overlay the Files List's *visible Name header*, not Files Exp.
+        # Read logical section 0's viewport position and live width: users
+        # may resize or reorder columns, and the List may scroll sideways.
+        # Only the first / column follows that width; cascade children keep
+        # their existing auto-sized layout.
+        list_tree = getattr(getattr(view, 'middle', None), 'tree', None)
+        header = list_tree.header() if list_tree is not None else None
+        if (header is None or not header.isVisible()
+                or header.isSectionHidden(0)):
             return False
-        # Place *inside* the Files Exp frame, not beyond its left border.
-        # Size the initial column to the frame's inner width; descendants
-        # retain their larger normal/long-name widths to the right.
-        frame_gutter = 5
-        anchor = exp_tree.mapToGlobal(QPoint(frame_gutter, 2))
-        exp_width = max(190, exp_tree.width() - 2 * frame_gutter)
+        name_x = header.sectionViewportPosition(0)
+        name_width = header.sectionSize(0)
+        if name_x < 0 or name_width <= 0:
+            return False
+        anchor = header.mapToGlobal(QPoint(name_x, 0))
+        # Bound the entire / cascade vertically to Files List, including
+        # when the window is resized or a folder has hundreds of entries.
+        list_bottom_y = list_tree.viewport().mapToGlobal(
+            QPoint(0, list_tree.viewport().height())).y()
         opened = popup_exp_navigator(self, panel, anchor,
-                                     first_column_width=exp_width,
+                                     first_column_width=name_width,
+                                     list_bottom_y=list_bottom_y,
                                      source_item=source_item)
         if not opened:
             self.footer.setText('Exp Keyboard Ex: この先に表示できる項目がありません')

@@ -96,8 +96,8 @@ class FakeQMenu:
         pass
     def styleSheet(self):
         return ''
-    def setMaximumHeight(self, *args):
-        pass
+    def setMaximumHeight(self, height):
+        self.maximum_height = height
     def setFixedWidth(self, width):
         self.fixed_width = width
     def fontMetrics(self):
@@ -369,6 +369,7 @@ def nav(monkeypatch):
             self.icon_size=None
             self.last_column_width=None
         def setFixedWidth(self, value): self.fixed_width=value
+        def setFixedHeight(self, value): self.fixed_height=value
         def setIconSize(self, value): self.icon_size=value
         def setColumnWidth(self, column, value): self.last_column_width=(column, value)
         def __getattr__(self, name):
@@ -803,7 +804,7 @@ def test_root_reserves_horizontal_space_for_third_context_column(nav):
     assert mod.popup_exp_navigator(launcher, Panel([root]), point)
     popup = launcher._slash_exp_navigation_menu
     assert popup is not None
-    # Keep caller-chosen Exp overlay anchor, rather than pulling the root
+    # Keep caller-chosen List Name-column anchor, rather than pulling the root
     # far left to reserve four imaginary, possibly wide child columns.
     assert popup.popup_point.x() == 830
     assert popup.popup_point.x() + popup.width() <= 1201
@@ -903,7 +904,7 @@ def test_nonurl_leaf_falls_back_to_original_list_activation(nav):
     assert calls == [('execute_virtual', node['row'])]
 
 
-def test_launch_first_slash_column_opens_at_files_exp_top_not_wheel_height():
+def test_launch_first_slash_column_opens_at_files_list_name_header():
     """Test the actual Launch method without importing the GUI-heavy app."""
     import ast
     app = (ROOT / 'src' / 'app.py').read_text('utf-8')
@@ -920,14 +921,22 @@ def test_launch_first_slash_column_opens_at_files_exp_top_not_wheel_height():
     namespace['QPoint'] = Point
     source = object()  # Already resolved from the logical breadcrumb.
     namespace['slash_source_from_breadcrumb'] = lambda launcher, view, panel: source
+    namespace['slash_source_with_filled_list_folder'] = lambda launcher, view, source: source
     namespace['popup_exp_navigator'] = lambda launcher, panel, anchor, **kw: calls.append((anchor, kw)) or True
     expression = ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
     exec(compile(expression, '<Launch slash position>', 'exec'), namespace)
     panel = SimpleNamespace(model=SimpleNamespace(rowCount=lambda: 7),
         tree=SimpleNamespace(isVisible=lambda: True, width=lambda: 240,
             mapToGlobal=lambda point: Point(25 + point.x(), 180 + point.y())))
+    name_header = SimpleNamespace(isVisible=lambda: True,
+        isSectionHidden=lambda col: False, sectionViewportPosition=lambda col: 0,
+        sectionSize=lambda col: 310,
+        mapToGlobal=lambda point: Point(310 + point.x(), 126 + point.y()))
     view = SimpleNamespace(isVisible=lambda: True, _workspace_mode='files',
-                           embedded_files_exp=panel)
+        embedded_files_exp=panel,
+        middle=SimpleNamespace(tree=SimpleNamespace(header=lambda: name_header,
+            viewport=lambda: SimpleNamespace(height=lambda: 640,
+                mapToGlobal=lambda p: Point(310+p.x(), 150+p.y())))))
     pad = SimpleNamespace(isVisible=lambda: True, width=lambda: 60,
                           mapToGlobal=lambda point: Point(390, 515))
     dummy = SimpleNamespace(expanded_view=view,
@@ -937,10 +946,11 @@ def test_launch_first_slash_column_opens_at_files_exp_top_not_wheel_height():
         menu=None, _slash_exp_navigation_menu=None)
     assert namespace['show_slash_exp_navigation_menu'](dummy)
     assert len(calls) == 1
-    assert calls[0][0].x() == 30  # Exp frame x=25 + 5px inner margin.
-    assert calls[0][0].y() == 182
+    assert calls[0][0].x() == 310  # List Name header's left edge.
+    assert calls[0][0].y() == 126
     assert calls[0][1]['source_item'] is source
-    assert calls[0][1]['first_column_width'] == 230
+    assert calls[0][1]['first_column_width'] == 310
+    assert calls[0][1]['list_bottom_y'] == 790
 
 
 def test_long_column_scrolls_selected_item_inside_fixed_viewport(nav):
@@ -1134,7 +1144,7 @@ def test_long_column_width_is_preserved_when_scrollbar_is_present(nav):
     assert len(action.text()) > 20
 
 
-def test_first_slash_menu_stays_over_files_exp_without_visible_wheel():
+def test_first_slash_menu_tracks_name_column_even_without_visible_wheel():
     import ast
     code = (ROOT / 'src' / 'app.py').read_text(encoding='utf-8')
     method = next(n for cls in ast.parse(code).body if isinstance(cls, ast.ClassDef)
@@ -1148,6 +1158,7 @@ def test_first_slash_menu_stays_over_files_exp_without_visible_wheel():
     source = object()
     namespace={'QPoint': Point,
                'slash_source_from_breadcrumb': lambda obj, view, panel: source,
+               'slash_source_with_filled_list_folder': lambda obj, view, source: source,
                'popup_exp_navigator': lambda obj, panel, anchor, **kw: seen.append((anchor, kw)) or True}
     compiled=ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
     exec(compile(compiled,'<slash overlay test>','exec'),namespace)
@@ -1156,8 +1167,16 @@ def test_first_slash_menu_stays_over_files_exp_without_visible_wheel():
     tree=SimpleNamespace(isVisible=lambda: True, width=lambda: 264,
                          mapToGlobal=lambda p: Point(125+p.x(), 215+p.y()))
     panel=SimpleNamespace(model=SimpleNamespace(rowCount=lambda: 3), tree=tree)
+    name_header=SimpleNamespace(isVisible=lambda: True,
+        isSectionHidden=lambda col: False,
+        sectionViewportPosition=lambda col: 84 if col == 0 else 0,
+        sectionSize=lambda col: 415 if col == 0 else 156,
+        mapToGlobal=lambda p: Point(320+p.x(), 125+p.y()))
     view=SimpleNamespace(isVisible=lambda: True, _workspace_mode='files',
-                         embedded_files_exp=panel)
+        embedded_files_exp=panel,
+        middle=SimpleNamespace(tree=SimpleNamespace(header=lambda: name_header,
+            viewport=lambda: SimpleNamespace(height=lambda: 500,
+                mapToGlobal=lambda p: Point(320+p.x(), 155+p.y())))))
     obj=SimpleNamespace(expanded_view=view,
                         _current_remote_files_exp=lambda: panel,
                         close_remote_folder_menu=lambda: None,
@@ -1165,8 +1184,9 @@ def test_first_slash_menu_stays_over_files_exp_without_visible_wheel():
                         _launch_context_menu=None, menu=None,
                         _slash_exp_navigation_menu=None)
     assert namespace['show_slash_exp_navigation_menu'](obj)
-    assert (seen[0][0].x(),seen[0][0].y()) == (130,217)
-    assert seen[0][1]['first_column_width'] == 254
+    assert (seen[0][0].x(),seen[0][0].y()) == (404,125)
+    assert seen[0][1]['first_column_width'] == 415
+    assert seen[0][1]['list_bottom_y'] == 655
     assert seen[0][1]['source_item'] is source
 
 
@@ -1222,6 +1242,53 @@ def test_opened_physical_folder_context_uses_actual_selected_branch(nav, tmp_pat
     sub = menu._submenus[next(iter(menu._action_items))]
     sub.keyPressEvent(Event(key.Key_Right))
     assert calls == [('context_folder', str(folder))]
+
+
+@pytest.mark.parametrize('name_width', [170, 300, 460])
+def test_first_slash_popup_matches_list_name_width_instead_of_text_width(nav, name_width):
+    mod, _ = nav
+    launcher, _ = make_launcher()
+    # A long label must not force the root above the Name-column width;
+    # a short label must not shrink a wide user-resized Name column.
+    label = 'long_named_file_' + ('abcdef' * 25) + '.md'
+    panel = Panel([Item(label, {'file': True, 'path': '/not-a-real-file'})])
+    anchor = mod.QPoint(311, 128)
+    assert mod.popup_exp_navigator(
+        launcher, panel, anchor, first_column_width=name_width)
+    popup = launcher._slash_exp_navigation_menu
+    assert popup.width() == name_width
+    assert popup.popup_point == anchor
+    assert popup._exact_first_column_width == name_width
+
+
+def test_first_slash_popup_long_list_viewport_matches_resized_name_width(nav):
+    mod, _ = nav
+    launcher, _ = make_launcher()
+    panel = Panel([Item('file%03d.md' % index, {'file': True})
+                   for index in range(100)])
+    assert mod.popup_exp_navigator(
+        launcher, panel, mod.QPoint(320, 140), first_column_width=345)
+    menu = launcher._slash_exp_navigation_menu
+    assert menu.width() == 345
+    assert menu._scroll_tree is not None
+    assert menu._scroll_tree.fixed_width == menu.width() - 18
+
+
+def test_second_slash_column_retains_own_auto_width(nav):
+    mod, key = nav
+    launcher, _ = make_launcher()
+    child = Item('nested', {'file': True})
+    folder = Item('folder', {'virtual': {'kind': 'folder', 'node_id': 'folder'}}, child)
+    assert mod.popup_exp_navigator(
+        launcher, Panel([folder]), mod.QPoint(322, 128), first_column_width=435)
+    root = launcher._slash_exp_navigation_menu
+    action = next(iter(root._action_items))
+    root.setActiveAction(action)
+    root.keyPressEvent(Event(key.Key_Right))
+    submenu = root._submenus[action]
+    assert root.width() == 435
+    assert submenu.width() == mod.SLASH_STANDARD_WIDTH
+    assert submenu._exact_first_column_width is None
 
 
 def test_root_narrow_width_is_applied_before_scroll_viewport_creation(nav):
