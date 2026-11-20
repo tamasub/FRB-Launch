@@ -167,6 +167,8 @@ class FakeQMenu:
         pass
     def setWindowFlags(self, *args):
         pass
+    def setWindowFlag(self, *args):
+        pass
     def setParent(self, parent):
         self.parent = parent
     def parentWidget(self):
@@ -256,8 +258,9 @@ def nav(monkeypatch):
     qt = SimpleNamespace(TextElideMode=SimpleNamespace(ElideRight=1),
                          MouseButton=SimpleNamespace(LeftButton=1),
                          ItemDataRole=SimpleNamespace(UserRole=100),
-                         WidgetAttribute=SimpleNamespace(WA_InputMethodEnabled=0),
-                         WindowType=SimpleNamespace(Popup=2),
+                         WidgetAttribute=SimpleNamespace(WA_InputMethodEnabled=0,
+                                                          WA_TranslucentBackground=1),
+                         WindowType=SimpleNamespace(Popup=2, FramelessWindowHint=4),
                          KeyboardModifier=SimpleNamespace(NoModifier=0, ShiftModifier=1,
                             ControlModifier=2, AltModifier=4),
                          FocusReason=SimpleNamespace(OtherFocusReason=0),
@@ -404,6 +407,7 @@ def nav(monkeypatch):
     qtwidgets.QLineEdit = FakeLineEdit
     class FakeHolder:
         def __init__(self, parent=None): self.parent = parent
+        def setObjectName(self, *args): pass
     class FakeHBoxLayout:
         def __init__(self, parent=None): self.parent = parent
         def setContentsMargins(self, *args): pass
@@ -775,7 +779,7 @@ def test_terminal_context_is_positioned_beside_selected_row(nav):
     menu.keyPressEvent(Event(key.Key_Right))
     context = menu.activeAction().menu()
     assert context.moved[0].x() == menu.width() - 1
-    assert context.moved[0].y() == 0
+    assert context.moved[0].y() == 10  # Taskbar/work-area safety inset.
 
 
 def test_unbranched_menu_item_has_no_open_submenu_and_enter_is_direct(nav):
@@ -922,6 +926,7 @@ def test_launch_first_slash_column_opens_at_files_list_name_header():
     source = object()  # Already resolved from the logical breadcrumb.
     namespace['slash_source_from_breadcrumb'] = lambda launcher, view, panel: source
     namespace['slash_source_with_filled_list_folder'] = lambda launcher, view, source: source
+    namespace['slash_popup_row_anchor'] = lambda view, panel, source, base: None
     namespace['popup_exp_navigator'] = lambda launcher, panel, anchor, **kw: calls.append((anchor, kw)) or True
     expression = ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
     exec(compile(expression, '<Launch slash position>', 'exec'), namespace)
@@ -950,7 +955,7 @@ def test_launch_first_slash_column_opens_at_files_list_name_header():
     assert calls[0][0].y() == 126
     assert calls[0][1]['source_item'] is source
     assert calls[0][1]['first_column_width'] == 310
-    assert calls[0][1]['list_bottom_y'] == 790
+    assert calls[0][1]['list_height'] == 640
 
 
 def test_long_column_scrolls_selected_item_inside_fixed_viewport(nav):
@@ -1159,6 +1164,7 @@ def test_first_slash_menu_tracks_name_column_even_without_visible_wheel():
     namespace={'QPoint': Point,
                'slash_source_from_breadcrumb': lambda obj, view, panel: source,
                'slash_source_with_filled_list_folder': lambda obj, view, source: source,
+               'slash_popup_row_anchor': lambda view, panel, source, base: None,
                'popup_exp_navigator': lambda obj, panel, anchor, **kw: seen.append((anchor, kw)) or True}
     compiled=ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
     exec(compile(compiled,'<slash overlay test>','exec'),namespace)
@@ -1186,7 +1192,7 @@ def test_first_slash_menu_tracks_name_column_even_without_visible_wheel():
     assert namespace['show_slash_exp_navigation_menu'](obj)
     assert (seen[0][0].x(),seen[0][0].y()) == (404,125)
     assert seen[0][1]['first_column_width'] == 415
-    assert seen[0][1]['list_bottom_y'] == 655
+    assert seen[0][1]['list_height'] == 500
     assert seen[0][1]['source_item'] is source
 
 

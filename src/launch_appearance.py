@@ -173,6 +173,62 @@ QMenu::item:disabled { color:#8da69a; }
 QMenu::separator { background:#dce8df; height:1px; margin:4px 6px; }
 '''
 
+def slash_exp_floating_qss(theme, row_height):
+    """Exp Keyboard Ex is a floating *Files List*, not the generic QMenu.
+
+    Use the same semantic palette as expanded_view.apply_theme() so future
+    theme changes do not leave an unrelated white/blue menu behind.
+    Scope every rule to this menu to preserve other context menus.
+    """
+    colors = theme_palette(theme)
+    bg = colors['panel']
+    fg = colors['text']
+    border = colors['panel_border']
+    active = colors['selection']
+    hover = colors['hover']
+    search_bg = colors['search_bg']
+    search_border = colors['search_border']
+    focus = colors['search_focus']
+    divider = colors['row_separator']
+    return f"""
+        QMenu#slashExpNavigationMenu {{
+            menu-scrollable:1; background-color:{bg};color:{fg};
+            border:1px solid {border};border-radius:10px;padding:5px;
+        }}
+        QMenu#slashExpNavigationMenu::item {{
+            height:{int(row_height)}px;padding:0px 9px;
+            background:transparent;color:{fg};
+        }}
+        QMenu#slashExpNavigationMenu::item:selected {{
+            background:{active};color:{fg};border-radius:4px;
+        }}
+        QMenu#slashExpNavigationMenu::item:disabled {{color:{colors['muted_text']};}}
+        QMenu#slashExpNavigationMenu::separator {{
+            background:{divider};height:1px;margin:4px 6px;
+        }}
+        QWidget#slashExpSearchHolder {{background:transparent;border:0;}}
+        QLineEdit#slashExpColumnSearch {{
+            background:{search_bg};color:{fg};
+            border:1px solid {search_border};border-radius:6px;padding:5px;
+            selection-background-color:{active};
+        }}
+        QLineEdit#slashExpColumnSearch:focus {{border:1px solid {focus};}}
+        QTreeWidget#slashExpFixedScrollList {{
+            background:transparent;color:{fg};border:0;outline:0;
+        }}
+        QTreeWidget#slashExpFixedScrollList::item {{
+            min-height:{int(row_height)}px;padding:0px 3px;
+        }}
+        QTreeWidget#slashExpFixedScrollList::item:selected,
+        QTreeWidget#slashExpFixedScrollList::item:selected:!active {{
+            background:{active};color:{fg};
+        }}
+        QTreeWidget#slashExpFixedScrollList::item:hover:!selected {{
+            background:{hover};
+        }}
+    """
+
+
 LIGHT_CASCADE_TREE_QSS = '''
 QTreeWidget#cascadeScrollView { background:#ffffff; color:#284238;
     border:0; outline:0; padding:0; font-family:'Yu Gothic UI'; font-size:13px; }

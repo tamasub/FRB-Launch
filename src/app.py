@@ -25,7 +25,8 @@ from frb_update.bootstrap import check_feeds
 from remote_text_dialog import RemoteTextDialog
 from remote_context_wheel import RemoteContextWheel
 from slash_exp_navigation import (popup_exp_navigator, slash_source_from_breadcrumb,
-                                  slash_source_with_filled_list_folder)
+                                  slash_source_with_filled_list_folder,
+                                  slash_popup_row_anchor)
 from rod_foreground import foreground_owned_by_process
 from shuriken_model import configured_entries
 from shuriken_scroll_handoff import handoff_current_at_scroll_stop
@@ -4508,8 +4509,9 @@ class Launcher(QWidget):
         # The breadcrumb owns the logical path. A green-FILLED Files List
         # folder is the one explicit, direct-child extension of that path.
         # Passive green outline and file selection leave the path unchanged.
-        source_item = slash_source_from_breadcrumb(self, view, panel)
-        source_item = slash_source_with_filled_list_folder(self, view, source_item)
+        breadcrumb_source = slash_source_from_breadcrumb(self, view, panel)
+        source_item = slash_source_with_filled_list_folder(
+            self, view, breadcrumb_source)
         if source_item is None:
             self.footer.setText('Exp Keyboard Ex: パンくずの現在地を解決できません')
             return False
@@ -4540,13 +4542,20 @@ class Launcher(QWidget):
         if name_x < 0 or name_width <= 0:
             return False
         anchor = header.mapToGlobal(QPoint(name_x, 0))
-        # Bound the entire / cascade vertically to Files List, including
-        # when the window is resized or a folder has hundreds of entries.
-        list_bottom_y = list_tree.viewport().mapToGlobal(
-            QPoint(0, list_tree.viewport().height())).y()
+        # The actual parent folder row is the *visual* anchor when it is
+        # visible.  It never decides which folder / explores: breadcrumb and
+        # green-filled List folder already resolved that independently.
+        parent_left = None
+        row_anchor = slash_popup_row_anchor(view, panel, source_item,
+                                            breadcrumb_source)
+        if row_anchor is not None:
+            anchor, parent_left = row_anchor
+        # Float beyond Launch if useful, but cap height at Files List and
+        # clamp to the screen's work area so the taskbar is never covered.
         opened = popup_exp_navigator(self, panel, anchor,
                                      first_column_width=name_width,
-                                     list_bottom_y=list_bottom_y,
+                                     list_height=list_tree.viewport().height(),
+                                     parent_left=parent_left,
                                      source_item=source_item)
         if not opened:
             self.footer.setText('Exp Keyboard Ex: この先に表示できる項目がありません')
