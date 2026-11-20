@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout,
                                QTreeWidgetItem, QWidget, QWidgetAction)
 
 from launch_virtual_tree import virtual_item_identity
-from launch_appearance import theme_palette, slash_exp_floating_qss
+from launch_appearance import (theme_palette, slash_exp_floating_qss,
+                               slash_exp_floating_colors,
+                               files_operation_menu_colors)
 from slash_popup_layout import popup_xy
 
 
@@ -26,9 +28,13 @@ _LOADED_ROLE = Qt.ItemDataRole.UserRole + 2
 # Two predictable column widths: compact ordinary menus and readable files
 # lists. Both are independent of the number of rows / scrollbar visibility.
 # Reserve a dedicated right-hand chevron lane in either mode.
-SLASH_STANDARD_WIDTH = 270
-SLASH_LONG_WIDTH = 380
+SLASH_STANDARD_WIDTH = 300
+SLASH_LONG_WIDTH = 300
 SLASH_LONG_TEXT_THRESHOLD = 212
+# Existing Files Exp/List action menus are sized to 218–225px.
+# Keep the Keyboard Ex *operation* column in that same range, independent of
+# the wider exploration columns (which follow Names and folder captions).
+SLASH_OPERATION_WIDTH = 225
 
 # Files List's 三 button is the ONLY density authority. Menu row height is
 # never derived from the *Launch window height* (which formerly changed the
@@ -164,12 +170,35 @@ def slash_source_with_filled_list_folder(launcher, view, breadcrumb_source):
     return source
 
 
+def _approx_text_width(widget, text):
+    """Best-effort text width for popup anchoring in both GUI and tests."""
+    metrics = getattr(widget, 'fontMetrics', lambda: None)()
+    if metrics is not None:
+        advance = getattr(metrics, 'horizontalAdvance', None)
+        if callable(advance):
+            try:
+                return max(0, int(advance(str(text or ''))))
+            except Exception:
+                pass
+    # Portable fallback for test doubles: close enough for geometry policy.
+    return max(24, min(260, len(str(text or '')) * 9))
+
+
+def _row_text_anchor_local_x(widget, *, cell_left, cell_right, label,
+                             icon_lane=24, left_padding=8, gap=28):
+    """Anchor near the folder caption, not at the far edge of the whole cell."""
+    text_width = _approx_text_width(widget, label)
+    preferred = int(cell_left) + int(left_padding) + int(icon_lane) + text_width + int(gap)
+    max_x = max(int(cell_left) + int(left_padding) + int(icon_lane), int(cell_right) - 8)
+    return max(int(cell_left) + int(left_padding) + int(icon_lane), min(preferred, max_x))
+
+
 def slash_popup_row_anchor(view, panel, source_item, breadcrumb_source):
     """Display anchor only; never re-decide the breadcrumb exploration path.
 
-    Return (global top-right of parent folder row, global parent-left), or
-    None if the actual parent is not shown.  List filled folder takes priority
-    when it extended the logical breadcrumb.  Otherwise an active Exp current
+    Return (global top-right-ish of parent folder caption, global parent-left),
+    or None if the actual parent is not shown. List filled folder takes priority
+    when it extended the logical breadcrumb. Otherwise an active Exp current
     folder may anchor the popup; files/outline rows never masquerade as parent.
     """
     info = source_item.data(_DATA_ROLE) if source_item is not None else None
@@ -192,8 +221,16 @@ def slash_popup_row_anchor(view, panel, source_item, breadcrumb_source):
                     header = list_tree.header()
                     left_x = header.sectionViewportPosition(0)
                     right_x = left_x + header.sectionSize(0)
+                    # Use the VISIBLE cell text, not DataJSON's title:
+                    # registered/physical folders may hold a much longer
+                    # underlying path while showing only a short caption.
+                    # The latter alone controls where the popup should float.
+                    display_name = item.text(0) if hasattr(item, 'text') else None
+                    anchor_x = _row_text_anchor_local_x(
+                        list_tree, cell_left=left_x, cell_right=right_x,
+                        label=str(display_name or row.get('title') or ''))
                     viewport = list_tree.viewport()
-                    return (viewport.mapToGlobal(QPoint(right_x, rect.top())),
+                    return (viewport.mapToGlobal(QPoint(anchor_x, rect.top())),
                             viewport.mapToGlobal(QPoint(left_x, 0)).x())
 
     exp_tree = getattr(panel, 'tree', None)
@@ -226,7 +263,14 @@ def slash_popup_row_anchor(view, panel, source_item, breadcrumb_source):
     if (not rect.isValid() or rect.top() >= viewport.height()
             or rect.bottom() < 0):
         return None
-    return (viewport.mapToGlobal(QPoint(viewport.width() - 1, rect.top())),
+    label = selected.text() if hasattr(selected, 'text') else str(info.get('path') or '')
+    # The Exp item may be nested: visualRect's left is the real indented
+    # caption/icon lane. The old hardcoded 0 pulled child menus away from it.
+    row_left = rect.left() if hasattr(rect, 'left') else 0
+    anchor_x = _row_text_anchor_local_x(exp_tree, cell_left=row_left,
+                                        cell_right=viewport.width() - 1,
+                                        label=label)
+    return (viewport.mapToGlobal(QPoint(anchor_x, rect.top())),
             viewport.mapToGlobal(QPoint(0, 0)).x())
 
 
@@ -295,6 +339,26 @@ def page_emoji_icon(glyph):
     return QIcon(pix)
 
 
+class SlashSearchEdit(QLineEdit):
+    """Real, focused IME client for Japanese composition in a Slash column.
+
+    Synthesizing key events into an unfocused QLineEdit only types ASCII: a
+    Windows IME needs the *focused* editor to own the actual input context.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.ime_composing = False
+        if hasattr(self, 'setAttribute'):
+            self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+
+    def inputMethodEvent(self, event):
+        # While composing, Enter/Escape/arrows belong to the Japanese IME,
+        # not to the folder navigator. Committed characters still filter rows.
+        self.ime_composing = bool(event.preeditString())
+        super().inputMethodEvent(event)
+
+
 class SlashExpMenu(QMenu):
     """Exp hierarchy as native context-menu columns, with arrow-only traversal."""
 
@@ -350,13 +414,32 @@ class SlashExpMenu(QMenu):
         # Only the Slash popup is themed as a floating Files List. Generic
         # context menus remain untouched.  Transparency plus a rounded mask
         # prevents the native Windows popup rectangle showing in the corners.
-        self._slash_colors = theme_palette(getattr(launcher, 'color_theme', 'light'))
+        theme = getattr(launcher, 'color_theme', 'light')
+        self._current_folder_bg = ('#FAF7F4' if theme_palette(theme)['family'] == 'light'
+                                   else '#41362F')
+        if self._context_source is not None:
+            operation_colors = files_operation_menu_colors(theme)
+            # The iconless-action painter also needs the operation surface;
+            # otherwise it paints green List rectangles inside the blue menu.
+            self._slash_colors = dict(theme_palette(theme),
+                panel=operation_colors['bg'],
+                selection=operation_colors['selection'],
+                text=operation_colors['fg'])
+            self._slash_frame_border = operation_colors['border']
+        else:
+            self._slash_colors = theme_palette(theme)
+            self._slash_frame_border = slash_exp_floating_colors(theme)['border']
         # WA_TranslucentBackground needs FramelessWindowHint on Windows;
         # keep QMenu's existing Qt.Popup flag and native keyboard semantics.
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        # Explicitly disable the native popup shadow so the frame is the
+        # only visible boundary. Older Qt stubs may lack this Windows hint.
+        no_shadow = getattr(Qt.WindowType, 'NoDropShadowWindowHint', None)
+        if no_shadow is not None:
+            self.setWindowFlag(no_shadow, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(slash_exp_floating_qss(
-            getattr(launcher, 'color_theme', 'light'), self._item_height))
+            theme, self._item_height, operation=self._context_source is not None))
         # A QMenu's native Popup focus/keyboard ownership is intentional:
         # non-grabbing Files Exp menus leave their arrow keys in the tree.
         self.aboutToShow.connect(self.populate)
@@ -372,6 +455,27 @@ class SlashExpMenu(QMenu):
             path.addRoundedRect(QRectF(self.rect().adjusted(0, 0, -1, -1)),
                                 10.0, 10.0)
             self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+    def _draw_floating_frame(self, painter):
+        """Draw the actual popup border; do not rely on native drop shadow.
+
+        Keep every edge well *inside* the rounded native-mask polygon.
+        An outline touching the outermost right/bottom pixel is clipped by
+        QRegion's integer rasterization on Windows at some DPI scales.
+        This helper is called by the ONE effective paintEvent, including when
+        its children are rendered in the fixed scrolling viewport.
+        """
+        if self.width() < 20 or self.height() < 20:
+            return
+        from PySide6.QtCore import QRectF
+        painter.setPen(QColor(self._slash_frame_border))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        inset = 2.5
+        painter.drawRoundedRect(
+            QRectF(inset, inset,
+                   float(self.width()) - 2.0 * inset,
+                   float(self.height()) - 2.0 * inset),
+            8.0, 8.0)
 
     def _inherit_list_vertical_bounds(self):
         """Keep cascade columns inside the same List vertical area."""
@@ -446,9 +550,11 @@ class SlashExpMenu(QMenu):
         top-level namespace. The source of a child column is the only safe
         authority; the unrelated currently highlighted List row is not.
         """
-        if (self.source_item is None or self._context_source is not None
-                or self is self.root_menu):
-            return None  # / initial column is exactly this directory's children.
+        if self.source_item is None or self._context_source is not None:
+            return None  # No current directory on the unrooted Exp main list.
+        # The FIRST / column is also an opened logical directory. Its source
+        # comes from the breadcrumb (or its green-filled direct child), so it
+        # must expose the same self-context row as deeper cascade columns.
         info = self.source_item.data(_DATA_ROLE) or {}
         node = info.get('virtual')
         if info.get('file') or info.get('pc'):
@@ -588,6 +694,10 @@ class SlashExpMenu(QMenu):
         # Count search + frame/padding in the budget so a long list NEVER
         # forces native QMenu window-scroll below the Files List viewport.
         limit = max(1, (self._popup_height - 90) // self._item_height)
+        # Short columns keep native QMenu QAction painting and keyboard
+        # ownership; only tall columns need the scrolling QTreeWidget. Their
+        # icon gutters are tuned to a shared inset without changing the
+        # renderer itself (avoids the prior keyboard-cascade regression).
         if len(self._action_items) <= limit:
             return
         tree = QTreeWidget(self)
@@ -631,6 +741,16 @@ class SlashExpMenu(QMenu):
                 row.setIcon(0, action.icon())
             if action.toolTip():
                 row.setToolTip(0, action.toolTip())
+            info = self._action_items.get(action)
+            details = info.data(_DATA_ROLE) if isinstance(info, QStandardItem) else {}
+            if isinstance(details, dict) and details.get('current_folder'):
+                # Same quiet shade as the short native-QMenu current row.
+                # Test doubles may not expose Qt's QBrush or item background.
+                if hasattr(row, 'setBackground'):
+                    from PySide6.QtGui import QBrush
+                    color = QBrush(QColor(self._current_folder_bg))
+                    row.setBackground(0, color)
+                    row.setBackground(1, color)
             row.setDisabled(not action.isEnabled())
             tree.addTopLevelItem(row)
             self._scroll_items[action] = row
@@ -686,7 +806,7 @@ class SlashExpMenu(QMenu):
         """Each column owns one permanent search bar; typing filters ONLY it."""
         if self._search_action is not None:
             return
-        edit = QLineEdit(self)
+        edit = SlashSearchEdit(self)
         edit.setObjectName('slashExpColumnSearch')
         edit.setPlaceholderText('この列を検索…')
         edit.setClearButtonEnabled(True)
@@ -701,12 +821,33 @@ class SlashExpMenu(QMenu):
         layout.setSpacing(0)
         layout.addWidget(edit)
         edit.installEventFilter(self)
+        # Opt-in trace only: compare this editor with working CascadeMenu.
+        if os.environ.get("FRB_SLASH_IME_TRACE") == "1":
+            from slash_ime_trace import watch_ime_menu
+            watch_ime_menu(self, edit, "slash")
         action = QWidgetAction(self)
         action.setDefaultWidget(holder)
         self.addAction(action)
         self._search_action = action
         self._search_edit = edit
         edit.textChanged.connect(self._filter_rows)
+
+    def _focus_search_for_ime(self):
+        """Use the same IME ownership as the *working* CascadeMenu search.
+
+        On Windows a native Qt.Popup can take focus back from the QWidgetAction
+        QLineEdit immediately after popup().  CascadeMenu therefore focuses the
+        menu itself, advertises ImEnabled and forwards real QInputMethodEvents
+        to its embedded editor.  Synthetic QKeyEvents alone cannot start IME.
+        Clicking the editor still allows native cursor/text editing.
+        """
+        if self._search_edit is not None and self.isVisible():
+            if os.environ.get("FRB_SLASH_IME_TRACE") == "1":
+                from slash_ime_trace import checkpoint_ime
+                checkpoint_ime(self, "before_menu_focus_request")
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+            if os.environ.get("FRB_SLASH_IME_TRACE") == "1":
+                checkpoint_ime(self, "after_menu_focus_request")
 
     def _filter_rows(self, text):
         needle = str(text).strip().casefold()
@@ -782,6 +923,10 @@ class SlashExpMenu(QMenu):
                      for name in titles), default=0)
         desired = (SLASH_LONG_WIDTH if width > SLASH_LONG_TEXT_THRESHOLD
                    else SLASH_STANDARD_WIDTH)
+        if self._context_source is not None:
+            # Native Files operation menus use 218–225px, not the 300px
+            # explorer column width. Elision preserves full action tooltip.
+            desired = SLASH_OPERATION_WIDTH
         if self._exact_first_column_width is not None:
             desired = self._exact_first_column_width
         elif self._max_first_column_width is not None:
@@ -914,8 +1059,11 @@ class SlashExpMenu(QMenu):
         # icon. Repaint only iconless rows with text aligned at the left edge;
         # otherwise authored Page emoji float in the middle of the gutter.
         if self._scroll_tree is not None:
+            # QTreeWidget owns the item rows; the floating window still owns
+            # its visible frame on ALL four sides.
+            self._draw_floating_frame(painter)
             painter.end()
-            return  # QTreeWidget owns scrolling and paints these rows.
+            return
         if hasattr(painter, 'drawText'):
             colors = self._slash_colors
             for action in self._iconless_actions:
@@ -925,7 +1073,12 @@ class SlashExpMenu(QMenu):
                 if not rect.isValid():
                     continue
                 selected = action is self.activeAction()
-                background = colors['selection'] if selected else colors['panel']
+                info = self._action_items.get(action)
+                details = info.data(_DATA_ROLE) if isinstance(info, QStandardItem) else {}
+                current_folder = isinstance(details, dict) and details.get('current_folder')
+                background = (colors['selection'] if selected else
+                              self._current_folder_bg if current_folder else
+                              colors['panel'])
                 painter.fillRect(rect.adjusted(2, 0, -7, 0), QColor(background))
                 painter.setPen(QColor(colors['text']))
                 caption = self.fontMetrics().elidedText(
@@ -951,6 +1104,10 @@ class SlashExpMenu(QMenu):
             triangle.lineTo(cx - 2, cy + 4)
             triangle.closeSubpath()
             painter.fillPath(triangle, QColor(self._slash_colors['text']))
+        # Must happen AFTER drawing captions/arrows; otherwise the selected
+        # row may overpaint the border.  The former early paintEvent in this
+        # class was shadowed by this method and never ran on Windows.
+        self._draw_floating_frame(painter)
         painter.end()
 
     def eventFilter(self, obj, event):
@@ -961,7 +1118,12 @@ class SlashExpMenu(QMenu):
             self.keyPressEvent(event)
             return event.isAccepted()
         if (obj is self._search_edit and event.type() == QEvent.Type.KeyPress):
-            # Slash is always a toggle, even when the column search has focus.
+            # Japanese IME uses arrows to choose conversions and Enter to
+            # finalize them. Do not turn those into folder navigation until
+            # composition is committed/cancelled by the native editor.
+            if getattr(self._search_edit, 'ime_composing', False):
+                return False
+            # Slash is still the menu toggle outside IME composition.
             if is_slash_shortcut(event.key(), event.text(), event.modifiers()):
                 self.root_menu.close()
                 event.accept()
@@ -975,15 +1137,31 @@ class SlashExpMenu(QMenu):
         return super().eventFilter(obj, event)
 
     def inputMethodEvent(self, event):
-        # QMenu has keyboard focus while arrows navigate; IME composition
-        # still goes to THIS column's actual QLineEdit, never Files Exp.
+        # Exactly as in the existing Japanese-capable CascadeMenu: Qt sends
+        # the OS-originated preedit/commit event to the focused menu window;
+        # the *real* QLineEdit owns the composing text.  Never reconstruct a
+        # Japanese string from QKeyEvent.text().
+        if self._search_edit is None:
+            self._ensure_search()
+        if os.environ.get("FRB_SLASH_IME_TRACE") == "1":
+            from slash_ime_trace import checkpoint_ime
+            checkpoint_ime(self, "input_method_received",
+                           preedit_len=len(event.preeditString()),
+                           commit_len=len(event.commitString()))
         if self._search_edit is not None:
             QApplication.sendEvent(self._search_edit, event)
             event.accept()
+            if os.environ.get("FRB_SLASH_IME_TRACE") == "1":
+                checkpoint_ime(self, "input_method_forwarded")
             return
         super().inputMethodEvent(event)
 
     def inputMethodQuery(self, query):
+        # The key missing contract compared with working CascadeMenu:
+        # when the QMenu itself has focus, Windows asks the MENU (not its
+        # unfocused child editor) whether IME is enabled.  Explicitly opt in.
+        if query == Qt.InputMethodQuery.ImEnabled:
+            return True
         if self._search_edit is not None:
             return self._search_edit.inputMethodQuery(query)
         return super().inputMethodQuery(query)
@@ -1017,7 +1195,7 @@ class SlashExpMenu(QMenu):
                 else:
                     parent.setActiveAction(action)
                 break
-        parent.setFocus(Qt.FocusReason.OtherFocusReason)
+        parent._focus_search_for_ime()
 
     def _close_then(self, callback):
         self.root_menu.close()
@@ -1106,8 +1284,10 @@ class SlashExpMenu(QMenu):
             if tree_row is None:
                 return
             row = self._scroll_tree.visualItemRect(tree_row)
-            point = self._scroll_tree.viewport().mapToGlobal(
-                QPoint(self._scroll_tree.viewport().width() - 1, row.top()))
+            # The scroll viewport is narrower than the menu frame. Position
+            # the NEXT column beside the whole popup, not inside it.
+            row_y = self._scroll_tree.viewport().mapToGlobal(QPoint(0, row.top())).y()
+            point = QPoint(self.mapToGlobal(QPoint(self.width() - 1, 0)).x(), row_y)
         else:
             row = self.actionGeometry(action)
             if not row.isValid():
@@ -1146,8 +1326,8 @@ class SlashExpMenu(QMenu):
             super().keyPressEvent(event)
             if not submenu.isVisible():
                 row = self._scroll_tree.visualItemRect(self._scroll_items[action])
-                point = self._scroll_tree.viewport().mapToGlobal(
-                    QPoint(self._scroll_tree.viewport().width() - 1, row.top()))
+                row_y = self._scroll_tree.viewport().mapToGlobal(QPoint(0, row.top())).y()
+                point = QPoint(self.mapToGlobal(QPoint(self.width() - 1, 0)).x(), row_y)
                 submenu.popup(point)
         else:
             action.setMenu(submenu)
@@ -1166,7 +1346,7 @@ class SlashExpMenu(QMenu):
                 submenu._set_scroll_current_action(rows[0])
             else:
                 submenu.setActiveAction(rows[0])
-        submenu.setFocus(Qt.FocusReason.OtherFocusReason)
+        submenu._focus_search_for_ime()
 
     def _commit_terminal(self, item):
         """Enter commits a folder to Files List; Right is navigation only."""
@@ -1175,10 +1355,12 @@ class SlashExpMenu(QMenu):
         if info.get('current_folder'):
             path = info.get('linked_path') or info.get('path')
             if path and os.path.isdir(path):
-                return self.launcher.navigate_files_exp_folder(
-                    path, origin_panel=self.panel, origin_item=self.source_item)
+                return self._commit_folder_and_focus(
+                    self.launcher.navigate_files_exp_folder(
+                        path, origin_panel=self.panel, origin_item=self.source_item))
             if isinstance(node, dict):
-                return self.launcher.navigate_virtual_launch_folder(node)
+                return self._commit_folder_and_focus(
+                    self.launcher.navigate_virtual_launch_folder(node))
             return False
         if node is not None:
             if node.get('kind') == 'file':
@@ -1192,9 +1374,11 @@ class SlashExpMenu(QMenu):
                 if callable(preview) and preview({'_launch_virtual_node': node}):
                     return True
                 return self.launcher.activate_virtual_launch_item(node.get('row') or {})
-            return self.launcher.navigate_virtual_launch_folder(node)
+            return self._commit_folder_and_focus(
+                self.launcher.navigate_virtual_launch_folder(node))
         if info.get('pc'):
-            return self.launcher.navigate_files_exp_pc()
+            return self._commit_folder_and_focus(
+                self.launcher.navigate_files_exp_pc())
         path = info.get('linked_path') or info.get('path')
         if info.get('file') and path and os.path.isfile(path):
             # Exactly the same decision as Files List *double-click*: .md may
@@ -1210,9 +1394,22 @@ class SlashExpMenu(QMenu):
                 return True
             return self.launcher.run_file_path(row, path)
         if path and os.path.isdir(path):
-            return self.launcher.navigate_files_exp_folder(
-                path, origin_panel=self.panel, origin_item=item)
+            return self._commit_folder_and_focus(
+                self.launcher.navigate_files_exp_folder(
+                    path, origin_panel=self.panel, origin_item=item))
         return False
+
+    def _commit_folder_and_focus(self, committed):
+        """Enter on a folder always lands at the top of Files List.
+
+        The menu has already closed; dispatch on the next event-loop tick so
+        the native Qt.Popup keyboard grab cannot reclaim focus afterward.
+        Executable files, URL leaves and context actions never use this path.
+        """
+        if committed:
+            QTimer.singleShot(0, lambda launcher=self.launcher:
+                              focus_first_files_list_after_slash_enter(launcher))
+        return committed
 
     def mouseReleaseEvent(self, event):
         # The native QMenu treats a plain QAction click as a completed command.
@@ -1232,6 +1429,17 @@ class SlashExpMenu(QMenu):
 
     def keyPressEvent(self, event):
         key = event.key()
+        # If this QMenu (rather than the embedded editor) currently has OS
+        # input focus, a Japanese preedit can still be active in that editor.
+        # Navigation/escape/confirmation must not eat IME candidate keys.
+        if (self._search_edit is not None
+                and getattr(self._search_edit, 'ime_composing', False)
+                and key in (Qt.Key.Key_Up, Qt.Key.Key_Down,
+                            Qt.Key.Key_Left, Qt.Key.Key_Right,
+                            Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                            Qt.Key.Key_Escape)):
+            event.accept()
+            return
         if is_slash_shortcut(key, event.text(), event.modifiers()):
             self.root_menu.close()
             event.accept()
@@ -1326,6 +1534,33 @@ class SlashExpMenu(QMenu):
         event.accept()
 
 
+def focus_first_files_list_after_slash_enter(launcher):
+    """Restore native List focus and select its FIRST row after folder Enter.
+
+    Use the one existing Files operating-area handoff for either Exp/List
+    origin. Empty folders still focus List but have no selectable first row.
+    Never reuse a remembered current row from the previous directory.
+    """
+    view = getattr(launcher, 'expanded_view', None)
+    if (view is None or not view.isVisible()
+            or getattr(view, '_workspace_mode', None) != 'files'):
+        return False
+    pane = getattr(view, 'middle', None)
+    tree = getattr(pane, 'tree', None)
+    if tree is None:
+        return False
+    view._focus_files_keyboard_area('list')
+    first = next((row for idx in range(tree.topLevelItemCount())
+                  if (row := tree.topLevelItem(idx)) is not None
+                  and view.row_data(row) is not None), None)
+    if first is not None:
+        tree.setCurrentItem(first)
+        tree.scrollToItem(first)
+    # Explicit focus again AFTER current-row selection, not on Exp or search.
+    tree.setFocus(Qt.FocusReason.OtherFocusReason)
+    return True
+
+
 def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
                         list_bottom_y=None, source_item=None, list_height=None,
                         parent_left=None):
@@ -1412,5 +1647,8 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
     # Subsequent Up/Down scrolling must never relocate the popup window.
     QTimer.singleShot(0, lambda m=menu: m._pin_popup_position(m.pos())
                       if m.isVisible() else None)
-    menu.setFocus(Qt.FocusReason.OtherFocusReason)
+    menu._focus_search_for_ime()
+    # Qt.Popup may reassign focus once the first show event settles; restore
+    # the actual input widget after that, never through a synthetic key event.
+    QTimer.singleShot(0, lambda m=menu: m._focus_search_for_ime())
     return True

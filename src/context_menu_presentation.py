@@ -13,11 +13,15 @@ per-column icon pixel offsets and transparent-pixmap rescaling. Exact icon
 margins still require a successful Windows pixel-render acceptance test.
 """
 from launch_appearance import LIGHT_MENU_QSS, context_menu_spacing_qss
+try:
+    from launch_appearance import files_operation_context_qss
+except ImportError:  # Legacy isolated-test theme stubs have only the old palette.
+    files_operation_context_qss = lambda theme: LIGHT_MENU_QSS if str(theme).casefold() == "light" else ""
 
 
 def style_context_menu(menu, theme):
     """Apply the same stylesheet to every native-drawn FRBContextMenu."""
     menu._frb_context_style = True
-    palette = LIGHT_MENU_QSS if str(theme).casefold() == 'light' else ''
+    palette = files_operation_context_qss(theme)
     menu.setStyleSheet(palette + context_menu_spacing_qss(theme))
     return menu

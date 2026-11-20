@@ -2294,8 +2294,8 @@ class RemoteFilesExplorer(QWidget):
         self._exp_outline = QColor('#ccd3d7')  # identical to LaunchRemote
         # Slightly lighter than the toolbar immediately above the embedded Exp.
         exp_header = '#f8fcf9' if theme_family(theme) == 'light' else '#395247'
-        # Sakura Editor-inspired warm white, lightened to #FFFEF9.
-        operating_bg = '#FFFEF9' if theme_family(theme) == 'light' else '#463a32'
+        # Shared active Files List operating surface; dark brown is unchanged.
+        operating_bg = colors['files_list_active_bg']
         operating_title = '#FFF9EF' if theme_family(theme) == 'light' else '#624936'
         operating_outline = '#d9b991' if theme_family(theme) == 'light' else '#ad8258'
         self.setStyleSheet(f"""

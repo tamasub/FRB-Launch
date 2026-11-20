@@ -2402,8 +2402,9 @@ class ExpandedLauncherView(QWidget):
             colors[key] for key in ('panel', 'panel_border', 'panel_header',
                                    'text', 'hover', 'selection', 'stripe'))
         # Warm operating surface is independent of GREEN current-row status.
-        # Sakura Editor-inspired warm white, lightened from #FFFBF0.
-        operating_bg = '#FFFEF9' if light else '#463a32'
+        # The same warm operating surface used by the floating Slash list.
+        # Dark brown #463a32 is unchanged; light adds a slight brown nuance.
+        operating_bg = colors['files_list_active_bg']
         operating_title = '#FFF9EF' if light else '#624936'
         # The grid header is one shade lighter than the Files List title,
         # whether its column is active or remembered.

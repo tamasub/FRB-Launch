@@ -110,15 +110,24 @@ def violations(root: Path = ROOT) -> list[str]:
             if required not in source:
                 issues.append('FRBContextMenu: Runner not owned by menu: ' + required)
 
-    # 0272 catastrophic regression: an overridden paintEvent blanked native
-    # QAction icon/text and failed to draw its replacement on Windows.  A
-    # menu's own QMenu painter MUST remain the final foreground authority.
-    # Keep Runner lifecycle in FRBContextMenu; never couple it to painting.
+    # 0272 catastrophic regression: drawing QAction icons/text ourselves
+    # blanked the menu on Windows. A tiny frame-only paintEvent is permitted:
+    # native Qt MUST render ALL foreground first, then we draw the outline.
+    # The 2026-11-20 rounded-frame correction requires this narrow exception.
     if menu_cls is not None:
-        methods_in_menu = {node.name for node in menu_cls.body
-                           if isinstance(node, ast.FunctionDef)}
-        if 'paintEvent' in methods_in_menu:
-            issues.append('FRBContextMenu: custom paintEvent forbidden; use native QAction painting')
+        painter_methods = [n for n in menu_cls.body
+                           if isinstance(n, ast.FunctionDef) and n.name == 'paintEvent']
+        if len(painter_methods) != 1:
+            issues.append('FRBContextMenu: require one frame-only paintEvent')
+        else:
+            painter_source = ast.unparse(painter_methods[0])
+            if ('super().paintEvent(event)' not in painter_source or
+                    'drawRoundedRect(' not in painter_source):
+                issues.append('FRBContextMenu: frame painter must follow native QAction render')
+            for forbidden in ('drawText(', 'drawPixmap(', 'drawImage(',
+                              'drawControl(', 'QStyleOptionMenuItem('):
+                if forbidden in painter_source:
+                    issues.append('FRBContextMenu: frame may not overpaint actions: ' + forbidden)
         source = ast.unparse(menu_cls)
         for forbidden in ('option.text =', 'option.icon = QIcon()',
                           'self.style().drawControl('):

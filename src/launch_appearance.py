@@ -29,6 +29,9 @@ THEME_REGISTRY = {
         'history_selected_text': '#1d3b4b', 'history_hover': '#e4eee8',
         'search_bg': '#ffffff', 'search_fg': '#2b433a',
         'search_border': '#8fb29f', 'search_focus': '#6e9f8b',
+        # Files List warm operating surface: keep the brown nuance but
+        # lighten it toward the original pale tone (trial middle point).
+        'files_list_active_bg': '#FCF9F5',
     },
     'dark': {
         'label': 'Dark（ダーク）', 'family': 'dark',
@@ -44,6 +47,8 @@ THEME_REGISTRY = {
         'history_selected_text': '#ffffff', 'history_hover': '#344b63',
         'search_bg': '#1a2422', 'search_fg': '#e8f2eb',
         'search_border': '#5d7b71', 'search_focus': '#88b4a1',
+        # Dark operating surface is approved: DO NOT change its brown.
+        'files_list_active_bg': '#463a32',
     },
 }
 
@@ -173,31 +178,112 @@ QMenu::item:disabled { color:#8da69a; }
 QMenu::separator { background:#dce8df; height:1px; margin:4px 6px; }
 '''
 
-def slash_exp_floating_qss(theme, row_height):
-    """Exp Keyboard Ex is a floating *Files List*, not the generic QMenu.
+# Appearance experiment ONLY. To revert Slash-menu colors to the former
+# white/blue-green palette without reverting positioning, borders or the
+# new light Files List surface, flip this to False. No runtime behavior changes.
+SLASH_FILES_LIST_COLOR_TRIAL = False
 
-    Use the same semantic palette as expanded_view.apply_theme() so future
-    theme changes do not leave an unrelated white/blue menu behind.
-    Scope every rule to this menu to preserve other context menus.
+
+def slash_exp_floating_colors(theme):
+    """Slash-specific color experiment; Files List owns the surface color.
+
+    Other context menus and the dark Files List itself must stay untouched.
     """
     colors = theme_palette(theme)
-    bg = colors['panel']
-    fg = colors['text']
-    border = colors['panel_border']
-    active = colors['selection']
-    hover = colors['hover']
-    search_bg = colors['search_bg']
-    search_border = colors['search_border']
-    focus = colors['search_focus']
-    divider = colors['row_separator']
+    dark = normalize_theme(theme) == 'dark'
+    if SLASH_FILES_LIST_COLOR_TRIAL:
+        # Exactly the same warm operating surface used by Files List.
+        return {
+            'bg': '#FFFEFD' if not dark else colors['files_list_active_bg'],
+            'border': '#AB896C' if dark else '#A98971',
+            'divider': '#685449' if dark else '#D4C0AD',
+            'hover': '#514238' if dark else '#ECE3D8',
+            'search_bg': '#392D27' if dark else '#FCFFFD',
+            'search_border': '#91745C' if dark else '#BBD8C7',
+        }
+    # Original (2026-11-20 18:45) popup colors, retained for easy A/B trial.
+    return {
+        'bg': '#372c24' if dark else '#f6f2ee',
+        'border': '#7a6758' if dark else '#cdb8a6',
+        'divider': '#635245' if dark else '#e1d4c9',
+        'hover': '#4a3c31' if dark else '#efe7df',
+        'search_bg': '#30261f' if dark else '#fbf8f5',
+        'search_border': '#7a6758' if dark else '#c5b3a4',
+    }
+
+
+# Gently inset icons relative to Qt's native icon lane.  This is *not*
+# menu/item padding: Qt paints QMenu icons in a dedicated subcontrol, and
+# scrolling columns use QAbstractItemView's decoration subcontrol.  Keep
+# these two paths aligned without custom icon painting or changing other menus.
+SLASH_EXP_ICON_INSET_PX = 6
+# QMenu uses its own decoration subcontrol; QTreeWidget's item padding
+# supplies that same +6px inset instead. Applying BOTH on the tree doubles
+# the offset, which caused short/long menu icon misalignment.
+
+
+def files_operation_menu_colors(theme):
+    """Files folder/file operations: blue-white, deliberately NOT the / navigator."""
+    if theme_family(theme) == 'light':
+        return {
+            'bg': '#F7FBFE', 'fg': '#284238', 'border': '#8FAFC5',
+            'selection': '#D6E7F8', 'hover': '#E7F1FA',
+            'divider': '#CEDFEA', 'search_bg': '#FFFFFF',
+            'search_border': '#A6C4D7', 'focus': '#669FC2',
+        }
+    return {
+        'bg': '#243443', 'fg': '#E6F0F5', 'border': '#708DA6',
+        'selection': '#365778', 'hover': '#344C65',
+        'divider': '#455D70', 'search_bg': '#1C2B38',
+        'search_border': '#5D7B94', 'focus': '#91B9D9',
+    }
+
+
+def files_operation_context_qss(theme):
+    """Blue-white style shared by native Files Exp/List operation menus."""
+    surface = files_operation_menu_colors(theme)
+    return (
+        f'QMenu {{background:{surface["bg"]};color:{surface["fg"]};'
+        f'border:1px solid {surface["border"]};border-radius:10px;}} '
+        f'QMenu#frbFilesContextMenu {{border:0;border-radius:10px;}} '
+        f'QMenu#frbFilesContextMenu {{padding:9px 5px 5px 9px;}} '
+        f'QMenu::item:selected {{background:{surface["selection"]};'
+        f'color:{surface["fg"]};border-radius:4px;}} '
+        f'QMenu::item:disabled {{color:{theme_palette(theme)["muted_text"]};}} '
+    )
+
+
+def slash_exp_floating_qss(theme, row_height, *, operation=False):
+    """Only the Exp Keyboard Ex popup wears Files List's color family.
+
+    The light Files List gets a warmer surface; the dark Files List retains
+    its existing #463a32. The popup follows whichever theme is active.
+    The border stays independently visible around *all four* edges.
+    """
+    colors = theme_palette(theme)
+    surface = (files_operation_menu_colors(theme) if operation
+               else slash_exp_floating_colors(theme))
+    fg = surface['fg'] if operation else colors['text']
+    active = surface['selection'] if operation else colors['selection']
+    focus = surface['focus'] if operation else colors['search_focus']
+    bg = surface['bg']
+    border = surface['border']
+    divider = surface['divider']
+    hover = surface['hover']
+    search_bg = surface['search_bg']
+    search_border = surface['search_border']
     return f"""
         QMenu#slashExpNavigationMenu {{
             menu-scrollable:1; background-color:{bg};color:{fg};
-            border:1px solid {border};border-radius:10px;padding:5px;
+            border:0;border-radius:10px;padding:5px;
         }}
         QMenu#slashExpNavigationMenu::item {{
-            height:{int(row_height)}px;padding:0px 9px;
+            height:{int(row_height)}px; padding:0px 9px 0px 15px;
             background:transparent;color:{fg};
+        }}
+        /* Icon inset only: leave native QAction text and hit testing alone. */
+        QMenu#slashExpNavigationMenu::icon {{
+            position:relative;left:{SLASH_EXP_ICON_INSET_PX}px;
         }}
         QMenu#slashExpNavigationMenu::item:selected {{
             background:{active};color:{fg};border-radius:4px;
@@ -217,7 +303,10 @@ def slash_exp_floating_qss(theme, row_height):
             background:transparent;color:{fg};border:0;outline:0;
         }}
         QTreeWidget#slashExpFixedScrollList::item {{
-            min-height:{int(row_height)}px;padding:0px 3px;
+            /* QTreeWidget already provides its own icon/decorations gutter.
+               Unlike QMenu, adding 15px here doubled the icon left inset. */
+            min-height:{int(row_height)}px;
+            padding:0px 9px 0px {SLASH_EXP_ICON_INSET_PX}px;
         }}
         QTreeWidget#slashExpFixedScrollList::item:selected,
         QTreeWidget#slashExpFixedScrollList::item:selected:!active {{

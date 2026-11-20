@@ -1125,7 +1125,7 @@ def test_menu_width_uses_two_text_driven_modes_independent_of_scrollbar(nav):
     wide = mod.SlashExpMenu(launcher, Panel(long_rows))
     wide.populate()
     assert wide.width() == mod.SLASH_LONG_WIDTH
-    assert wide.width() > standard.width()
+    assert wide.width() == standard.width()  # Both set to 300px by current UI decision.
     first = next(iter(wide._action_items))
     assert wide._full_text[first] == filename  # Unabridged for search/tooltips
     assert first.text().endswith('…')

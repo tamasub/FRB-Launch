@@ -1163,6 +1163,10 @@ class CascadeMenu(OrderDragMixin,QMenu):
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.setMinimumWidth(180)
         self.filter_edit.installEventFilter(self)
+        # Opt-in trace: this working IME field is the control sample.
+        if os.environ.get("FRB_SLASH_IME_TRACE") == "1":
+            from slash_ime_trace import watch_ime_menu
+            watch_ime_menu(self, self.filter_edit, "cascade")
         self._filter_ime_composing = False
         search_row.addWidget(self.filter_edit, 1)
         # This button belongs ONLY to actual filesystem directories, never
@@ -2203,13 +2207,21 @@ class RemoteFolderActionsMenu(CascadeMenu):
                 # Match the row's selection/background theme before painting
                 # this patch, without modifying QMenu's real submenu behavior.
                 from PySide6.QtGui import QPalette
-                background = (QColor('#d6e7f8') if selected and
-                              theme_family(self.launcher.color_theme) == 'light'
-                              else QColor('#ffffff') if
-                              theme_family(self.launcher.color_theme) == 'light'
-                              else self.palette().color(
-                                  QPalette.ColorRole.Highlight if selected
-                                  else QPalette.ColorRole.Window))
+                if getattr(self, '_frb_context_style', False):
+                    # The chevron lane is a background patch over Qt's native
+                    # arrow. Use the SAME blue-white as the Files operation
+                    # menu, never the old pure-white patch on a blue surface.
+                    from launch_appearance import files_operation_menu_colors
+                    surface = files_operation_menu_colors(self.launcher.color_theme)
+                    background = QColor(surface['selection'] if selected else surface['bg'])
+                else:
+                    background = (QColor('#d6e7f8') if selected and
+                                  theme_family(self.launcher.color_theme) == 'light'
+                                  else QColor('#ffffff') if
+                                  theme_family(self.launcher.color_theme) == 'light'
+                                  else self.palette().color(
+                                      QPalette.ColorRole.Highlight if selected
+                                      else QPalette.ColorRole.Window))
                 painter.fillRect(QRect(cx - 9, rect.top() + 2,
                                        max(0, self.contentsRect().right() - cx + 9),
                                        max(0, rect.height() - 4)), background)
@@ -2242,18 +2254,53 @@ class FRBContextMenu(RemoteFolderActionsMenu):
         # for keyboard-opened List and Settings menus. Without this flag,
         # Up/Down (and Enter) continue operating the Exp tree behind the menu.
         self._frb_keyboard_opened = True
-        # A context-menu object carries BOTH its Runner and presentation.
-        # No Exp/List caller is allowed to choose different layout QSS.
+        # This is an ACTION menu, not a folder-exploration / column.
+        # Give the existing Exp/List context menu the same blue-white family
+        # and a genuinely rounded outer window in addition to stylesheet QSS.
+        if hasattr(self, 'setObjectName'):
+            self.setObjectName('frbFilesContextMenu')
+        if hasattr(self, 'setAttribute'):
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # Native shadow must not masquerade as the frame; draw all four edges
+        # explicitly after native QAction text/icons have been painted.
+        if hasattr(self, 'setWindowFlag'):
+            no_shadow = getattr(Qt.WindowType, 'NoDropShadowWindowHint', None)
+            if no_shadow is not None:
+                self.setWindowFlag(no_shadow, True)
         style_context_menu(self, self.launcher.color_theme)
         self.aboutToShow.connect(self._schedule_grigri_runner)
         self.aboutToHide.connect(self._stop_grigri_runner)
 
-    # Deliberately NO paintEvent override.
-    # QMenu must own the complete row: icon, text, selection, separators and
-    # submenu indicator.  The 0272 custom painter erased Qt's foreground
-    # before redrawing it; a failed/incomplete paint produced blank grey menus
-    # on Windows.  Native drawing (inherited from RemoteFolderActionsMenu)
-    # preserves all QAction text and icons while this class still owns Runner.
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Qt stylesheet radius alone does not clip the native Windows window.
+        # The mask affects just the outside silhouette, never QAction icons.
+        if self.width() >= 20 and self.height() >= 20:
+            from PySide6.QtCore import QRectF
+            from PySide6.QtGui import QRegion
+            outline = QPainterPath()
+            outline.addRoundedRect(QRectF(self.rect().adjusted(0, 0, -1, -1)),
+                                   10.0, 10.0)
+            self.setMask(QRegion(outline.toFillPolygon().toPolygon()))
+
+    def paintEvent(self, event):
+        # Native Qt renders ALL foreground (action text, icons, selection and
+        # chevrons). Add *only* the rounded outer outline afterwards. This
+        # cannot reintroduce the old 0272 grey/blank-action regression.
+        super().paintEvent(event)
+        if self.width() < 20 or self.height() < 20:
+            return
+        from launch_appearance import files_operation_menu_colors
+        border = files_operation_menu_colors(self.launcher.color_theme)['border']
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(border), 1.3))
+        # Inset past the integer-rounded native mask: right/bottom must show.
+        inset = 2.5
+        painter.drawRoundedRect(QRectF(inset, inset, self.width() - 2 * inset,
+                                       self.height() - 2 * inset), 8.0, 8.0)
+        painter.end()
 
     def keyPressEvent(self, event):
         # Context column attached to a / hierarchy: '/' closes ALL columns.
@@ -14646,6 +14693,23 @@ def main():
         desktop_click = None
     pending_ipc = {}  # Keep sockets alive until the complete message arrives.
 
+    def request_executable_open_focus(before, reason):
+        """Windows double-click/second-instance IPC: activate the shown Tool.
+
+        Showing/raising a Qt.Tool can still leave Explorer keyboard-active.
+        Reuse the guarded desktop-focus recovery, but only for an EXPLICIT
+        executable invocation. A later unrelated foreground app is never
+        eligible for focus takeover.
+        """
+        after = windows.foreground()
+        expected = (before, after)
+        for delay, suffix, restore in ((0, 'first', True),
+                                       (120, 'retry', False)):
+            QTimer.singleShot(delay, lambda target=expected,
+                              why=f'{reason}_{suffix}', keep=restore:
+                              window.restore_keyboard_focus(
+                                  target, why, restore_current=keep))
+
     def finish_ipc(sock):
         if sock not in pending_ipc:
             return
@@ -14655,12 +14719,14 @@ def main():
         sock.deleteLater()
         try:
             action, item_id = jump_list.parse_ipc_command(payload)
+            before = windows.foreground()
             if action == 'show-menu':
                 window.summon_menu(item_id)  # Validate id/page/enabled; never execute.
             elif not window.isVisible() or window.isMinimized():
                 window.summon()
             else:
                 window.raise_();window.activateWindow()
+            request_executable_open_focus(before, 'exe_ipc')
         except (ValueError, UnicodeError):
             DIAG.warning('JUMP_LIST invalid IPC command rejected')
 
@@ -14683,7 +14749,10 @@ def main():
         QTimer.singleShot(0, lambda: window.summon_menu(requested_jump_item))
     # Initial registration was scheduled when Launcher first read its Data JSON.
     # A Jump List selection only relays the item id to this resident process.
-    if '--preview' in sys.argv:window.summon()
+    if '--preview' in sys.argv:
+        initial_foreground = windows.foreground()
+        window.summon()
+        request_executable_open_focus(initial_foreground, 'exe_preview')
     try:
         result=app.exec()
     finally:

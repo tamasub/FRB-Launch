@@ -61,7 +61,7 @@ def test_physical_breadcrumb_drives_slash_independent_of_exp_list_selection(nav,
     view = make_view(('physical', str(docs)), current=str(docs))
     source = mod.slash_source_from_breadcrumb(launcher, view, panel)
     menu = mod.SlashExpMenu(launcher, panel, source_item=source)
-    assert [i.text() for i in menu._items()] == ['inner', 'alpha.md', 'beta.md']
+    assert [i.text() for i in menu._items()] == ['（カレントフォルダー）', 'inner', 'alpha.md', 'beta.md']
     assert panel.loaded == []
     menu.populate()
     inner_action = next(a for a,i in menu._action_items.items() if i.text() == 'inner')
@@ -123,7 +123,7 @@ def test_slash_current_location_ignores_list_folder_highlight(nav, tmp_path):
         view.list_highlight = list_highlight
         source = mod.slash_source_from_breadcrumb(launcher, view, panel)
         menu = mod.SlashExpMenu(launcher, panel, source_item=source)
-        assert [i.text() for i in menu._items()] == ['other', 'file.md']
+        assert [i.text() for i in menu._items()] == ['（カレントフォルダー）', 'other', 'file.md']
 
 
 def test_virtual_empty_node_does_not_revert_to_global_exp_roots(nav):
@@ -137,7 +137,7 @@ def test_virtual_empty_node_does_not_revert_to_global_exp_roots(nav):
         Panel([Item('Global root', {'path': '/tmp'})]))
     menu = mod.SlashExpMenu(launcher, Panel([Item('Global root', {'path': '/tmp'})]),
                             source_item=source)
-    assert menu._items() == []
+    assert [i.text() for i in menu._items()] == ['（カレントフォルダー）']
 
 
 def test_linked_directory_right_then_enter_keeps_logical_mount(nav, tmp_path):

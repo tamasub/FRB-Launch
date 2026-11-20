@@ -16,7 +16,11 @@ def test_one_frb_menu_object_and_native_paint_are_mandatory():
     menu=next(node for node in tree.body if isinstance(node, ast.ClassDef)
               and node.name=='FRBContextMenu')
     method_names={node.name for node in menu.body if isinstance(node,ast.FunctionDef)}
-    assert 'paintEvent' not in method_names, 'Do not override native QAction foreground'
+    assert 'paintEvent' in method_names, 'Draw a frame only after native QAction foreground'
+    painter = next(node for node in menu.body if isinstance(node, ast.FunctionDef) and node.name == 'paintEvent')
+    snippet = ast.unparse(painter)
+    assert 'super().paintEvent(event)' in snippet and 'drawRoundedRect(' in snippet
+    assert not any(x in snippet for x in ('drawText(', 'drawPixmap(', 'drawImage('))
     assert {'_schedule_grigri_runner','_activate_grigri_runner',
             '_stop_grigri_runner'} <= method_names
     assert [n.id for n in menu.bases if isinstance(n,ast.Name)] == ['RemoteFolderActionsMenu']

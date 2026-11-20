@@ -45,7 +45,7 @@ def test_list_green_physical_folder_extends_breadcrumb_one_level(nav, tmp_path):
     assert target is not base
     assert target.data(mod._DATA_ROLE)['path'] == str(sub)
     menu = mod.SlashExpMenu(launcher, Panel([]), source_item=target)
-    assert [i.text() for i in menu._items()] == ['inside.md']
+    assert [i.text() for i in menu._items()] == ['（カレントフォルダー）', 'inside.md']
 
 
 def test_list_outline_or_file_or_inactive_uses_only_breadcrumb(nav, tmp_path):
@@ -98,7 +98,7 @@ def test_green_virtual_folder_extends_logical_breadcrumb(nav):
     target=mod.slash_source_with_filled_list_folder(launcher,view,base)
     assert target.data(mod._DATA_ROLE)['virtual'] is child
     menu=mod.SlashExpMenu(launcher,Panel([]),source_item=target)
-    assert [i.text() for i in menu._items()] == ['Run']
+    assert [i.text() for i in menu._items()] == ['（カレントフォルダー）', 'Run']
 
 
 def test_long_list_popup_height_and_cascade_inherit_visible_list_bounds(nav):
@@ -156,5 +156,5 @@ def test_green_linked_folder_keeps_json_mount_and_real_files(nav, tmp_path):
     source=mod.slash_source_with_filled_list_folder(launcher,view,base)
     assert source.data(mod._DATA_ROLE)['linked_path'] == str(mount)
     menu=mod.SlashExpMenu(launcher,Panel([]),source_item=source)
-    assert [i.text() for i in menu._items()] == ['hello.md']
+    assert [i.text() for i in menu._items()] == ['（カレントフォルダー）', 'hello.md']
     assert source.data(mod._DATA_ROLE)['virtual'] is folder
