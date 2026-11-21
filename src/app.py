@@ -4601,8 +4601,11 @@ class Launcher(QWidget):
             anchor, parent_left = row_anchor
         # Float beyond Launch if useful, but cap height at Files List and
         # clamp to the screen's work area so the taskbar is never covered.
+        # Keyboard Ex needs a separate icon/chevron/scrollbar gutter.  The
+        # List Name text lane itself retains the user's saved section width.
         opened = popup_exp_navigator(self, panel, anchor,
                                      first_column_width=name_width,
+                                     extra_name_gutter=44,
                                      list_height=list_tree.viewport().height(),
                                      parent_left=parent_left,
                                      source_item=source_item)
@@ -12231,6 +12234,14 @@ class Launcher(QWidget):
                           if view.row_data(tree_widget.topLevelItem(i)) is not None), None)
             if first is not None and tree_widget.currentItem() is first:
                 view.go_up(keep_middle_focus=True)
+                # On an authored root (e.g. My Work) go_up changes the
+                # *visual* operating target to Exp without Qt focus. This
+                # physical keyboard PageUp must hand off BOTH. Ordinary
+                # ascent into a real parent keeps the familiar List focus.
+                if getattr(self, '_files_operating_target', None) == 'files_exp':
+                    handoff = getattr(view, '_focus_files_keyboard_area', None)
+                    if callable(handoff):
+                        handoff('exp')
                 event.accept()
                 return True
             return False  # Qt's real PageUp scrolling/selection.

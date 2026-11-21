@@ -276,6 +276,7 @@ def slash_exp_floating_qss(theme, row_height, *, operation=False):
         QMenu#slashExpNavigationMenu {{
             menu-scrollable:1; background-color:{bg};color:{fg};
             border:0;border-radius:10px;padding:5px;
+            font-family:'Yu Gothic UI';font-size:12px;
         }}
         QMenu#slashExpNavigationMenu::item {{
             height:{int(row_height)}px; padding:0px 9px 0px 15px;
@@ -296,11 +297,12 @@ def slash_exp_floating_qss(theme, row_height, *, operation=False):
         QLineEdit#slashExpColumnSearch {{
             background:{search_bg};color:{fg};
             border:1px solid {search_border};border-radius:6px;padding:5px;
-            selection-background-color:{active};
+            selection-background-color:{active};font-size:12px;
         }}
         QLineEdit#slashExpColumnSearch:focus {{border:1px solid {focus};}}
         QTreeWidget#slashExpFixedScrollList {{
             background:transparent;color:{fg};border:0;outline:0;
+            font-family:'Yu Gothic UI';font-size:12px;
         }}
         QTreeWidget#slashExpFixedScrollList::item {{
             /* QTreeWidget already provides its own icon/decorations gutter.

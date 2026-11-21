@@ -55,17 +55,25 @@ def test_invalid_saved_geometry_falls_back_to_legacy_width():
         assert sizes == [350, 240, 690]
 
 
-def test_current_preview_sizes_saved_to_state_and_synced_on_drag():
+def test_current_preview_sizes_saved_only_when_user_releases_divider():
+    # A Qt programmatic splitter resize must NEVER replace the user's intent.
     writes = {}
     flushed = []
     pane = NS(isHidden=lambda: False)
-    view = NS(browser_preview=None, studio_preview=pane, _preview_layout_restoring=False,
+    view = NS(browser_preview=None, studio_preview=pane,
+              _preview_layout_restoring=False, _preview_maximized=False,
+              _third_width_committing=False,
+              _visible_third_column=lambda: pane,
+              _active_third_owner=lambda p: 'studio',
               files_splitter=NS(indexOf=lambda p: 3, sizes=lambda: [215, 180, 0, 885]),
               launcher=NS(settings=NS(setValue=lambda k, v: writes.__setitem__(k, v),
                                       sync=lambda: flushed.append(True))))
     _method('_save_active_preview_width')(view)
-    assert writes['workspace_files_studio_preview_width'] == 885
-    assert writes['workspace_files_studio_preview_splitter_sizes'] == '215|180|885'
+    assert writes == {}
+    view._third_width_committing = True
+    _method('_save_active_preview_width')(view)
+    assert writes['workspace_files_third_studio_desired_width_v2'] == 885
+    assert writes['workspace_files_third_studio_list_width_v2'] == 180
     assert flushed == [True]
 
 
@@ -80,13 +88,19 @@ def test_restore_in_progress_does_not_overwrite_saved_geometry():
     assert writes == []
 
 
-def test_restoration_after_qt_settles_prefers_previously_saved_positions():
+def test_restoration_after_qt_settles_respects_first_then_list_then_third():
     updates = []
     pane = NS(isHidden=lambda: False)
     splitter = NS(indexOf=lambda p: 3, sizes=lambda: [350, 270, 0, 660],
                   setSizes=lambda values: updates.append(values))
     view = NS(files_splitter=splitter, _studio_preview_base_sizes=[350, 930],
-              launcher=NS(files_root_hidden_mode=False, files_exp_embedded_mode=False),
+              _preview_maximized=False, _exp_desired_width_px=210,
+              _exp_width_applying=False,
+              _active_third_owner=lambda panel: 'studio',
+              _requested_list_width_for_preview=lambda owner, min_width, saved: 170,
+              _queue_third_column_reflow=lambda: None,
+              launcher=NS(files_root_hidden_mode=False, files_exp_embedded_mode=True,
+                          remote_15_mode=False),
               _preview_layout_restoring=True)
     _method('_restore_visible_preview_width')(view, pane, 900, 170, '210|170|900')
     assert updates == [[210, 170, 0, 900]]

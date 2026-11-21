@@ -38,6 +38,30 @@ SLASH_LONG_TEXT_THRESHOLD = 212
 # Keep the Keyboard Ex *operation* column in that same range, independent of
 # the wider exploration columns (which follow Names and folder captions).
 SLASH_OPERATION_WIDTH = 225
+# Files List's Name section has no scroll tree, chevron and native-menu frame.
+# One modest gutter correction recovers about the same visible filename span.
+SLASH_FIRST_COLUMN_CHROME_PX = 44
+
+# A floating Keyboard Ex column must never occupy more than this share of
+# the Launch window, even when Files List is unusually tall.
+SLASH_LAUNCH_HEIGHT_RATIO = 0.75
+
+
+def slash_popup_height_budget(list_height, launch_height, screen_height):
+    """Qt-free menu size policy; the smallest height limit always wins."""
+    return max(1, min(int(list_height),
+                      max(1, int(int(launch_height) * SLASH_LAUNCH_HEIGHT_RATIO)),
+                      int(screen_height)))
+
+
+def slash_menu_page_target(current, visible_count, viewport_height, row_height,
+                           direction):
+    """Compute a stable index for PageUp/Down in a filtered scroll column."""
+    if visible_count <= 0:
+        return None
+    page_rows = max(1, int(viewport_height) // max(1, int(row_height)) - 1)
+    start = int(current) if 0 <= int(current) < visible_count else (0 if direction < 0 else -1)
+    return max(0, min(visible_count - 1, start + (-page_rows if direction < 0 else page_rows)))
 
 # Files List's 三 button is the ONLY density authority. Menu row height is
 # never derived from the *Launch window height* (which formerly changed the
@@ -377,6 +401,7 @@ class SlashExpMenu(QMenu):
         # opening FRBContextMenu (a Qt.Tool window) inside a Qt.Popup cascade.
         self._context_source = context_source
         self._full_text = {}
+        self._display_text = {}  # untruncated, with emoji separated into icon
         self._iconless_actions = set()
         self._context_hint_actions = set()  # The current-folder row has a Right action.
         self._action_items = {}
@@ -489,7 +514,9 @@ class SlashExpMenu(QMenu):
         bounds = self.root_menu._list_vertical_bounds
         if bounds is not None:
             self._list_vertical_bounds = bounds
-            self._popup_height = max(1, bounds[1] - bounds[0])
+            # The root's 75%-of-Launch cap is stricter than the screen area.
+            self._popup_height = min(self.root_menu._popup_height,
+                                     max(1, bounds[1] - bounds[0]))
             self.setMaximumHeight(self._popup_height)
 
     def _virtual_leaf_item(self, node):
@@ -764,7 +791,7 @@ class SlashExpMenu(QMenu):
         # the native menu must not also render them beneath the scroll widget.
         for action in list(self._action_items):
             self.removeAction(action)
-            title = action.text()
+            title = self._display_text.get(action, action.text())
             row = QTreeWidgetItem([title, '›' if action in self._submenus or action in self._context_hint_actions else ''])
             row.setSizeHint(0, QSize(0, self._item_height))
             row.setTextAlignment(1, Qt.AlignmentFlag.AlignRight |
@@ -1008,8 +1035,10 @@ class SlashExpMenu(QMenu):
                     label = cleaned
             # Elide before QMenu's native measurement: a long filename must
             # never stretch a popup off-screen or spill under another column.
+            display_label = label  # scrolling tree may use all available pixels
             label = self._elided_caption(label)
             action = self.addAction(label)
+            self._display_text[action] = display_label
             if icon is None or (hasattr(icon, 'isNull') and icon.isNull()):
                 self._iconless_actions.add(action)
             else:
@@ -1191,6 +1220,8 @@ class SlashExpMenu(QMenu):
                 event.accept()
                 return True
             if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down,
+                               getattr(Qt.Key, 'Key_PageUp', None),
+                               getattr(Qt.Key, 'Key_PageDown', None),
                                Qt.Key.Key_Right, Qt.Key.Key_Left,
                                getattr(Qt.Key, 'Key_Menu', None), Qt.Key.Key_Return, Qt.Key.Key_Enter,
                                Qt.Key.Key_Escape):
@@ -1555,6 +1586,8 @@ class SlashExpMenu(QMenu):
                 and getattr(self._search_edit, 'ime_composing', False)
                 and key in (Qt.Key.Key_Up, Qt.Key.Key_Down,
                             Qt.Key.Key_Left, Qt.Key.Key_Right,
+                            getattr(Qt.Key, 'Key_PageUp', None),
+                            getattr(Qt.Key, 'Key_PageDown', None),
                             getattr(Qt.Key, 'Key_Menu', None), Qt.Key.Key_Return, Qt.Key.Key_Enter,
                             Qt.Key.Key_Escape)):
             event.accept()
@@ -1592,6 +1625,31 @@ class SlashExpMenu(QMenu):
                     if current is not None and current.menu() is not None:
                         current.setMenu(None)
                     self.setActiveAction(actions[next_pos])
+            event.accept()
+            return
+        if key in (getattr(Qt.Key, 'Key_PageUp', None),
+                   getattr(Qt.Key, 'Key_PageDown', None)):
+            # Always page the MENU's filtered list; never propagate a Page key
+            # to the underlying Files List/Exp while the floating menu is open.
+            actions = self._visible_rows()
+            if actions:
+                current = self._selected()[0]
+                current_index = actions.index(current) if current in actions else -1
+                viewport_height = (self._scroll_tree.viewport().height()
+                                   if self._scroll_tree is not None
+                                   else max(1, self.height() - 70))
+                next_index = slash_menu_page_target(
+                    current_index, len(actions), viewport_height,
+                    self._item_height, -1 if key == getattr(Qt.Key, 'Key_PageUp', None) else 1)
+                target = actions[next_index]
+                if self._scroll_tree is not None:
+                    if self._scroll_action.menu() is not None:
+                        self._scroll_action.setMenu(None)
+                    self._set_scroll_current_action(target)
+                else:
+                    if current is not None and current.menu() is not None:
+                        current.setMenu(None)
+                    self.setActiveAction(target)
             event.accept()
             return
         if key == Qt.Key.Key_Escape:
@@ -1734,6 +1792,7 @@ def _close_visible_slash_children(menu):
 
 
 def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
+                        extra_name_gutter=0,
                         list_bottom_y=None, source_item=None, list_height=None,
                         parent_left=None):
     """Create one breadcrumb-rooted session; never register a new Exp root."""
@@ -1758,9 +1817,11 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
             safe_top = work.top() + 10
             safe_bottom = work.bottom() - 9
             menu._list_vertical_bounds = (safe_top, safe_bottom)
-            menu._popup_height = max(1, min(int(list_height), safe_bottom-safe_top))
+            menu._popup_height = slash_popup_height_budget(
+                list_height, launcher.height(), safe_bottom-safe_top)
         else:
-            menu._popup_height = max(1, int(list_height))
+            menu._popup_height = slash_popup_height_budget(
+                list_height, launcher.height(), int(list_height))
         menu.setMaximumHeight(menu._popup_height)
     elif list_bottom_y is not None:
         # Legacy tests/callers retain the old viewport-bounded contract.
@@ -1774,7 +1835,8 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
         # Mirror the Name header's ACTUAL width, even for unusually long
         # filenames or a user-resized narrow column. Set before populate()
         # so both native rows and the long-list scrolling viewport agree.
-        menu._exact_first_column_width = int(first_column_width)
+        menu._exact_first_column_width = (int(first_column_width)
+                                          + max(0, int(extra_name_gutter)))
     menu.populate()
     if not menu._action_items:
         menu.deleteLater()

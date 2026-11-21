@@ -79,3 +79,82 @@ def apply_header_layout(header, layout):
         if current != visual:
             header.moveSection(current, visual)
     return True
+
+
+# JSON-authored logical folders have no on-disk File ID. Their canonical
+# Page/Item identities are stable across caption edits and UI reordering.
+VIRTUAL_PREFIX = 'expanded_middle_columns_by_virtual_v1/'
+VIRTUAL_BASELINE = {'widths': [300, 350, 145],
+                    'order': [0, 1, 2, 3, 4]}
+
+
+def virtual_header_layout_key(node):
+    if not isinstance(node, dict):
+        return None
+    page_id = node.get('page_id')
+    node_id = node.get('node_id')
+    if not page_id or not node_id:
+        return None
+    import hashlib
+    identity = json.dumps([str(page_id), str(node_id)],
+                          ensure_ascii=False, separators=(',', ':'))
+    return VIRTUAL_PREFIX + hashlib.sha256(identity.encode('utf-8')).hexdigest()
+
+
+def validated_virtual_header_layout(value):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, dict):
+        return None
+    widths, order = value.get('widths'), value.get('order')
+    if not (isinstance(widths, list) and len(widths) == 3 and
+            all(type(x) is int and 34 <= x <= 10000 for x in widths)):
+        return None
+    if not (isinstance(order, list) and len(order) == TOTAL_COLUMNS and
+            all(type(x) is int for x in order) and
+            sorted(order) == list(range(TOTAL_COLUMNS))):
+        return None
+    return {'widths': list(widths), 'order': list(order)}
+
+
+def capture_virtual_header_layout(header):
+    # Column 3 is HIDDEN in JSON mode. Qt reports a zero section size for it,
+    # so the physical 4-column capture format is intentionally not reused.
+    return {'widths': [int(header.sectionSize(i)) for i in range(3)],
+            'order': [int(header.logicalIndex(i)) for i in range(TOTAL_COLUMNS)]}
+
+
+def load_virtual_header_layout(settings, key):
+    found = validated_virtual_header_layout(settings.value(key, None)) if key else None
+    return found if found is not None else VIRTUAL_BASELINE
+
+
+def save_virtual_header_layout(settings, key, layout):
+    if not key:
+        return False
+    found = validated_virtual_header_layout(layout)
+    if found is None:
+        return False
+    if found == VIRTUAL_BASELINE:
+        settings.remove(key)
+    else:
+        settings.setValue(key, json.dumps(found, ensure_ascii=False,
+                                          separators=(',', ':')))
+    return True
+
+
+def apply_virtual_header_layout(header, layout):
+    found = validated_virtual_header_layout(layout)
+    if found is None:
+        return False
+    for logical, width in enumerate(found['widths']):
+        if header.sectionSize(logical) != width:
+            header.resizeSection(logical, width)
+    for visual, logical in enumerate(found['order']):
+        current = header.visualIndex(logical)
+        if current != visual:
+            header.moveSection(current, visual)
+    return True
