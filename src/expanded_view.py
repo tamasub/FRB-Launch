@@ -4249,7 +4249,8 @@ class ExpandedLauncherView(QWidget):
         if (not self.isVisible() or focused is None or
                 not (focused is tree or tree.isAncestorOf(focused)) or
                 tree.state() == QAbstractItemView.State.EditingState or
-                len(tree.selectedItems()) > 1):
+                getattr(tree, 'deliberate_blank_selection', False) or
+                len(tree.selectedItems()) != 1):
             return False
         item = tree.currentItem()
         return bool(item is not None and self.begin_inline_rename(item))
@@ -5018,24 +5019,51 @@ class ExpandedLauncherView(QWidget):
             return True
         return False
 
-    def clear_middle_row_for_folder_operation(self):
-        """A single tonton-lane click selects the folder, not a List row.
+    def clear_middle_row_for_folder_operation(self, *, focus_reason=None):
+        """Choose the current folder, via tonton click OR keyboard Insert.
 
-        Match _SeparatedFileTree's blank-click contract: do not erase its
-        remembered currentItem (passive outline), navigate, or select a new
-        first row.  In particular set the deliberate flag BEFORE clearSelection
-        so the asynchronous current-row repair cannot reselect the old row.
+        Match _SeparatedFileTree's blank-click contract: keep the remembered
+        currentItem as a passive outline, but clear *all* selected child rows.
+        Set the deliberate flag BEFORE clearSelection so async selection repair
+        cannot resurrect the previous file. Neither route navigates folders.
         """
         tree = self.middle.tree
         tree.deliberate_blank_selection = True
         tree.clearSelection()
-        tree.setFocus(Qt.FocusReason.MouseFocusReason)
+        tree.setFocus(focus_reason if focus_reason is not None
+                      else Qt.FocusReason.MouseFocusReason)
         if callable(tree.blank_clicked):
             tree.blank_clicked()
         else:
             self._sync_remote_area_after_mouse_press('directory')
         tree.viewport().update()
         self._queue_files_selection_status()
+
+    def restore_middle_first_row_after_folder_operation(self):
+        """Finish Insert/tonton blank selection on an explicit Exp -> List handoff.
+
+        The passive currentItem outline is a memory, not a selected file.
+        Only a deliberate blank-selection state is reset; ordinary row and
+        multi-selection must survive column switching unchanged.
+        """
+        tree = self.middle.tree
+        if not getattr(tree, 'deliberate_blank_selection', False):
+            return False
+        tree.deliberate_blank_selection = False
+        tree._frb_shift_anchor = None
+        first = next((item for i in range(tree.topLevelItemCount())
+                      if (item := tree.topLevelItem(i)) is not None
+                      and self.row_data(item) is not None), None)
+        if first is None:
+            tree.viewport().update()
+            return False
+        tree.clearSelection()
+        tree.setCurrentItem(first)
+        first.setSelected(True)  # Native green fill requires isSelected().
+        tree.scrollToItem(first)
+        tree.viewport().update()
+        self._queue_files_selection_status()
+        return True
 
     def set_files_operating_area(self, area):
         """Show the controller's true target on BOTH column titles and rows.
@@ -5263,6 +5291,21 @@ class ExpandedLauncherView(QWidget):
         if not owned:
             return False
         key, mods = event.key(), event.modifiers()
+        # Insert -> current folder, exactly like a tonton-lane single click.
+        # List only: do not hijack an inline Rename, an editor, or a modal.
+        if (getattr(self, '_workspace_mode', None) == 'files'
+                and key == getattr(Qt.Key, 'Key_Insert', None)
+                and mods == Qt.KeyboardModifier.NoModifier
+                and self._files_keyboard_focus_area(obj) == 'list'):
+            tree = self.middle.tree
+            if tree.state() == QAbstractItemView.State.EditingState:
+                return False
+            launcher.stop_auto_shuriken_on_list_click()
+            tree._frb_shift_anchor = None
+            self.clear_middle_row_for_folder_operation(
+                focus_reason=Qt.FocusReason.ShortcutFocusReason)
+            event.accept()
+            return True
         # The / experiment belongs ONLY to the current Files Exp or List
         # tree; rename/search editors and ordinary global search keep '/'.
         if getattr(self, '_workspace_mode', None) == 'files':
@@ -5371,7 +5414,39 @@ class ExpandedLauncherView(QWidget):
         pad.raise_()  # Keep the real ぐりぐり hit target above both viewports.
         return True
 
+    def _launch_owns_keyboard_source(self, obj):
+        """Match Launch/Remote AND their Tool/Popup children; not other apps."""
+        if not isinstance(obj, QWidget):
+            return False
+        launcher = getattr(self, 'launcher', None)
+        if launcher is None:
+            return False
+        remote = getattr(launcher, 'remote_window', None)
+        widget = obj
+        while widget is not None:
+            if widget is self or widget is launcher or widget is remote:
+                return True
+            # Non-parented SlashExpMenu popups retain their Launcher owner.
+            if getattr(widget, 'launcher', None) is launcher:
+                return True
+            widget = widget.parentWidget()
+        return False
+
     def eventFilter(self, obj, event):
+        # The Windows Menu/App key is intentionally disabled in FRB Launch.
+        # Qt/Windows may deliver it as Key_Menu OR a keyboard-originated
+        # QContextMenuEvent. Consume both *only* for Launch-owned surfaces;
+        # real mouse right-click, Right-arrow and text/IME input are unchanged.
+        if self._launch_owns_keyboard_source(obj):
+            if (event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+                    and event.key() == getattr(Qt.Key, 'Key_Menu', None)):
+                event.accept()
+                return True
+            if event.type() == QEvent.Type.ContextMenu:
+                from PySide6.QtGui import QContextMenuEvent
+                if event.reason() == QContextMenuEvent.Reason.Keyboard:
+                    event.accept()
+                    return True
         # QHeaderView emits sectionResized for BOTH mouse drags and layout
         # changes. A mouse gesture is the only source of saved desired widths.
         header = getattr(self, '_middle_header_widget', None)
@@ -5411,20 +5486,6 @@ class ExpandedLauncherView(QWidget):
                     QTimer.singleShot(0, self._finish_middle_header_user_gesture)
             elif event.type() == QEvent.Type.Hide:
                 self._middle_header_mouse_down = False
-        # The physical Menu key is sometimes delivered as a keyboard-sourced
-        # ContextMenu event, bypassing the ordinary Key_Menu KeyPress path.
-        # Route it to the SAME Files List Right-arrow handler, without ever
-        # selecting a different row or treating it as an Exp-back action.
-        if (self.isVisible() and self._workspace_mode == 'files'
-                and obj in (self.middle.tree, self.middle.tree.viewport())
-                and event.type() == QEvent.Type.ContextMenu):
-            from PySide6.QtGui import QContextMenuEvent, QKeyEvent
-            if event.reason() == QContextMenuEvent.Reason.Keyboard:
-                right = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
-                                  Qt.KeyboardModifier.NoModifier)
-                if self.launcher.expanded_tree_key(self.middle.tree, right):
-                    event.accept()
-                    return True
         if self._guard_rail_underlay_click(obj, event):
             return True
         if self.keyboard_files_shortcuts(obj, event):

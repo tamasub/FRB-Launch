@@ -16,7 +16,8 @@ def method(name, env):
 
 def test_column_switch_does_not_change_folder_or_current_selection():
     pending=[]; calls=[]
-    launcher=NS(_remote_context_wheel=None,remote_focus_area=lambda dest:calls.append(dest))
+    launcher=NS(_remote_context_wheel=None,remote_focus_area=lambda dest:calls.append(dest),
+                _current_remote_files_exp=lambda: NS(tree=None))
     callback=method('_dispatch_files_column_context_navigation',{'QTimer':NS(singleShot=lambda _,fn:pending.append(fn))})
     menu=NS(close=lambda:calls.append('menu-closed'))
     callback(launcher,menu,'files_exp')
@@ -27,7 +28,8 @@ def test_column_switch_does_not_change_folder_or_current_selection():
 
 def test_list_from_exp_only_changes_operating_target():
     pending=[]; calls=[]
-    launcher=NS(_remote_context_wheel=None,remote_focus_area=lambda dest:calls.append(dest))
+    launcher=NS(_remote_context_wheel=None,remote_focus_area=lambda dest:calls.append(dest),
+                _current_remote_files_exp=lambda: NS(tree=None))
     callback=method('_dispatch_files_column_context_navigation',{'QTimer':NS(singleShot=lambda _,fn:pending.append(fn))})
     callback(launcher,NS(close=lambda:None),'directory')
     pending.pop()()

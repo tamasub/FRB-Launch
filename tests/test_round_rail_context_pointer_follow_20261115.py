@@ -56,6 +56,10 @@ class Tree:
     def __init__(self, *, index=True, item=True, offset=100):
         self.index, self.item, self.offset = index, item, offset
         self.scrolled = []
+        self.focus_reasons = []
+
+    def setFocus(self, reason):
+        self.focus_reasons.append(reason)
 
     def isVisible(self):
         return True
@@ -94,7 +98,7 @@ def _launcher(pointer_warp_enabled=True, index=True, item=True):
         'QCursor': Cursor,
         'QTimer': NS(singleShot=lambda ms, fn: jobs.append(fn)),
         'QApplication': NS(mouseButtons=lambda: 0),
-        'Qt': NS(MouseButton=NS(NoButton=0)),
+        'Qt': NS(MouseButton=NS(NoButton=0), FocusReason=NS(ShortcutFocusReason=19)),
         'QAbstractItemView': NS(ScrollHint=NS(EnsureVisible=1)),
         'QPoint': lambda x, y: (x, y),
     }
@@ -108,7 +112,7 @@ def _launcher(pointer_warp_enabled=True, index=True, item=True):
         _remote_context_wheel=None,
         _files_operating_target='files_exp',
         expanded_view=view,
-        _current_remote_files_exp=lambda: NS(tree=exp_tree),
+        _current_remote_files_exp=lambda: NS(tree=exp_tree, isWindow=lambda:False),
     )
     def focus(target):
         calls.append(target)

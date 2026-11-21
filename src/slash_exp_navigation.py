@@ -1177,9 +1177,8 @@ class SlashExpMenu(QMenu):
         painter.end()
 
     def eventFilter(self, obj, event):
-        # The editor and the scroll viewport can receive a native keyboard
-        # ContextMenu event instead of Key_Menu: route both to Right rather
-        # than opening an unrelated QLineEdit / tree context menu.
+        # Native Windows Menu key/keyboard ContextMenu is intentionally inert.
+        # Pointer right-click is not affected.
         if (obj is self._search_edit or
                 self._scroll_tree is not None and obj in
                 (self._scroll_tree, self._scroll_tree.viewport())):
@@ -1187,17 +1186,12 @@ class SlashExpMenu(QMenu):
                 from PySide6.QtGui import QContextMenuEvent
                 if event.reason() != QContextMenuEvent.Reason.Keyboard:
                     return super().eventFilter(obj, event)
-                if not (self._search_edit is not None and
-                        getattr(self._search_edit, 'ime_composing', False)):
-                    self._right_arrow_for_menu_key()
                 event.accept()
                 return True
         if (self._scroll_tree is not None and
                 obj in (self._scroll_tree, self._scroll_tree.viewport()) and
                 event.type() == QEvent.Type.KeyPress):
-            if (event.key() == getattr(Qt.Key, 'Key_Menu', None) and
-                    event.modifiers() == Qt.KeyboardModifier.NoModifier):
-                self._right_arrow_for_menu_key()
+            if event.key() == getattr(Qt.Key, 'Key_Menu', None):
                 event.accept()
                 return True
             # Leave all navigation under the same / menu key contract.
@@ -1207,13 +1201,11 @@ class SlashExpMenu(QMenu):
             # Japanese IME uses arrows to choose conversions and Enter to
             # finalize them. Do not turn those into folder navigation until
             # composition is committed/cancelled by the native editor.
-            if getattr(self._search_edit, 'ime_composing', False):
-                return False
-            if (event.key() == getattr(Qt.Key, 'Key_Menu', None) and
-                    event.modifiers() == Qt.KeyboardModifier.NoModifier):
-                self._right_arrow_for_menu_key()
+            if event.key() == getattr(Qt.Key, 'Key_Menu', None):
                 event.accept()
                 return True
+            if getattr(self._search_edit, 'ime_composing', False):
+                return False
             # Slash is still the menu toggle outside IME composition.
             if is_slash_shortcut(event.key(), event.text(), event.modifiers()):
                 self.root_menu.close()
@@ -1557,28 +1549,22 @@ class SlashExpMenu(QMenu):
                 return
         super().mouseReleaseEvent(event)
 
-    def _right_arrow_for_menu_key(self):
-        '''One route for the physical Menu key and the existing Right arrow.'''
-        event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
-                          Qt.KeyboardModifier.NoModifier)
-        self.keyPressEvent(event)
-
     def event(self, event):
-        # Windows' keyboard context-menu key may arrive as QContextMenuEvent
-        # instead of Key_Menu. Never let Qt turn it into a different native
-        # action, changing the Files Exp/List current-row state.
+        # Key_Menu may be delivered as a native keyboard ContextMenu event.
+        # Consume it without changing selection, opening menus, or navigating.
         if event.type() == getattr(QEvent.Type, 'ContextMenu', None):
             from PySide6.QtGui import QContextMenuEvent
             if event.reason() != QContextMenuEvent.Reason.Keyboard:
                 return super().event(event)
-            self._right_arrow_for_menu_key()
             event.accept()
             return True
         return super().event(event)
 
     def keyPressEvent(self, event):
-        menu_key = (event.key() == getattr(Qt.Key, 'Key_Menu', None))
-        key = Qt.Key.Key_Right if menu_key else event.key()
+        if event.key() == getattr(Qt.Key, 'Key_Menu', None):
+            event.accept()
+            return
+        key = event.key()
         # If this QMenu (rather than the embedded editor) currently has OS
         # input focus, a Japanese preedit can still be active in that editor.
         # Navigation/escape/confirmation must not eat IME candidate keys.
@@ -1596,13 +1582,6 @@ class SlashExpMenu(QMenu):
             self.root_menu.close()
             event.accept()
             return
-        if menu_key and event.modifiers() == Qt.KeyboardModifier.NoModifier:
-            event.accept()  # Suppress Qt's native Menu-key context popup.
-            # Right is already the approved command/child-menu dispatch.
-            # Use that identical Qt event when entering the native submenu
-            # show path, instead of handing Qt a Key_Menu event.
-            event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
-                              Qt.KeyboardModifier.NoModifier)
         if event.modifiers() not in (Qt.KeyboardModifier.NoModifier,
                                      Qt.KeyboardModifier.ShiftModifier):
             return super().keyPressEvent(event)

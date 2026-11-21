@@ -6152,7 +6152,28 @@ class Launcher(QWidget):
         # No LEFT/RIGHT dispatch here: those are *hierarchy* commands and can
         # traverse physical folders. Column switching owns no history entry.
         def finish():
+            if target == 'directory':
+                # Exp -> List via its context menu must end an earlier
+                # Insert/tonton blank state just like the Right-arrow route.
+                restore = getattr(getattr(self, 'expanded_view', None),
+                                  'restore_middle_first_row_after_folder_operation', None)
+                if callable(restore):
+                    restore()
             self.remote_focus_area(target)
+            if target == 'files_exp':
+                # Column selection changes the *logical* operating target,
+                # but Remote focus deliberately does not steal Qt focus.
+                # A menu-driven return is a real keyboard navigation action:
+                # move native focus from the old List tree to the Exp tree.
+                panel = self._current_remote_files_exp()
+                tree = getattr(panel, 'tree', None)
+                if tree is not None and tree.isVisible():
+                    # Standalone Files Exp is a separate Qt.Tool window;
+                    # changing its child focus alone cannot receive keys
+                    # while the parent Launch window remains active.
+                    if panel.isWindow():
+                        panel.activateWindow()
+                    tree.setFocus(Qt.FocusReason.ShortcutFocusReason)
             follow = getattr(self, '_follow_files_column_context_pointer', None)
             if origin is not None and callable(follow):
                 # Delay until the focus/scroll and closing popup have settled.
@@ -7167,6 +7188,9 @@ class Launcher(QWidget):
             # like a physical directory; no filesystem path is invented.
             if not self.navigate_virtual_launch_folder(virtual):
                 return False
+            restore = getattr(view, 'restore_middle_first_row_after_folder_operation', None)
+            if callable(restore):
+                restore()
             self.remote_focus_area('directory')
             return True
         # The explicit RIGHT command wins over a pending wheel debounce.
@@ -7189,6 +7213,9 @@ class Launcher(QWidget):
                        and self.navigate_files_exp_pc())
         if not changed:
             return False
+        restore = getattr(view, 'restore_middle_first_row_after_folder_operation', None)
+        if callable(restore):
+            restore()
         self.remote_focus_area('directory')
         return True
 
@@ -12138,6 +12165,11 @@ class Launcher(QWidget):
                      if p.tree is tree or p.tree.viewport() is tree), None)
         if pane is None:
             return False
+        # Physical Windows Menu/App key is intentionally a no-op. Catch it
+        # BEFORE editing guards or native QTreeWidget context-menu behavior.
+        if event.key() == getattr(Qt.Key, 'Key_Menu', None):
+            event.accept()
+            return True
         # A filename QLineEdit owns Enter while editing. Do not dispatch
         # that same key through the normal expanded Files activation route.
         if (pane is self.expanded_view.middle and
@@ -12149,11 +12181,17 @@ class Launcher(QWidget):
         if self.page_key(event):
             event.accept()
             return True
-        # Only Files List maps the keyboard context-menu key to its already
-        # approved Right-arrow action (Copy/Paste/etc.); never use Exp's
-        # 'return to column' navigation for this Windows key.
-        key = (Qt.Key.Key_Right if pane is self.expanded_view.middle
-               and event.key() == getattr(Qt.Key, 'Key_Menu', None) else event.key())
+        key = event.key()
+        if (pane is self.expanded_view.middle
+                and getattr(self.expanded_view, '_workspace_mode', 'files') == 'files'
+                and key == getattr(Qt.Key, 'Key_Insert', None)
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier):
+            self.stop_auto_shuriken_on_list_click()
+            pane.tree._frb_shift_anchor = None
+            self.expanded_view.clear_middle_row_for_folder_operation(
+                focus_reason=Qt.FocusReason.ShortcutFocusReason)
+            event.accept()
+            return True
         if (event.modifiers() & Qt.KeyboardModifier.ControlModifier
                 and key == Qt.Key.Key_F):
             self.focus_search()
@@ -12284,9 +12322,20 @@ class Launcher(QWidget):
             item = pane.tree.currentItem()
             if pane is view.middle:
                 # List-only: Right is a keyboard right-click, NOT Enter.
-                # Use the pointer context menu's exact resolver/actions,
-                # including multi-select and inline rename.
-                if item is not None and view.row_data(item) is not None:
+                # After Insert/tonton, the last currentItem is only a passive
+                # outline. Open the CURRENT FOLDER menu, not that stale file.
+                if getattr(pane.tree, 'deliberate_blank_selection', False):
+                    lane = getattr(view, 'middle_back_lane', None)
+                    position = (lane.mapToGlobal(lane.rect().center())
+                                if lane is not None else
+                                pane.tree.viewport().mapToGlobal(QPoint(12, 12)))
+                    view.show_list_background_context(position)
+                    context = getattr(self, '_launch_context_menu', None)
+                    if context is not None and context.isVisible():
+                        context._frb_keyboard_opened = True
+                # For a real selected row, retain existing multi-select,
+                # rename and near-filename context positioning.
+                elif item is not None and view.row_data(item) is not None:
                     rect = pane.tree.visualItemRect(item)
                     point = rect.center()
                     # Put the operation menu near the *visible filename*,
@@ -12325,9 +12374,13 @@ class Launcher(QWidget):
                     else:
                         view.launcher.activate(row)
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            item = pane.tree.currentItem()
-            if item is not None:
-                view.enter_row(pane, item)
+            # Insert/tonton intentionally left NO selected child. The passive
+            # cursor must not open a stale file merely because Enter was hit.
+            if not (pane is view.middle and
+                    getattr(pane.tree, 'deliberate_blank_selection', False)):
+                item = pane.tree.currentItem()
+                if item is not None:
+                    view.enter_row(pane, item)
         else:
             # Keep ordinary Qt shortcuts/text editing out of classic hidden grid.
             return False

@@ -1,3 +1,5 @@
+> **2026-11-21 に旧仕様化:** Windows MenuKeyは当面無効とした。現在の仕様は `CHANGE_NOTE_Insert_CurrentFolder_MenuKey_Disabled_20261121.md` を参照。`→` キーによるメニューは引き続き有効。
+
 # FRB Launch – Exp Keyboard Ex: Menu key / operation popup anchor
 
 Date: 2026-11-20

@@ -1,4 +1,8 @@
-"""Regressions: physical Menu key reuses Right and operations appear by caption."""
+"""Regressions: Right retains operation popup; Windows Menu key is inert.
+
+2026-11-21: replaces the old physical-Menu-key-as-Right requirement. Keep
+caption/positioning tests from the previous implementation.
+"""
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +13,7 @@ from test_slash_exp_navigation_20261118 import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _leaf_context(nav, key_code):
+def _leaf_menu(nav):
     mod, key = nav
     launcher, calls = make_launcher()
     source = FakeQMenu()
@@ -21,28 +25,29 @@ def _leaf_context(nav, key_code):
     menu.popup((10, 10))
     action = next(iter(menu._action_items))
     menu.setActiveAction(action)
-    event = Event(key_code)
-    menu.keyPressEvent(event)
-    child = menu.activeAction().menu()
+    return mod, key, menu, action, calls
+
+
+def test_right_still_opens_operations_menu_but_physical_menu_key_does_nothing(nav):
+    mod, key, right_menu, _, calls = _leaf_menu(nav)
+    right_menu.keyPressEvent(Event(key.Key_Right))
+    child = right_menu.activeAction().menu()
     assert child is not None and child.isVisible()
-    assert child._context_source is source  # Reuses EXISTING Copy/Paste QAction source.
-    assert calls == []  # Opening a menu must not commit a folder / mutate current.
-    return mod, menu, child, event
+    assert child._context_source is not None
+    assert calls == []
 
-
-def test_physical_menu_key_uses_same_operations_as_right(nav):
-    mod, key = nav
     key.Key_Menu = 108
-    _, right_menu, right_child, _ = _leaf_context(nav, key.Key_Right)
-    _, menu_key_menu, menu_key_child, physical = _leaf_context(nav, key.Key_Menu)
-    assert physical.isAccepted()  # No native Qt ContextMenu fallback.
-    assert right_child._full_text.keys() == menu_key_child._full_text.keys() or (
-        [a.text() for a in right_child._action_items] ==
-        [a.text() for a in menu_key_child._action_items])
-    assert right_menu.isVisible() and menu_key_menu.isVisible()
+    _, _, physical_menu, action, physical_calls = _leaf_menu(nav)
+    event = Event(key.Key_Menu)
+    physical_menu.keyPressEvent(event)
+    assert event.isAccepted()
+    assert physical_menu.activeAction() is action
+    assert action.menu() is None
+    assert physical_menu._context_menus == {}
+    assert physical_calls == []
 
 
-def test_menu_key_on_branch_does_not_jump_back_to_exp(nav):
+def test_menu_key_on_branch_does_not_expand_or_go_back(nav):
     mod, key = nav
     key.Key_Menu = 108
     child = Item('child', {'virtual': {'kind': 'file', 'node_id': 'child', 'row': {}}})
@@ -51,9 +56,12 @@ def test_menu_key_on_branch_does_not_jump_back_to_exp(nav):
     menu = mod.SlashExpMenu(launcher, Panel([folder]))
     menu.populate()
     menu.popup((10, 10))
-    menu.setActiveAction(next(iter(menu._action_items)))
-    menu.keyPressEvent(Event(key.Key_Menu))
-    assert menu.activeAction().menu().isVisible()  # Same as Right on a branch.
+    action = next(iter(menu._action_items))
+    menu.setActiveAction(action)
+    physical = Event(key.Key_Menu)
+    menu.keyPressEvent(physical)
+    assert physical.isAccepted()
+    assert action.menu() is None
     assert calls == []
 
 
@@ -92,63 +100,55 @@ def test_fixed_scroll_caption_uses_same_offset_policy(nav):
     assert menu._operation_popup_x(action) == 29 + 3 * 7 + 28
 
 
-def test_list_menu_key_and_native_context_event_share_existing_right_handler():
+def test_list_menu_key_has_no_right_alias_and_insert_uses_tonton():
     app = (ROOT / 'src/app.py').read_text(encoding='utf-8')
     view = (ROOT / 'src/expanded_view.py').read_text(encoding='utf-8')
     start = app.index('    def expanded_tree_key(')
     end = app.index('    def wheel_classic_menu(', start)
     route = app[start:end]
-    assert "event.key() == getattr(Qt.Key, 'Key_Menu', None)" in route
-    assert 'key = (Qt.Key.Key_Right if pane is self.expanded_view.middle' in route
+    assert "if event.key() == getattr(Qt.Key, 'Key_Menu', None):" in route
+    assert "key == getattr(Qt.Key, 'Key_Insert', None)" in route
+    assert 'self.expanded_view.clear_middle_row_for_folder_operation(' in route
+    assert 'view.show_list_background_context(position)' in route
     assert 'view.context_menu(pane, point, global_pos=position)' in route
-    start = view.rindex('    def eventFilter(self, obj, event):')
-    event_route = view[start:start + 1400]
-    assert 'QContextMenuEvent.Reason.Keyboard' in event_route
-    assert 'self.launcher.expanded_tree_key(self.middle.tree, right)' in event_route
+    assert 'key = (Qt.Key.Key_Right if pane is self.expanded_view.middle' not in route
+    assert 'QContextMenuEvent.Reason.Keyboard' in view
+    assert 'self.launcher.expanded_tree_key(self.middle.tree, right)' not in view
 
 
-def test_actual_list_menu_key_and_right_use_same_context_and_near_name(nav):
-    """Execute production Launcher.expanded_tree_key with a focused List fake."""
+def test_actual_list_menu_key_no_op_and_right_on_folder_target():
+    """Production Launcher.expanded_tree_key using existing Qt-free Dispatch."""
     from test_expanded_keyboard_dispatch_20261024 import instance, Qt
-    mod, _ = nav
     Qt.Key.Key_Menu = 111
     launcher = instance()
     view = launcher.expanded_view
     tree = view.middle.tree
-    item = tree.currentItem()
-    item.text = lambda col: 'src'
-    class Rect:
-        def center(self): return mod.QPoint(160, 15)
-        def left(self): return 0
-        def right(self): return 400
-    tree.visualItemRect = lambda _: Rect()
-    tree.header = lambda: SimpleNamespace(sectionViewportPosition=lambda i: 0,
-                                          sectionSize=lambda i: 260)
-    tree.fontMetrics = lambda: SimpleNamespace(horizontalAdvance=lambda name: len(name) * 7)
-    tree.viewport = lambda: SimpleNamespace(mapToGlobal=lambda point: point)
-    recorded = []
-    view.context_menu = lambda pane, point, *, global_pos: recorded.append(
-        (pane, point.x(), point.y(), global_pos.x()))
-    launcher._launch_context_menu = SimpleNamespace(isVisible=lambda: True)
-    ns = launcher.expanded_tree_key.__func__.__globals__
-    ns.update(QPoint=mod.QPoint, _row_text_anchor_local_x=mod._row_text_anchor_local_x)
+    called = []
     class KeyEvent:
         def __init__(self, k): self.k = k; self.accepted = False
         def key(self): return self.k
         def modifiers(self): return 0
         def accept(self): self.accepted = True
-    right = KeyEvent(Qt.Key.Key_Right)
     physical = KeyEvent(Qt.Key.Key_Menu)
-    assert launcher.expanded_tree_key(tree, right)
     assert launcher.expanded_tree_key(tree, physical)
-    assert right.accepted and physical.accepted
-    assert recorded[0] == recorded[1]
-    assert recorded[0][1] == 8 + 24 + 3 * 7 + 28  # not the full-row center
-    assert launcher._launch_context_menu._frb_keyboard_opened is True
-    assert view.actions == []  # No Exp/selection mutation.
+    assert physical.accepted
+    assert view.actions == []
+
+    tree.deliberate_blank_selection = True
+    lane = SimpleNamespace(
+        rect=lambda: SimpleNamespace(center=lambda: 'lane-center'),
+        mapToGlobal=lambda pos: ('current-folder-anchor', pos))
+    view.middle_back_lane = lane
+    view.show_list_background_context = lambda pos: called.append(pos)
+    launcher._launch_context_menu = SimpleNamespace(isVisible=lambda: False)
+    right = KeyEvent(Qt.Key.Key_Right)
+    assert launcher.expanded_tree_key(tree, right)
+    assert right.accepted
+    assert called == [('current-folder-anchor', 'lane-center')]
+    assert view.actions == []
 
 
-def test_native_keyboard_context_event_routes_to_right_not_qt_default(nav, monkeypatch):
+def test_native_keyboard_context_event_no_longer_opens_slash_operations(nav, monkeypatch):
     import sys
     mod, key = nav
     mod.QEvent.Type.ContextMenu = 707
@@ -162,7 +162,8 @@ def test_native_keyboard_context_event_routes_to_right_not_qt_default(nav, monke
     menu = mod.SlashExpMenu(launcher, Panel([leaf]))
     menu.populate()
     menu.popup((10, 10))
-    menu.setActiveAction(next(iter(menu._action_items)))
+    action = next(iter(menu._action_items))
+    menu.setActiveAction(action)
     class KeyboardContext:
         accepted = False
         def type(self): return 707
@@ -171,5 +172,6 @@ def test_native_keyboard_context_event_routes_to_right_not_qt_default(nav, monke
     event = KeyboardContext()
     assert menu.event(event)
     assert event.accepted
-    assert menu.activeAction().menu()._context_source is source
+    assert menu.activeAction() is action
+    assert action.menu() is None
     assert calls == []
