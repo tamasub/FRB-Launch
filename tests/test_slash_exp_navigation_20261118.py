@@ -21,8 +21,10 @@ class Signal:
     def connect(self, callback):
         self.callbacks.append(callback)
     def emit(self, *args):
-        for callback in self.callbacks:
+        for callback in tuple(self.callbacks):
             callback(*args)
+    def disconnect(self, callback):
+        self.callbacks.remove(callback)
 
 
 class FakeIcon:
@@ -166,7 +168,9 @@ class FakeQMenu:
     def setFocus(self, *args):
         pass
     def setWindowFlags(self, *args):
-        pass
+        self.window_flags = args[0]
+    def activateWindow(self):
+        self.activated = True
     def setWindowFlag(self, *args):
         pass
     def setParent(self, parent):
@@ -260,7 +264,10 @@ def nav(monkeypatch):
                          ItemDataRole=SimpleNamespace(UserRole=100),
                          WidgetAttribute=SimpleNamespace(WA_InputMethodEnabled=0,
                                                           WA_TranslucentBackground=1),
-                         WindowType=SimpleNamespace(Popup=2, FramelessWindowHint=4),
+                         WindowType=SimpleNamespace(Popup=2, FramelessWindowHint=4,
+                             Tool=8, WindowStaysOnTopHint=16),
+                         ApplicationState=SimpleNamespace(ApplicationInactive=1,
+                             ApplicationActive=2),
                          KeyboardModifier=SimpleNamespace(NoModifier=0, ShiftModifier=1,
                             ControlModifier=2, AltModifier=4),
                          FocusReason=SimpleNamespace(OtherFocusReason=0),
@@ -279,9 +286,13 @@ def nav(monkeypatch):
             return (hasattr(other, 'x') and hasattr(other, 'y') and
                     self._x == other.x() and self._y == other.y())
     qtcore.QPoint = FakePoint
+    class FakeQObject:
+        def __init__(self, parent=None): self._parent = parent
+    qtcore.QObject = FakeQObject
     qtcore.QRect = lambda *args: tuple(args)
     qtcore.QSize = lambda *args: tuple(args)
-    qtcore.QEvent = SimpleNamespace(Type=SimpleNamespace(KeyPress=1))
+    qtcore.QEvent = SimpleNamespace(Type=SimpleNamespace(KeyPress=1,
+                                                        MouseButtonPress=2))
     qtcore.Qt = qt
     qtcore.QTimer = SimpleNamespace(singleShot=lambda _delay, fn: fn())
     qtgui = ModuleType('PySide6.QtGui')
@@ -416,7 +427,17 @@ def nav(monkeypatch):
     qtwidgets.QWidget = FakeHolder
     qtwidgets.QHBoxLayout = FakeHBoxLayout
     qtwidgets.QWidgetAction = FakeWidgetAction
-    qtwidgets.QApplication = SimpleNamespace(sendEvent=lambda *args: None,
+    class FakeApplication:
+        def __init__(self):
+            self.filters = []
+            self.applicationStateChanged = Signal()
+            self._state = qt.ApplicationState.ApplicationActive
+        def installEventFilter(self, filter_obj): self.filters.append(filter_obj)
+        def removeEventFilter(self, filter_obj): self.filters.remove(filter_obj)
+        def applicationState(self): return self._state
+    application = FakeApplication()
+    qtwidgets.QApplication = SimpleNamespace(instance=lambda: application,
+        sendEvent=lambda *args: None,
         screenAt=lambda pos: None, primaryScreen=lambda: SimpleNamespace(
             availableGeometry=lambda: SimpleNamespace(left=lambda: 0, right=lambda: 1200,
                 width=lambda: 1201, top=lambda: 0, bottom=lambda: 800)))
@@ -778,7 +799,9 @@ def test_terminal_context_is_positioned_beside_selected_row(nav):
     menu.setActiveAction(next(iter(menu._action_items)))
     menu.keyPressEvent(Event(key.Key_Right))
     context = menu.activeAction().menu()
-    assert context.moved[0].x() == menu.width() - 1
+    # Commands now float near the visible caption, not at the full column edge.
+    assert context.moved[0].x() == menu._operation_popup_x(menu.activeAction())
+    assert context.moved[0].x() < menu.width() - 1
     assert context.moved[0].y() == 10  # Taskbar/work-area safety inset.
 
 

@@ -7,7 +7,7 @@ filesystem operations remain owned by Launch.  Children load lazily.
 import json
 import os
 
-from PySide6.QtCore import Qt, QPoint, QRectF, QSize, QTimer, Signal, QModelIndex, QMimeData, QEvent
+from PySide6.QtCore import Qt, QPoint, QRectF, QSize, QTimer, Signal, QModelIndex, QMimeData, QEvent, QFileSystemWatcher
 from PySide6.QtGui import (QDrag, QBrush, QColor, QCursor, QIcon, QPainter, QPen,
                            QPixmap, QStandardItem, QStandardItemModel)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFrame, QHBoxLayout,
@@ -19,6 +19,7 @@ from passive_header_drag import PassiveHeaderDrag
 from bookmark_cursor_follow import cursor_target
 from wheel_adaptive import wheel_steps, can_follow_at_edge
 from remote_files_exp_roots import registered_folder_roots, subdirectories
+from visible_directory_watch import normalized_watch_path, exp_visible_watches
 from context_menu_actions import rename_file_or_folder
 from clipboard_paste import clipboard_sources, is_cut_clipboard
 from file_transfer_visual import transfer_state
@@ -553,6 +554,21 @@ class RemoteFilesExplorer(QWidget):
         self.tree.setProperty('operatingActive', False)
         self.exp_header.setProperty('operatingActive', False)
         self.tree.setModel(self.model)
+        # Lightweight, visibility-scoped Explorer change tracking.  Only
+        # parents of rows actually visible in the viewport are watched.
+        self._visible_dir_watcher = QFileSystemWatcher(self)
+        self._visible_dir_watcher.directoryChanged.connect(
+            self._queue_visible_exp_auto_refresh)
+        self._visible_dir_paths = set()
+        self._visible_exp_pending = set()
+        self._visible_watch_timer = QTimer(self)
+        self._visible_watch_timer.setSingleShot(True)
+        self._visible_watch_timer.setInterval(100)
+        self._visible_watch_timer.timeout.connect(self._sync_visible_exp_watches)
+        self._visible_refresh_timer = QTimer(self)
+        self._visible_refresh_timer.setSingleShot(True)
+        self._visible_refresh_timer.setInterval(1000)
+        self._visible_refresh_timer.timeout.connect(self._flush_visible_exp_auto_refresh)
         self.tree.setItemDelegate(FilesExpRenameDelegate(self.tree))
         self.tree.setHeaderHidden(True)
         # Narrower than the Qt default, but leave room for arrows and icons.
@@ -581,8 +597,12 @@ class RemoteFilesExplorer(QWidget):
         self.tree.expanded.connect(self._schedule_tree_state_save)
         self.tree.collapsed.connect(self._schedule_tree_state_save)
         self.tree.verticalScrollBar().valueChanged.connect(self._schedule_tree_state_save)
+        self.tree.verticalScrollBar().valueChanged.connect(
+            self._schedule_visible_exp_watch_sync)
         self.tree.horizontalScrollBar().valueChanged.connect(self._schedule_tree_state_save)
         self.tree.expanded.connect(self._expand_index)
+        self.tree.expanded.connect(self._schedule_visible_exp_watch_sync)
+        self.tree.collapsed.connect(self._schedule_visible_exp_watch_sync)
         # Clicking the triangle is navigation too: Qt does not guarantee a
         # 'clicked' signal when the disclosure control consumes the click.
         self.tree.expanded.connect(self._activate_disclosure)
@@ -606,6 +626,9 @@ class RemoteFilesExplorer(QWidget):
         self.tree.collapsed.connect(lambda *_: QTimer.singleShot(0, self._position_root_drop_hint))
         self.model.rowsInserted.connect(lambda *_: QTimer.singleShot(0, self._position_root_drop_hint))
         self.model.rowsRemoved.connect(lambda *_: QTimer.singleShot(0, self._position_root_drop_hint))
+        self.model.rowsInserted.connect(self._schedule_visible_exp_watch_sync)
+        self.model.rowsRemoved.connect(self._schedule_visible_exp_watch_sync)
+        self.model.modelReset.connect(self._schedule_visible_exp_watch_sync)
 
         # Guidance belongs below the tree; keep the resize handle reachable.
         footer = QFrame(self)
@@ -1060,7 +1083,94 @@ class RemoteFilesExplorer(QWidget):
         finally:
             self._restoring_tree = previous_restoring
         QTimer.singleShot(0, self._position_root_drop_hint)
+        self._schedule_visible_exp_watch_sync()
         return len(roots)
+
+    def _schedule_visible_exp_watch_sync(self, *_args):
+        """Scroll/expand/collapse/rebuild: reselect watched *visible* rows."""
+        self._visible_watch_timer.start()
+
+    def _visible_exp_rows(self):
+        """Read viewport indices only; don't enumerate every loaded tree node."""
+        tree = self.tree
+        viewport = tree.viewport()
+        height = viewport.height()
+        if height <= 0 or viewport.width() <= 0:
+            return []
+        # Single-column QTreeView may not stretch its first column over the
+        # whole viewport. Probe inside the column as well as the row indent.
+        column_right = max(1, min(viewport.width() - 1, tree.columnWidth(0) - 2))
+        probes = (column_right, max(1, column_right // 2),
+                  min(viewport.width() - 1, 8))
+        index = QModelIndex()
+        # QTreeView may have a tiny blank inset at the top of the viewport.
+        for y in range(0, min(height, 65), 5):
+            for x in probes:
+                index = tree.indexAt(QPoint(x, y))
+                if index.isValid():
+                    break
+            if index.isValid():
+                break
+        rows = []
+        visited = 0
+        while index.isValid() and visited < 256:
+            rect = tree.visualRect(index)
+            if rect.top() >= height:
+                break
+            if rect.bottom() >= 0:
+                item = self.model.itemFromIndex(index)
+                info = item.data(_DATA_ROLE) if item is not None else None
+                if isinstance(info, dict):
+                    rows.append((info.get('path'), tree.isExpanded(index),
+                                 info.get('linked_path')))
+            next_index = tree.indexBelow(index)
+            if next_index == index:  # Defensive against a broken model.
+                break
+            index = next_index
+            visited += 1
+        return rows
+
+    def _sync_visible_exp_watches(self):
+        watcher = self._visible_dir_watcher
+        desired = set(exp_visible_watches(self._visible_exp_rows())) if self.isVisible() else set()
+        existing = set(watcher.directories())
+        for path in existing - desired:
+            watcher.removePath(path)
+        for path in desired - existing:
+            watcher.addPath(path)
+        self._visible_dir_paths = desired
+        self._visible_exp_pending.intersection_update(desired)
+
+    def _queue_visible_exp_auto_refresh(self, directory):
+        path = normalized_watch_path(directory)
+        if path not in self._visible_dir_paths:
+            return  # A late event for an offscreen/closed subtree.
+        self._visible_exp_pending.add(path)
+        self._visible_refresh_timer.start()
+
+    def _flush_visible_exp_auto_refresh(self):
+        if not self._visible_exp_pending:
+            return
+        if not self.isVisible():
+            return  # Visibility will be rechecked on show.
+        launcher = self._launcher
+        if (self.tree.state() in (QAbstractItemView.State.EditingState,
+                                  QAbstractItemView.State.DraggingState)
+                or self._rename_in_progress is not None
+                or getattr(self, '_syncing_directory', False)
+                or getattr(self, '_restoring_tree', False)
+                or (launcher is not None and
+                    getattr(launcher, '_filesystem_dialog_depth', 0) > 0)):
+            self._visible_refresh_timer.start()
+            return
+        changed = sorted(self._visible_exp_pending)
+        self._visible_exp_pending.clear()
+        for path in changed:
+            if path in self._visible_dir_paths and os.path.isdir(path):
+                # Existing Exp branch refresh preserves selection, expanded
+                # descendants and scroll without emitting folder navigation.
+                self.refresh_directory_branch(path)
+        self._sync_visible_exp_watches()  # Re-arm discarded Windows watches.
 
     def refresh_open_directories(self):
         """Reload Exp's open physical branches while retaining the tree state.
@@ -1193,6 +1303,9 @@ class RemoteFilesExplorer(QWidget):
         finally:
             self._syncing_directory = old_sync
             self._selection_timer.stop()
+        schedule = getattr(self, '_schedule_visible_exp_watch_sync', None)
+        if callable(schedule):
+            schedule()
         return changed
 
     def reset_to_roots(self):
@@ -2198,6 +2311,7 @@ class RemoteFilesExplorer(QWidget):
         if (obj is self.tree.viewport() and
                 event.type() in (QEvent.Type.Resize, QEvent.Type.Show)):
             QTimer.singleShot(0, self._position_root_drop_hint)
+            self._schedule_visible_exp_watch_sync()
         return super().eventFilter(obj, event)
 
     def _position_root_drop_hint(self):
@@ -2229,6 +2343,7 @@ class RemoteFilesExplorer(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         QTimer.singleShot(0, self._position_root_drop_hint)
+        self._schedule_visible_exp_watch_sync()
         if self.isVisible() and not getattr(self, '_embedded', False):
             if (self._grid_height_mode and not self._automatic_placement
                     and event.oldSize().height() != event.size().height()):
@@ -2240,7 +2355,23 @@ class RemoteFilesExplorer(QWidget):
             if remote is not None and hasattr(remote, 'position_files_exp'):
                 QTimer.singleShot(0, remote.position_files_exp)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._schedule_visible_exp_watch_sync()
+        if self._visible_exp_pending:
+            self._visible_refresh_timer.start()
+
+    def _sync_visible_exp_watches_hidden(self):
+        watcher = self._visible_dir_watcher
+        for path in watcher.directories():
+            watcher.removePath(path)
+        self._visible_dir_paths.clear()
+        self._visible_exp_pending.clear()
+        self._visible_refresh_timer.stop()
+
     def hideEvent(self, event):
+        self._visible_watch_timer.stop()
+        self._sync_visible_exp_watches_hidden()
         self._size_save_timer.stop()
         self._position_save_timer.stop()
         self._tree_state_timer.stop()

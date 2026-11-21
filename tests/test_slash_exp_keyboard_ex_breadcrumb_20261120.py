@@ -204,3 +204,40 @@ def test_app_slash_folder_commit_passes_mount_only_for_linked_transient(nav, tmp
                                                  origin_panel=panel, origin_item=transient)
     assert recorded[0][1]['mount_origin'] is origin
     assert recorded[0][1]['registered_root'] is None
+
+
+def test_popup_uses_list_folder_id_sort_without_its_own_preference(nav, tmp_path):
+    from folder_sort_preferences import save_directory_sort
+    from middle_folder_filter import SORT_LABELS
+    mod, _ = nav
+    docs = tmp_path / 'docs'; docs.mkdir()
+    (docs / 'A.md').write_text('a')
+    (docs / 'Z.md').write_text('z')
+    (docs / 'DirA').mkdir()
+    (docs / 'DirZ').mkdir()
+    class Settings:
+        def __init__(self):
+            self.data = {}
+        def value(self, key, default=None):
+            return self.data.get(key, default)
+        def setValue(self, key, value):
+            self.data[key] = value
+        def remove(self, key):
+            self.data.pop(key, None)
+    settings = Settings()
+    launcher, _ = make_launcher()
+    launcher.settings = settings
+    view = make_view(('physical', str(docs)), current=str(docs))
+    panel = Panel([Item('Other root', {'path': str(tmp_path)})])
+    save_directory_sort(settings, docs, 'name_desc', SORT_LABELS)
+    source = mod.slash_source_from_breadcrumb(launcher, view, panel)
+    menu = mod.SlashExpMenu(launcher, panel, source_item=source)
+    assert [i.text() for i in menu._items()] == [
+        '（カレントフォルダー）', 'DirZ', 'DirA', 'Z.md', 'A.md']
+    # The same identity survives Explorer's rename; refreshed popup inherits.
+    new_docs = docs.rename(tmp_path / 'Renamed')
+    new_view = make_view(('physical', str(new_docs)), current=str(new_docs))
+    source = mod.slash_source_from_breadcrumb(launcher, new_view, panel)
+    menu = mod.SlashExpMenu(launcher, panel, source_item=source)
+    assert [i.text() for i in menu._items()] == [
+        '（カレントフォルダー）', 'DirZ', 'DirA', 'Z.md', 'A.md']

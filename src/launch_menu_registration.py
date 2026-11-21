@@ -18,6 +18,7 @@ import tempfile
 import uuid
 from html.parser import HTMLParser
 from html import unescape
+from shell_link_stream import make_link_data, ShellLinkError
 
 
 VIEW_DEF = 'launch/frb_launch_maintenance_view_def_v0_1.json'
@@ -165,7 +166,16 @@ def records_for_sources(sources):
         if kind not in ('file', 'directory', 'url'):
             raise RegistrationError('未対応の登録種類: ' + str(kind))
         is_dir = kind == 'directory'
+        # Only newly dropped *files* acquire in-memory Shell Link tracking.
+        # Pre-existing Launch entries and registered folders are unchanged.
+        link_data = ''
+        if kind == 'file' and os.name == 'nt':
+            try:
+                link_data = make_link_data(value)
+            except ShellLinkError as exc:
+                raise RegistrationError('Shell Link情報の登録に失敗: ' + str(exc)) from exc
         records.append({
+            **({'launch_shell_link_data': link_data} if link_data else {}),
             'title': title,
             'description': value,
             'item_kind': 'directory' if is_dir else 'command',

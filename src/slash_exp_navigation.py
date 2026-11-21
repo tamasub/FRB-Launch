@@ -9,12 +9,15 @@ Launch action. No secondary store or filesystem mutation is introduced.
 import os
 import unicodedata
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QKeyEvent, QPainter, QPainterPath, QPixmap, QStandardItem
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout,
                                QHeaderView, QLineEdit, QMenu, QTreeWidget,
                                QTreeWidgetItem, QWidget, QWidgetAction)
 
+from folder_sort_preferences import load_directory_sort
+from middle_folder_filter import SORT_LABELS
+from folder_popup_sort import sort_physical_popup_records
 from launch_virtual_tree import virtual_item_identity
 from launch_appearance import (theme_palette, slash_exp_floating_qss,
                                slash_exp_floating_colors,
@@ -429,9 +432,13 @@ class SlashExpMenu(QMenu):
         else:
             self._slash_colors = theme_palette(theme)
             self._slash_frame_border = slash_exp_floating_colors(theme)['border']
-        # WA_TranslucentBackground needs FramelessWindowHint on Windows;
-        # keep QMenu's existing Qt.Popup flag and native keyboard semantics.
-        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        # Windows IME requires the owning menu window to become active.
+        # The Windows comparison trace (2026-11-20) confirmed that Qt.Popup
+        # never received composition while activated Qt.Tool did.  Tool is
+        # now the normal mode for every column, not a diagnostic-only flag.
+        self.setWindowFlags(Qt.WindowType.Tool |
+                            Qt.WindowType.FramelessWindowHint |
+                            Qt.WindowType.WindowStaysOnTopHint)
         # Explicitly disable the native popup shadow so the frame is the
         # only visible boundary. Older Qt stubs may lack this Windows hint.
         no_shadow = getattr(Qt.WindowType, 'NoDropShadowWindowHint', None)
@@ -440,8 +447,8 @@ class SlashExpMenu(QMenu):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(slash_exp_floating_qss(
             theme, self._item_height, operation=self._context_source is not None))
-        # A QMenu's native Popup focus/keyboard ownership is intentional:
-        # non-grabbing Files Exp menus leave their arrow keys in the tree.
+        # QMenu still owns its ordinary QAction/item behavior; a dedicated
+        # root-session guard restores outside-click dismissal for Qt.Tool.
         self.aboutToShow.connect(self.populate)
 
     def resizeEvent(self, event):
@@ -659,7 +666,34 @@ class SlashExpMenu(QMenu):
             path = info.get('path')
             if path and os.path.isdir(path) and not info.get('file'):
                 result.extend(self._file_entries(path))
+                return self._sort_physical_items_for_list(result, path)
         return result
+
+    def _sort_physical_items_for_list(self, items, folder):
+        """Share physical Files List sort; preserve the current-folder command.
+
+        Virtual Launch folders keep authored JSON ordering. A popup has no
+        separate ordering preference: it reads the same folder ID key as List.
+        """
+        settings = getattr(self.launcher, 'settings', None)
+        if settings is None:
+            return items  # Headless older launchers and other callers.
+        mode = load_directory_sort(settings, folder, SORT_LABELS)
+        pinned, physical, remaining = [], [], []
+        for item in items:
+            info = item.data(_DATA_ROLE) or {}
+            if info.get('current_folder'):
+                pinned.append(item)
+                continue
+            path = info.get('path')
+            if not path:
+                remaining.append(item)
+                continue
+            physical.append((not bool(info.get('file')), path, item.text(), item))
+        if not physical:
+            return items
+        return (pinned + remaining +
+                sort_physical_popup_records(physical, mode))
 
     def _file_entries(self, folder):
         try:
@@ -845,6 +879,9 @@ class SlashExpMenu(QMenu):
             if os.environ.get("FRB_SLASH_IME_TRACE") == "1":
                 from slash_ime_trace import checkpoint_ime
                 checkpoint_ime(self, "before_menu_focus_request")
+            # Native activation is essential for Windows IME composition.
+            # Don't substitute synthetic KeyEvents: they cannot start IME.
+            self.activateWindow()
             self.setFocus(Qt.FocusReason.OtherFocusReason)
             if os.environ.get("FRB_SLASH_IME_TRACE") == "1":
                 checkpoint_ime(self, "after_menu_focus_request")
@@ -1111,9 +1148,29 @@ class SlashExpMenu(QMenu):
         painter.end()
 
     def eventFilter(self, obj, event):
+        # The editor and the scroll viewport can receive a native keyboard
+        # ContextMenu event instead of Key_Menu: route both to Right rather
+        # than opening an unrelated QLineEdit / tree context menu.
+        if (obj is self._search_edit or
+                self._scroll_tree is not None and obj in
+                (self._scroll_tree, self._scroll_tree.viewport())):
+            if event.type() == getattr(QEvent.Type, 'ContextMenu', None):
+                from PySide6.QtGui import QContextMenuEvent
+                if event.reason() != QContextMenuEvent.Reason.Keyboard:
+                    return super().eventFilter(obj, event)
+                if not (self._search_edit is not None and
+                        getattr(self._search_edit, 'ime_composing', False)):
+                    self._right_arrow_for_menu_key()
+                event.accept()
+                return True
         if (self._scroll_tree is not None and
                 obj in (self._scroll_tree, self._scroll_tree.viewport()) and
                 event.type() == QEvent.Type.KeyPress):
+            if (event.key() == getattr(Qt.Key, 'Key_Menu', None) and
+                    event.modifiers() == Qt.KeyboardModifier.NoModifier):
+                self._right_arrow_for_menu_key()
+                event.accept()
+                return True
             # Leave all navigation under the same / menu key contract.
             self.keyPressEvent(event)
             return event.isAccepted()
@@ -1123,6 +1180,11 @@ class SlashExpMenu(QMenu):
             # composition is committed/cancelled by the native editor.
             if getattr(self._search_edit, 'ime_composing', False):
                 return False
+            if (event.key() == getattr(Qt.Key, 'Key_Menu', None) and
+                    event.modifiers() == Qt.KeyboardModifier.NoModifier):
+                self._right_arrow_for_menu_key()
+                event.accept()
+                return True
             # Slash is still the menu toggle outside IME composition.
             if is_slash_shortcut(event.key(), event.text(), event.modifiers()):
                 self.root_menu.close()
@@ -1130,7 +1192,7 @@ class SlashExpMenu(QMenu):
                 return True
             if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down,
                                Qt.Key.Key_Right, Qt.Key.Key_Left,
-                               Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                               getattr(Qt.Key, 'Key_Menu', None), Qt.Key.Key_Return, Qt.Key.Key_Enter,
                                Qt.Key.Key_Escape):
                 self.keyPressEvent(event)
                 return True
@@ -1271,6 +1333,35 @@ class SlashExpMenu(QMenu):
             self._restore_position_queued = True
             QTimer.singleShot(0, self._restore_popup_position)
 
+    def _operation_popup_x(self, action):
+        """Anchor a *command* column just beyond the visible row caption.
+
+        Folder-browsing columns still cascade at the parent column edge.
+        The width of the entire popup must never become a stand-in for the
+        width of a selected filename.  Use the displayed (possibly elided)
+        caption for BOTH regular QMenu rows and long fixed-scroll rows.
+        """
+        if self._scroll_tree is not None:
+            item = self._scroll_items.get(action)
+            if item is None:
+                return None
+            label = item.text(0) if hasattr(item, 'text') else getattr(item, 'caption', '')
+            viewport = self._scroll_tree.viewport()
+            start = viewport.mapToGlobal(QPoint(0, 0)).x() + 29
+            measure = self._scroll_tree
+        else:
+            rect = self.actionGeometry(action)
+            if not rect.isValid():
+                return None
+            label = action.text()
+            start = self.mapToGlobal(QPoint(getattr(rect, 'left', lambda: 0)() + 35, 0)).x()
+            measure = self
+        # Keep the folder/file caption readable, with a comfortable gap.
+        # If the text almost fills the column, fall back to its usual edge.
+        caption_end = start + _approx_text_width(measure, label)
+        right_edge = self.mapToGlobal(QPoint(self.width() - 1, 0)).x()
+        return min(caption_end + 28, right_edge)
+
     def _align_open_submenu(self, action, submenu):
         """Place a new column once beside its row; never move it on scrolling."""
         if not submenu.isVisible():
@@ -1300,6 +1391,14 @@ class SlashExpMenu(QMenu):
         width = submenu.width()
         height = submenu.height()
         x = point.x()
+        # Operations (Copy/Paste/Rename/etc.) float next to the selected
+        # caption, not at the far right of a wide exploration column.
+        # Do not affect ordinary folder-to-folder cascading or operation
+        # submenu placement within the blue command column.
+        if self._context_source is None and submenu._context_source is not None:
+            nearby = self._operation_popup_x(action)
+            if nearby is not None:
+                x = nearby
         # Prefer the right; fall back to immediately left of *this* column.
         if x + width > available.right() + 1:
             x = self.mapToGlobal(QPoint(0, 0)).x() - width + 1
@@ -1427,8 +1526,28 @@ class SlashExpMenu(QMenu):
                 return
         super().mouseReleaseEvent(event)
 
+    def _right_arrow_for_menu_key(self):
+        '''One route for the physical Menu key and the existing Right arrow.'''
+        event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
+                          Qt.KeyboardModifier.NoModifier)
+        self.keyPressEvent(event)
+
+    def event(self, event):
+        # Windows' keyboard context-menu key may arrive as QContextMenuEvent
+        # instead of Key_Menu. Never let Qt turn it into a different native
+        # action, changing the Files Exp/List current-row state.
+        if event.type() == getattr(QEvent.Type, 'ContextMenu', None):
+            from PySide6.QtGui import QContextMenuEvent
+            if event.reason() != QContextMenuEvent.Reason.Keyboard:
+                return super().event(event)
+            self._right_arrow_for_menu_key()
+            event.accept()
+            return True
+        return super().event(event)
+
     def keyPressEvent(self, event):
-        key = event.key()
+        menu_key = (event.key() == getattr(Qt.Key, 'Key_Menu', None))
+        key = Qt.Key.Key_Right if menu_key else event.key()
         # If this QMenu (rather than the embedded editor) currently has OS
         # input focus, a Japanese preedit can still be active in that editor.
         # Navigation/escape/confirmation must not eat IME candidate keys.
@@ -1436,7 +1555,7 @@ class SlashExpMenu(QMenu):
                 and getattr(self._search_edit, 'ime_composing', False)
                 and key in (Qt.Key.Key_Up, Qt.Key.Key_Down,
                             Qt.Key.Key_Left, Qt.Key.Key_Right,
-                            Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                            getattr(Qt.Key, 'Key_Menu', None), Qt.Key.Key_Return, Qt.Key.Key_Enter,
                             Qt.Key.Key_Escape)):
             event.accept()
             return
@@ -1444,6 +1563,13 @@ class SlashExpMenu(QMenu):
             self.root_menu.close()
             event.accept()
             return
+        if menu_key and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            event.accept()  # Suppress Qt's native Menu-key context popup.
+            # Right is already the approved command/child-menu dispatch.
+            # Use that identical Qt event when entering the native submenu
+            # show path, instead of handing Qt a Key_Menu event.
+            event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
+                              Qt.KeyboardModifier.NoModifier)
         if event.modifiers() not in (Qt.KeyboardModifier.NoModifier,
                                      Qt.KeyboardModifier.ShiftModifier):
             return super().keyPressEvent(event)
@@ -1561,6 +1687,52 @@ def focus_first_files_list_after_slash_enter(launcher):
     return True
 
 
+class _SlashToolDismissGuard(QObject):
+    """Restore click-away dismissal when Qt.Tool replaces Qt.Popup.
+
+    This filter observes only mouse *presses*. Keyboard and IME events are
+    never intercepted, so all existing Search/Right/Left/Enter behavior stays
+    with the menu. Clicking inside any column (including a child editor) is
+    not a dismissal. Clicking elsewhere in Launch closes the complete chain.
+    """
+
+    def __init__(self, root):
+        super().__init__(root)
+        self.root = root
+
+    def eventFilter(self, obj, event):
+        if (event.type() != QEvent.Type.MouseButtonPress
+                or not self.root.isVisible() or not isinstance(obj, QWidget)):
+            return False
+        widget = obj
+        while widget is not None:
+            if (isinstance(widget, SlashExpMenu)
+                    and widget.root_menu is self.root):
+                return False
+            widget = widget.parentWidget()
+        self.root.close()
+        return False  # The click must still reach its intended target.
+
+
+def _slash_tool_chain_has_composition(menu):
+    """Do not close while native IME is selecting conversion candidates."""
+    editor = getattr(menu, '_search_edit', None)
+    if editor is not None and getattr(editor, 'ime_composing', False):
+        return True
+    for child in (*menu._submenus.values(), *menu._context_menus.values()):
+        if child.isVisible() and _slash_tool_chain_has_composition(child):
+            return True
+    return False
+
+
+def _close_visible_slash_children(menu):
+    """Tool submenu windows must never outlive their closed root."""
+    for child in (*menu._submenus.values(), *menu._context_menus.values()):
+        if child.isVisible():
+            _close_visible_slash_children(child)
+            child.close()
+
+
 def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
                         list_bottom_y=None, source_item=None, list_height=None,
                         parent_left=None):
@@ -1571,8 +1743,8 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
             previous.close()
         except RuntimeError:
             pass
-    # Parent to Launch's topmost window so the native Popup remains above
-    # Launch/Remote on Windows and returns focus when dismissed.
+    # Parent to Launch's topmost window. Qt.Tool becomes an active native
+    # window for Japanese IME and our guard provides outside-click closing.
     menu = SlashExpMenu(launcher, panel, source_item=source_item, parent=launcher)
     if list_height is not None:
         # New floating mode: Launch window may be shorter than this popup.
@@ -1608,12 +1780,40 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
         menu.deleteLater()
         return False
     launcher._slash_exp_navigation_menu = menu
+    application = QApplication.instance()
+    click_guard = _SlashToolDismissGuard(menu) if application is not None else None
+    if click_guard is not None:
+        application.installEventFilter(click_guard)
+
+    def on_app_state_changed(state):
+        # An external application can receive a click without Qt delivering
+        # a MouseButtonPress to us.  Close on app deactivation, but leave IME
+        # candidate selection alone while its preedit is active.
+        if (state == Qt.ApplicationState.ApplicationInactive and menu.isVisible()
+                and not _slash_tool_chain_has_composition(menu)):
+            QTimer.singleShot(50, lambda: menu.close()
+                              if (menu.isVisible() and
+                                  application.applicationState() ==
+                                      Qt.ApplicationState.ApplicationInactive and
+                                  not _slash_tool_chain_has_composition(menu))
+                              else None)
+
+    if application is not None:
+        application.applicationStateChanged.connect(on_app_state_changed)
 
     def on_hidden():
         if getattr(launcher, '_slash_exp_navigation_menu', None) is menu:
             launcher._slash_exp_navigation_menu = None
+        _close_visible_slash_children(menu)
+        if application is not None:
+            if click_guard is not None:
+                application.removeEventFilter(click_guard)
+            try:
+                application.applicationStateChanged.disconnect(on_app_state_changed)
+            except (TypeError, RuntimeError):
+                pass
         # Context actions are scheduled on the next tick, never delete them
-        # before the popup's focus restoration has completed.
+        # before the menu's focus restoration has completed.
         QTimer.singleShot(250, menu.deleteLater)
 
     menu.aboutToHide.connect(on_hidden)
@@ -1648,7 +1848,7 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
     QTimer.singleShot(0, lambda m=menu: m._pin_popup_position(m.pos())
                       if m.isVisible() else None)
     menu._focus_search_for_ime()
-    # Qt.Popup may reassign focus once the first show event settles; restore
+    # Native activation may reassign focus once the first show event settles; restore
     # the actual input widget after that, never through a synthetic key event.
     QTimer.singleShot(0, lambda m=menu: m._focus_search_for_ime())
     return True

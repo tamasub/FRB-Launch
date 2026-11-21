@@ -60,11 +60,16 @@ def test_view_wiring_and_appearance():
     assert "tree.setHeaderLabels(['名前', '更新日', 'サイズ', '種類', ''])" in view
     assert 'header.setSectionsMovable(True)' in view
     assert 'header.sectionClicked.connect(self._middle_header_clicked)' in view
-    assert 'header.sectionResized.connect(self._save_middle_header_state)' in view
-    assert 'header.sectionMoved.connect(self._save_middle_header_state)' in view
+    assert 'header.sectionResized.connect(' in view
+    assert "self._save_middle_header_state('resize', logical)" in view
+    assert 'header.sectionMoved.connect(' in view
+    assert "self._save_middle_header_state('move', logical)" in view
     assert 'expanded_middle_header_state_v50' in view
     assert 'header.restoreState(saved)' in view
-    assert 'self.middle.tree.header().saveState()' in view
+    # v20261121: the legacy global header is a baseline, while per-folder
+    # geometry uses ID-based width/order differences (no global save).
+    assert 'capture_header_layout(self.middle.tree.header())' in view
+    assert 'save_header_layout(self.launcher.settings, key,' in view
     assert '#81928a' in view and '#a1afa8' in view
     assert 'self.middle_sort_button = ' not in view
     assert 'view.middle_sort_button' not in app

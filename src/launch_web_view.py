@@ -29,6 +29,31 @@ from history_wheel_navigation import history_target_index, warp_to_history_row
 from PySide6.QtGui import QCursor, QColor, QPainter
 
 
+class _SelectAllAddressLineEdit(QLineEdit):
+    """A simple URL-bar click selects the full URL for quick replacement.
+
+    Mouse dragging still selects a substring; keyboard selection, Ctrl+C,
+    context menu and right-click behavior are delegated to QLineEdit.
+    """
+
+    def mousePressEvent(self, event):
+        self._click_start = (event.position().toPoint()
+                             if event.button() == Qt.MouseButton.LeftButton
+                             else None)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        was_click = (event.button() == Qt.MouseButton.LeftButton
+                     and getattr(self, '_click_start', None) is not None
+                     and (event.position().toPoint() - self._click_start).manhattanLength()
+                         <= QApplication.startDragDistance())
+        self._click_start = None
+        super().mouseReleaseEvent(event)
+        if was_click:
+            # Defer until the native line edit has finished its mouse release.
+            QTimer.singleShot(0, lambda: self.selectAll() if self.hasFocus() else None)
+
+
 class _ResizePreview(QWidget):
     """Opaque, in-memory last-frame preview during a live Windows resize.
 
@@ -545,7 +570,7 @@ class LaunchWebView(QFrame):
         address_row = QHBoxLayout(self.address_shell)
         address_row.setContentsMargins(5, 0, 4, 0)
         address_row.setSpacing(1)
-        self.address = QLineEdit(self.address_shell)
+        self.address = _SelectAllAddressLineEdit(self.address_shell)
         self.address.setObjectName('launchWebAddress')
         self.address.setPlaceholderText('https://...')
         self.address.returnPressed.connect(self.open_address)

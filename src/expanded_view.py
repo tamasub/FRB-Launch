@@ -3,7 +3,7 @@
 This is a QWidget INSIDE the main window (never a second Qt.Tool popup).
 All rows/actions are supplied by Launcher and use its existing menu data.
 """
-from PySide6.QtCore import Qt, QPoint, QPointF, QSize, QTimer, QEvent, QRectF, QFileInfo, Signal, QMimeData
+from PySide6.QtCore import Qt, QPoint, QPointF, QSize, QTimer, QEvent, QRectF, QFileInfo, QFileSystemWatcher, Signal, QMimeData
 from PySide6.QtGui import QDrag, QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPixmap, QLinearGradient, QPen, QPalette, QCursor
 from PySide6.QtWidgets import (QApplication, QFrame, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QPushButton, QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
@@ -11,6 +11,9 @@ from PySide6.QtWidgets import (QApplication, QFrame, QWidget, QHBoxLayout, QVBox
 
 from file_drag import ExternalFileDragTree
 
+from visible_directory_watch import (
+    normalized_watch_path, breadcrumb_parent_watches, physical_crumb_paths,
+    stat_directory_identity, relocated_crumb_directory)
 from directory_address import (breadcrumb_segments, compact_segments,
                                directory_row, row_directory, normalized_directory)
 from browser_nav_icons import browser_navigation_icon
@@ -33,6 +36,9 @@ from middle_column_presentation import (FILES_HEADERS, LAUNCH_HEADERS,
     virtual_description, virtual_item_kind)
 from folder_sort_preferences import (DEFAULT_SORT, load_directory_sort,
                                      save_directory_sort)
+from folder_header_preferences import (apply_header_layout, capture_header_layout,
+                                       header_layout_key, load_header_layout,
+                                       save_header_layout)
 from windows_shellnew import discover_shellnew, suggest_name, create_new_item
 from folder_favorites import FolderFavorites
 from files_list_search_history import FilesListSearchHistory
@@ -1456,6 +1462,29 @@ class ExpandedLauncherView(QWidget):
         self._initial_files_location_committed = False
         self._restoring_directory_history = False
         self._refreshing = False
+        # Watch exactly the physical directory currently visible in Files List.
+        # Signals are coalesced and consume the same F5 re-enumeration path.
+        self._file_list_directory_watcher = QFileSystemWatcher(self)
+        self._file_list_directory_watcher.directoryChanged.connect(
+            self._queue_file_list_auto_refresh)
+        self._file_list_watched_directory = ''
+        self._file_list_refresh_pending_path = ''
+        self._file_list_refresh_timer = QTimer(self)
+        self._file_list_refresh_timer.setSingleShot(True)
+        self._file_list_refresh_timer.setInterval(1000)
+        self._file_list_refresh_timer.timeout.connect(self._flush_file_list_auto_refresh)
+        # Breadcrumb labels represent physical ancestors, not just List's
+        # current directory. Watch their parents to notice Explorer renames.
+        self._breadcrumb_directory_watcher = QFileSystemWatcher(self)
+        self._breadcrumb_directory_watcher.directoryChanged.connect(
+            self._queue_breadcrumb_auto_refresh)
+        self._breadcrumb_watched_directories = set()
+        self._breadcrumb_pending_directories = set()
+        self._breadcrumb_directory_identities = {}
+        self._breadcrumb_refresh_timer = QTimer(self)
+        self._breadcrumb_refresh_timer.setSingleShot(True)
+        self._breadcrumb_refresh_timer.setInterval(1000)
+        self._breadcrumb_refresh_timer.timeout.connect(self._flush_breadcrumb_auto_refresh)
         # Column-2 fallback selection: remember per directory, not per tree
         # item (QTreeWidgetItem instances are recreated on folder refresh).
         self._middle_current_memory = None
@@ -1653,6 +1682,11 @@ class ExpandedLauncherView(QWidget):
         self.middle.virtual_details_columns = False
         self._middle_header_virtual = False
         self._physical_middle_header_state = None
+        self._middle_header_layout_directory = None
+        self._middle_header_layout_key = None
+        self._middle_header_baseline = None
+        self._middle_header_last_saved_layout = None
+        self._middle_header_mouse_down = False  # not Qt auto-resize
         # Each visited filesystem directory owns an optional sort override.
         # The old global setting is intentionally ignored: uncustomized
         # directories always start with the Explorer-style standard sort.
@@ -1720,6 +1754,12 @@ class ExpandedLauncherView(QWidget):
         self.middle_search.setClearButtonEnabled(True)
         self.middle_search.setToolTip('このフォルダー内の名前を絞り込み。メイン検索と同じAND/OR構文。')
         middle_search_layout.addWidget(self.middle_search, 1)
+        # Files List uses the proven Windows Shell file D&D by default.
+        # The hidden [General] files_list_explorer_drag=false ini escape hatch
+        # restores the original Qt URL drag; no UI toggle or state write.
+        from files_list_drag_settings import files_list_shell_drag_enabled
+        self.middle.tree.native_shell_drag_mode = files_list_shell_drag_enabled(
+            self.launcher.settings)
         self.middle.layout_box.insertWidget(0, self.middle_search_bar)
         self.middle_search.textChanged.connect(self.apply_middle_filter)
         # Explorer-style real columns, with a stretchable blank last column.
@@ -1760,8 +1800,19 @@ class ExpandedLauncherView(QWidget):
             self._middle_header_restoring = False
         # The blank end column absorbs space, not the data columns.
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        header.sectionResized.connect(self._save_middle_header_state)
-        header.sectionMoved.connect(self._save_middle_header_state)
+        # Keep the preexisting global v50 layout as a compatibility baseline.
+        # Individual physical folders persist ONLY departures from it.
+        self._middle_header_baseline = capture_header_layout(header)
+        self._middle_header_last_saved_layout = self._middle_header_baseline
+        # sectionResized is ALSO emitted when layouts/window widths change.
+        # Only an actual pointer gesture on the header is a saved preference.
+        self._middle_header_widget = header
+        header.installEventFilter(self)
+        header.viewport().installEventFilter(self)  # mouse often hits header's viewport
+        header.sectionResized.connect(
+            lambda logical, old, new: self._save_middle_header_state('resize', logical))
+        header.sectionMoved.connect(
+            lambda logical, old, new: self._save_middle_header_state('move', logical))
         header.sectionClicked.connect(self._middle_header_clicked)
         header.setSortIndicatorShown(True)
         self._update_middle_header_sort()
@@ -1930,6 +1981,10 @@ class ExpandedLauncherView(QWidget):
         self.files_splitter.splitterMoved.connect(
             lambda *_: self.queue_rail_wheel_position())
         self.files_splitter.installEventFilter(self)
+        # Only the actual drag handle may update the user's fixed Exp width.
+        self._exp_handle_dragging = False
+        self._files_exp_drag_handle = self.files_splitter.handle(1)
+        self._files_exp_drag_handle.installEventFilter(self)
         # setSizes() and preview show/hide do NOT emit splitterMoved. Keep
         # the round WheelPad pinned to the real Exp/List handle as Qt settles
         # after native third-column docking/undocking.
@@ -2072,9 +2127,24 @@ class ExpandedLauncherView(QWidget):
                 self.files_splitter.setSizes(file_widths)
         except ValueError:
             pass
+        # The user's Exp width is an absolute number of pixels (not a ratio).
+        # Import an old embedded splitter first width only as an initial value;
+        # window maximization must never rewrite it.
+        from files_layout_widths import desired_exp_width
+        legacy_widths = str(launcher.settings.value(
+            'workspace_files_exp_embedded_splitter_sizes', '') or '').split('|')
+        fallback_width = desired_exp_width(
+            legacy_widths[0] if legacy_widths else None, 275)
+        self._exp_desired_width_px = desired_exp_width(
+            launcher.settings.value('workspace_files_exp_desired_width_px', None),
+            fallback_width)
+        self._exp_width_applying = False
+        self._exp_width_restore_scheduled = False
         self.splitter.splitterMoved.connect(self.save_splitter_sizes)
         self.splitter.splitterMoved.connect(lambda *_: self.root_widget.refresh_underline())
+        self.files_splitter.splitterMoved.connect(self._on_files_splitter_user_moved)
         self.files_splitter.splitterMoved.connect(self.save_splitter_sizes)
+        QTimer.singleShot(0, self._queue_exp_width_restore)
         outer.addWidget(self.splitter, 1)
         self.row_density = str(launcher.settings.value('expanded_row_density', 'normal') or 'normal')
         if self.row_density not in ('normal', 'compact'):
@@ -2215,6 +2285,71 @@ class ExpandedLauncherView(QWidget):
             self.files_splitter.setSizes(sizes)
         finally:
             self._preview_layout_restoring = False
+
+    def _record_exp_handle_width(self):
+        if (getattr(self, '_exp_width_applying', False)
+                or getattr(self, '_preview_layout_restoring', False)
+                or self._workspace_mode != 'files'
+                or not getattr(self.launcher, 'files_exp_embedded_mode', False)
+                or getattr(self.launcher, 'remote_15_mode', False)):
+            return
+        sizes = self.files_splitter.sizes()
+        if not sizes or sizes[0] < 100:
+            return
+        new_width = int(sizes[0])
+        if new_width != self._exp_desired_width_px:
+            self._exp_desired_width_px = new_width
+            self.launcher.settings.setValue('workspace_files_exp_desired_width_px',
+                                            new_width)
+            self.launcher.settings.sync()
+        if self._preview_maximized:
+            QTimer.singleShot(0, self._apply_third_column_maximized)
+
+    def _on_files_splitter_user_moved(self, _position, index):
+        """A splitter resize signal alone is not evidence of mouse intent."""
+        if index != 1:
+            if not self._preview_maximized:
+                self._queue_exp_width_restore()
+            return
+        if not getattr(self, '_exp_handle_dragging', False):
+            self._queue_exp_width_restore()
+            return
+        self._record_exp_handle_width()
+
+    def _queue_exp_width_restore(self):
+        """Defer until Qt has allocated layout sizes after a window resize."""
+        if getattr(self, '_exp_width_restore_scheduled', False):
+            return
+        self._exp_width_restore_scheduled = True
+        QTimer.singleShot(0, self._restore_exp_width_after_layout)
+
+    def _restore_exp_width_after_layout(self):
+        self._exp_width_restore_scheduled = False
+        if (getattr(self, '_exp_width_applying', False)
+                or not getattr(self.launcher, 'files_exp_embedded_mode', False)
+                or getattr(self.launcher, 'remote_15_mode', False)
+                or self._workspace_mode != 'files'
+                or not self.files_splitter.isVisible()):
+            return
+        if self._preview_maximized:
+            self._apply_third_column_maximized()
+            return
+        from files_layout_widths import resize_with_fixed_exp
+        sizes = self.files_splitter.sizes()
+        third = self._visible_third_column()
+        index = (self.files_splitter.indexOf(third)
+                 if third is not None else None)
+        chosen = resize_with_fixed_exp(
+            sizes, self._exp_desired_width_px,
+            third_index=index if index is not None and index >= 2 else None)
+        if chosen == sizes:
+            return
+        self._exp_width_applying = True
+        try:
+            self.files_splitter.setSizes(chosen)
+        finally:
+            self._exp_width_applying = False
+        self._queue_third_column_reflow()
 
     def save_splitter_sizes(self, *_):
         if getattr(self, '_preview_maximized', False):
@@ -2378,6 +2513,11 @@ class ExpandedLauncherView(QWidget):
         super().showEvent(event)
         if hasattr(self, 'rail_wheel'):
             QTimer.singleShot(0, self.update_rail_wheel_visibility)
+        # Revisit a change noticed while Launch was hidden/minimized.
+        if getattr(self, '_file_list_refresh_pending_path', ''):
+            self._file_list_refresh_timer.start()
+        if getattr(self, '_breadcrumb_pending_directories', None):
+            self._breadcrumb_refresh_timer.start()
 
     def apply_theme(self, theme):
         self.embedded_files_exp.apply_theme(theme)
@@ -2566,6 +2706,13 @@ class ExpandedLauncherView(QWidget):
             QToolButton#expandedMiddleSearchHistoryButton {{background:{bg};color:{text};
                 border:1px solid {border};border-radius:7px;padding:0;}}
             QToolButton#expandedMiddleSearchHistoryButton:hover {{background:{hover};}}
+            QToolButton#expandedTextDragMode {{background:{bg};color:{text};
+                border:1px solid {border};border-radius:7px;padding:0 3px;font-size:11px;}}
+            QToolButton#expandedTextDragMode:hover {{background:{hover};}}
+            QToolButton#expandedTextDragMode:checked {{
+                background:{'#d9ebe0' if light else '#556b59'};
+                border:1px solid {'#529b7d' if light else '#9bd3b2'};
+                color:{text};font-weight:bold;}}
             QMenu#filesListSearchHistoryMenu {{background:{colors['history_bg']};
                 color:{colors['history_text']};border:1px solid {colors['history_border']};
                 padding:4px;}}
@@ -2859,11 +3006,59 @@ class ExpandedLauncherView(QWidget):
         finally:
             self._refreshing = False
 
-    def _save_middle_header_state(self, *_):
+    def _save_middle_header_state(self, action='resize', logical=None):
+        """Save only a deliberate column-resize/reorder gesture, not Qt geometry.
+
+        The *stored* Name section width is independent of List viewport
+        contraction caused by third-column maximize or window resizing.
+        """
+        if (self._middle_header_restoring or self._middle_header_virtual
+                or not self._middle_header_mouse_down):
+            return
+        if action == 'resize' and logical == 4:
+            return  # stretch spacer's auto-resize never becomes a preference
+        key = self._middle_header_layout_key
+        if key and self._middle_header_baseline is not None:
+            layout = capture_header_layout(self.middle.tree.header())
+            if layout != self._middle_header_last_saved_layout:
+                save_header_layout(self.launcher.settings, key, layout,
+                                   self._middle_header_baseline)
+                self._middle_header_last_saved_layout = layout
+                self.launcher.settings.sync()
+        if action == 'resize' and logical == 0 and self._preview_maximized:
+            # The List's maximized viewport derives from the same Name width.
+            QTimer.singleShot(0, self._apply_third_column_maximized)
+
+    def _finish_middle_header_user_gesture(self):
+        """Capture the final value even when Qt emits resize on mouse release."""
         if self._middle_header_restoring or self._middle_header_virtual:
             return
-        self.launcher.settings.setValue('expanded_middle_header_state_v50',
-                                        self.middle.tree.header().saveState())
+        self._middle_header_mouse_down = True
+        try:
+            self._save_middle_header_state('finish')
+        finally:
+            self._middle_header_mouse_down = False
+        if self._preview_maximized:
+            self._apply_third_column_maximized()
+
+    def _restore_middle_header_for_directory(self, directory):
+        """One filesystem ID lookup on navigation; no scan or timer polling."""
+        if directory == self._middle_header_layout_directory:
+            return
+        key = header_layout_key(directory) if directory else None
+        self._middle_header_layout_directory = directory
+        self._middle_header_layout_key = key  # Resizes use this cached ID.
+        baseline = self._middle_header_baseline
+        if baseline is None:
+            return
+        chosen = load_header_layout(self.launcher.settings, key, baseline)
+        self._middle_header_restoring = True
+        try:
+            apply_header_layout(self.middle.tree.header(), chosen)
+            self._middle_header_last_saved_layout = capture_header_layout(
+                self.middle.tree.header())
+        finally:
+            self._middle_header_restoring = False
 
     def _set_middle_columns_for_source(self, virtual):
         """Swap List headers/visible columns without touching saved Files layout.
@@ -3375,7 +3570,180 @@ class ExpandedLauncherView(QWidget):
             direct_root=getattr(self, '_direct_entry_root', None),
             registered_root=getattr(self, '_registered_root_origin', None))
 
+    def _sync_file_list_directory_watch(self):
+        """Follow the physical List folder; never watch virtual JSON folders."""
+        watcher = self._file_list_directory_watcher
+        folder = (self.current_directory()
+                  if self._workspace_mode == 'files'
+                  and getattr(self, '_virtual_directory_node', None) is None else None)
+        target = (os.path.normcase(os.path.abspath(os.fspath(folder)))
+                  if folder and os.path.isdir(folder) else '')
+        old = self._file_list_watched_directory
+        if old != target:
+            self._file_list_refresh_timer.stop()
+            self._file_list_refresh_pending_path = ''
+            if old:
+                watcher.removePath(old)
+            self._file_list_watched_directory = target
+        # Windows may discard a watch when its folder is moved/deleted.
+        if target and target not in watcher.directories():
+            watcher.addPath(target)
+
+    def _sync_breadcrumb_directory_watch(self):
+        """Watch only the physical ancestor labels currently on the Files bar.
+
+        No polling, no JSON virtual-folder watching, no implicit navigation.
+        """
+        bar = getattr(self, 'address_bar', None)
+        segments = (getattr(bar, '_segments', ()) if bar is not None else ())
+        desired = set(breadcrumb_parent_watches(segments)) if (
+            self._workspace_mode == 'files' and
+            getattr(self, '_virtual_directory_node', None) is None) else set()
+        watcher = self._breadcrumb_directory_watcher
+        existing = set(watcher.directories())
+        for path in existing - desired:
+            watcher.removePath(path)
+        for path in desired - existing:
+            watcher.addPath(path)
+        self._breadcrumb_watched_directories = desired
+        self._breadcrumb_pending_directories.intersection_update(desired)
+        # Keep known file IDs until the pending notification was processed:
+        # after an Explorer rename the old crumb no longer exists on disk.
+        known = self._breadcrumb_directory_identities
+        tracked = set(physical_crumb_paths(segments))
+        for path in list(known):
+            if path not in tracked:
+                del known[path]
+        for path in tracked:
+            identity = stat_directory_identity(path)
+            if identity is not None:
+                known[path] = identity
+
+    def _queue_breadcrumb_auto_refresh(self, directory):
+        directory = normalized_watch_path(directory)
+        if directory not in self._breadcrumb_watched_directories:
+            return
+        self._breadcrumb_pending_directories.add(directory)
+        self._breadcrumb_refresh_timer.start()
+
+    def _flush_breadcrumb_auto_refresh(self):
+        pending = self._breadcrumb_pending_directories
+        if not pending:
+            return
+        if self._workspace_mode != 'files' or self._virtual_directory_node is not None:
+            pending.clear()
+            return
+        if not self.isVisible():
+            return  # Re-check when the Files workspace is shown again.
+        tree = self.middle.tree
+        if (tree.state() in (QAbstractItemView.State.EditingState,
+                             QAbstractItemView.State.DraggingState)
+                or getattr(self, '_inline_rename_active', False)
+                or getattr(self.launcher, '_filesystem_dialog_depth', 0) > 0
+                or self._refreshing):
+            self._breadcrumb_refresh_timer.start()
+            return
+        pending.clear()
+        directory = self.current_directory()
+        if directory and not os.path.isdir(directory):
+            # Rebase *only* a same-parent rename of a known physical crumb.
+            # A registered/JSON root is an authored link: it must not be
+            # silently rewritten by the auto-refresh feature.
+            moved = relocated_crumb_directory(
+                directory, self.address_bar._segments,
+                self._breadcrumb_directory_identities)
+            if moved:
+                old_path, new_path = moved
+                anchors = (getattr(self, '_direct_entry_root', None),
+                           (getattr(self, '_registered_root_origin', None) or {}).get('root_path'),
+                           (getattr(self, '_filesystem_entry_origin', None) or {}).get('entry_path'))
+                if all(normalized_watch_path(a) != old_path for a in anchors if a):
+                    self._follow_visible_crumb_rename(new_path)
+                    return
+        # Files List and breadcrumb still show their previous path if an
+        # authored root was removed/moved; never navigate to a guess.
+        if directory and os.path.isdir(directory):
+            segments = self._physical_breadcrumb_segments(directory)
+            if segments is not None:
+                self.address_bar.set_logical_directory(
+                    segments, physical_path=directory)
+            else:
+                self.address_bar.set_directory(directory)
+        self._sync_breadcrumb_directory_watch()  # Re-arm discarded OS watches.
+
+    def _follow_visible_crumb_rename(self, new_path):
+        """Follow a verified same-parent rename without a history entry.
+
+        Keep the selected file *name* and list scroll if the same physical
+        folder has merely acquired a new absolute path in Explorer.
+        """
+        tree = self.middle.tree
+        chosen = tree.currentItem()
+        row = self.row_data(chosen) if chosen is not None else None
+        current_name = row.get('title') if row else None
+        selected_names = {self.row_data(i).get('title') for i in tree.selectedItems()
+                          if self.row_data(i)}
+        scroll = tree.verticalScrollBar().value()
+        previous = self._restoring_directory_history
+        self._restoring_directory_history = True
+        try:
+            if not self.go_to_directory(new_path, preserve_remote_popup=True):
+                return False
+            recovered = None
+            for pos in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(pos)
+                item_data = self.row_data(item) or {}
+                if item_data.get('title') == current_name:
+                    recovered = item
+                if item_data.get('title') in selected_names:
+                    item.setSelected(True)
+            if recovered is not None:
+                tree.setCurrentItem(recovered)
+            tree.verticalScrollBar().setValue(scroll)
+            return True
+        finally:
+            self._restoring_directory_history = previous
+            self._sync_breadcrumb_directory_watch()
+
+    def _queue_file_list_auto_refresh(self, directory):
+        """Coalesce Explorer renames/copies into one non-navigating refresh."""
+        normalized = os.path.normcase(os.path.abspath(os.fspath(directory)))
+        if normalized != self._file_list_watched_directory:
+            return  # Late notification for the folder we just left.
+        self._file_list_refresh_pending_path = normalized
+        self._file_list_refresh_timer.start()
+
+    def _flush_file_list_auto_refresh(self):
+        pending = self._file_list_refresh_pending_path
+        if not pending or pending != self._file_list_watched_directory:
+            return
+        current = self.current_directory()
+        if (self._workspace_mode != 'files'
+                or getattr(self, '_virtual_directory_node', None) is not None
+                or not current or os.path.normcase(os.path.abspath(current)) != pending):
+            self._file_list_refresh_pending_path = ''
+            return
+        if not self.isVisible():
+            # The next visible refresh/navigation will load the latest contents.
+            return
+        tree = self.middle.tree
+        if (tree.state() in (QAbstractItemView.State.EditingState,
+                             QAbstractItemView.State.DraggingState)
+                or getattr(self.launcher, '_filesystem_dialog_depth', 0) > 0
+                or getattr(self, '_refreshing', False)):
+            self._file_list_refresh_timer.start()  # Never replace an inline editor.
+            return
+        self._file_list_refresh_pending_path = ''
+        previous = getattr(self, '_in_place_files_refresh', False)
+        self._in_place_files_refresh = True
+        try:
+            self.refresh_current_directory()  # F5 logic: preserve selection/scroll.
+        finally:
+            self._in_place_files_refresh = previous
+            self._sync_file_list_directory_watch()
+
     def refresh_middle(self):
+        self._sync_file_list_directory_watch()
         self._middle_back_hold.reset()
         self._middle_back_warp_pending = None
         virtual = getattr(self, '_virtual_directory_node', None)
@@ -3398,6 +3766,7 @@ class ExpandedLauncherView(QWidget):
                 self._middle_sort_mode = DEFAULT_SORT
                 self._middle_sort_directory = location
                 self._update_middle_header_sort()
+            self._sync_breadcrumb_directory_watch()
             self._fill_middle_from_current()
             self.update_directory_favorite_button()
             self._record_directory_location()
@@ -3417,10 +3786,12 @@ class ExpandedLauncherView(QWidget):
         else:
             self.address_bar.set_directory(physical,
                 current['title'] if current else '')
+        self._sync_breadcrumb_directory_watch()
         self.middle.back.setEnabled(bool(self.path))
         # Search is scoped to ONE displayed directory. A folder transition
         # must not unexpectedly leave the new folder blank due to old filters.
         folder = self.current_directory()
+        self._restore_middle_header_for_directory(folder)
         if folder != self._middle_sort_directory:
             self._middle_sort_directory = folder
             self._middle_sort_mode = load_directory_sort(
@@ -3848,6 +4219,8 @@ class ExpandedLauncherView(QWidget):
         current = tree.currentItem()
         current_row = self.row_data(current) if current else None
         current_name = current_row.get('title') if current_row else None
+        previous_index = (tree.indexOfTopLevelItem(current) if current is not None
+                          else -1)
         scroll = tree.verticalScrollBar().value()
         horizontal_bar = (tree.horizontalScrollBar()
                           if hasattr(tree, 'horizontalScrollBar') else None)
@@ -3861,6 +4234,11 @@ class ExpandedLauncherView(QWidget):
             name = row.get('title') if row else None
             if name == current_name:
                 restored_current = item
+        if restored_current is None and previous_index >= 0 and tree.topLevelItemCount():
+            # Explorer may have renamed the current file: preserve a nearby
+            # logical row rather than losing the keyboard current entirely.
+            restored_current = tree.topLevelItem(min(previous_index,
+                                                    tree.topLevelItemCount() - 1))
         if restored_current is not None:
             tree.setCurrentItem(restored_current)
         # setCurrentItem may reset the selection: put the multi-select set
@@ -4893,6 +5271,44 @@ class ExpandedLauncherView(QWidget):
         return True
 
     def eventFilter(self, obj, event):
+        # QHeaderView emits sectionResized for BOTH mouse drags and layout
+        # changes. A mouse gesture is the only source of saved desired widths.
+        header = getattr(self, '_middle_header_widget', None)
+        exp_handle = getattr(self, '_files_exp_drag_handle', None)
+        if obj is exp_handle:
+            if (event.type() == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton):
+                self._exp_handle_dragging = True
+            elif (event.type() == QEvent.Type.MouseButtonRelease
+                  and event.button() == Qt.MouseButton.LeftButton):
+                if getattr(self, '_exp_handle_dragging', False):
+                    self._exp_handle_dragging = False
+                    QTimer.singleShot(0, self._record_exp_handle_width)
+        if header is not None and obj in (header, header.viewport()):
+            if (event.type() == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton):
+                self._middle_header_mouse_down = True
+            elif (event.type() == QEvent.Type.MouseButtonRelease
+                  and event.button() == Qt.MouseButton.LeftButton):
+                if self._middle_header_mouse_down:
+                    self._middle_header_mouse_down = False
+                    QTimer.singleShot(0, self._finish_middle_header_user_gesture)
+            elif event.type() == QEvent.Type.Hide:
+                self._middle_header_mouse_down = False
+        # The physical Menu key is sometimes delivered as a keyboard-sourced
+        # ContextMenu event, bypassing the ordinary Key_Menu KeyPress path.
+        # Route it to the SAME Files List Right-arrow handler, without ever
+        # selecting a different row or treating it as an Exp-back action.
+        if (self.isVisible() and self._workspace_mode == 'files'
+                and obj in (self.middle.tree, self.middle.tree.viewport())
+                and event.type() == QEvent.Type.ContextMenu):
+            from PySide6.QtGui import QContextMenuEvent, QKeyEvent
+            if event.reason() == QContextMenuEvent.Reason.Keyboard:
+                right = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
+                                  Qt.KeyboardModifier.NoModifier)
+                if self.launcher.expanded_tree_key(self.middle.tree, right):
+                    event.accept()
+                    return True
         if self._guard_rail_underlay_click(obj, event):
             return True
         if self.keyboard_files_shortcuts(obj, event):
@@ -4967,6 +5383,8 @@ class ExpandedLauncherView(QWidget):
                 event.type() in (QEvent.Type.Resize, QEvent.Type.Move,
                                  QEvent.Type.Show)):
             self.queue_rail_wheel_position()
+            if event.type() == QEvent.Type.Resize:
+                self._queue_exp_width_restore()
             # Keep Exp/List at their minimum when the Launch window itself
             # is resized *during* Launch-local third-column maximization.
             if (event.type() == QEvent.Type.Resize and
@@ -6569,6 +6987,7 @@ class ExpandedLauncherView(QWidget):
     def _activate_browser_layout(self):
         """Show Browser + Bookmarks without discarding the Files column state."""
         self._workspace_mode = 'browser'
+        self._sync_breadcrumb_directory_watch()  # Visible Files-only watches.
         self.update_rail_wheel_visibility()
         self.set_browser_bookmarks_visible(False, persist=False)
         visible = False  # A horizontal bookmark bar now owns navigation.
@@ -6656,7 +7075,8 @@ class ExpandedLauncherView(QWidget):
                     from sakura_window_trace import trace
                     trace('ROUTE_FROM_FILES_LIST', file=Path(external.path).name,
                           embed_enabled=enabled, workspace_mode=self._workspace_mode)
-                if enabled:
+                from external_preview_route import dedicated_editor_available
+                if enabled and dedicated_editor_available(external):
                     # Vault-outside Obsidian documents open normally: 1.14's
                     # standalone file handling does not promise a pop-out HWND.
                     from external_preview_route import find_vault_root
@@ -6788,17 +7208,34 @@ class ExpandedLauncherView(QWidget):
         panel = self._visible_third_column()
         if panel is None:
             return
-        from third_column_maximize import maximize_sizes
+        from files_layout_widths import maximize_with_fixed_exp_and_name
         sizes = self.files_splitter.sizes()
         first_min = (386 if getattr(self.launcher, 'remote_15_mode', False)
                      else 190 if not getattr(self.launcher, 'files_root_hidden_mode', False)
                                    or getattr(self.launcher, 'files_exp_embedded_mode', False)
                      else 0)
-        list_min = max(190, self.middle.minimumWidth())
-        widths = maximize_sizes(
-            sizes, self.files_splitter.indexOf(panel), first_min, list_min)
+        list_min = max(170, self.middle.minimumWidth())
+        lane_widget = getattr(self, 'middle_back_lane', None)
+        back_lane = lane_widget.width() if lane_widget is not None else 24
+        header_source = getattr(getattr(self.middle, 'tree', None), 'header', None)
+        # Headless legacy clients/test harnesses may have only minimumWidth().
+        name_width = (header_source().sectionSize(0) if callable(header_source)
+                      else max(0, list_min - back_lane - 8))
+        desired_exp = (getattr(self, '_exp_desired_width_px', first_min)
+                       if getattr(self.launcher, 'files_exp_embedded_mode', False)
+                       and not getattr(self.launcher, 'remote_15_mode', False)
+                       else first_min)
+        widths = maximize_with_fixed_exp_and_name(
+            sizes, self.files_splitter.indexOf(panel),
+            exp_width=desired_exp, name_width=name_width,
+            back_lane=back_lane, first_min=first_min,
+            list_min=list_min)
         if sizes != widths:
-            self.files_splitter.setSizes(widths)
+            self._exp_width_applying = True
+            try:
+                self.files_splitter.setSizes(widths)
+            finally:
+                self._exp_width_applying = False
         self._sync_preview_maximize_buttons()
         self._queue_third_column_reflow()
 
@@ -6823,6 +7260,8 @@ class ExpandedLauncherView(QWidget):
             restore_sizes(sizes, self.files_splitter.indexOf(panel), original))
         self._sync_preview_maximize_buttons()
         self._queue_third_column_reflow()
+        if hasattr(self, '_queue_exp_width_restore'):
+            self._queue_exp_width_restore()
 
     def _restore_third_column_before_hide(self):
         """× preserves the normal divider preference, not maximized sizes."""
@@ -7126,6 +7565,10 @@ class ExpandedLauncherView(QWidget):
             if callable(hide_url_favorites):
                 hide_url_favorites()
         self._workspace_mode = 'files'
+        self._sync_breadcrumb_directory_watch()
+        self._sync_file_list_directory_watch()
+        if self._file_list_refresh_pending_path:
+            self._file_list_refresh_timer.start()
         self.files_content_stack.setCurrentWidget(self.files_group)
         self.update_rail_wheel_visibility()
         if getattr(self.launcher, 'files_exp_embedded_mode', False):
@@ -7294,6 +7737,8 @@ class ExpandedLauncherView(QWidget):
                 # This is an initial *ratio*, not a fixed window pixel size.
                 widths = [275, 725]
             self.files_splitter.setSizes(widths)
+            if hasattr(self, '_queue_exp_width_restore'):
+                self._queue_exp_width_restore()
         if enabled:
             self.set_browser_bookmarks_visible(False, persist=False)
             self.middle.tree.setProperty('remoteInactive', False)

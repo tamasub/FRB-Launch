@@ -26,7 +26,7 @@ from remote_text_dialog import RemoteTextDialog
 from remote_context_wheel import RemoteContextWheel
 from slash_exp_navigation import (popup_exp_navigator, slash_source_from_breadcrumb,
                                   slash_source_with_filled_list_folder,
-                                  slash_popup_row_anchor)
+                                  slash_popup_row_anchor, _row_text_anchor_local_x)
 from rod_foreground import foreground_owned_by_process
 from shuriken_model import configured_entries
 from shuriken_scroll_handoff import handoff_current_at_scroll_stop
@@ -89,6 +89,8 @@ from virtual_clipboard_paste import is_virtual_file_clipboard, virtual_clipboard
 from launch_virtual_tree import virtual_execution_row, virtual_bookmark_execution_row, virtual_lookup_node, virtual_studio_target
 from registered_folder_route import embedded_folder_target
 from launch_page_registration import commit_page_operation, page_operation_plan
+from launch_shell_tracking import tracking_target_update, update_record_changes, matches_original_tracking
+from shell_link_stream import ShellLinkError
 from launch_menu_registration import (RegistrationError, category_record, commit_add,
     prepare_delete, prepare_delete_many, commit_delete, read_item_for_edit, prepare_update, commit_update,
     prepare_move, commit_move,
@@ -12144,7 +12146,11 @@ class Launcher(QWidget):
         if self.page_key(event):
             event.accept()
             return True
-        key = event.key()
+        # Only Files List maps the keyboard context-menu key to its already
+        # approved Right-arrow action (Copy/Paste/etc.); never use Exp's
+        # 'return to column' navigation for this Windows key.
+        key = (Qt.Key.Key_Right if pane is self.expanded_view.middle
+               and event.key() == getattr(Qt.Key, 'Key_Menu', None) else event.key())
         if (event.modifiers() & Qt.KeyboardModifier.ControlModifier
                 and key == Qt.Key.Key_F):
             self.focus_search()
@@ -12272,6 +12278,23 @@ class Launcher(QWidget):
                 if item is not None and view.row_data(item) is not None:
                     rect = pane.tree.visualItemRect(item)
                     point = rect.center()
+                    # Put the operation menu near the *visible filename*,
+                    # rather than at the horizontal center of a wide List.
+                    # This changes presentation only: context_menu() still
+                    # resolves the EXACT same current row and selection.
+                    header_fn = getattr(pane.tree, 'header', None)
+                    if callable(header_fn) and hasattr(item, 'text'):
+                        header = header_fn()
+                        if (hasattr(header, 'sectionViewportPosition') and
+                                hasattr(header, 'sectionSize')):
+                            column_left = header.sectionViewportPosition(0)
+                            column_right = column_left + header.sectionSize(0)
+                            anchor_x = _row_text_anchor_local_x(
+                                pane.tree, cell_left=column_left,
+                                cell_right=column_right,
+                                label=item.text(0), gap=28)
+                            if rect.left() < anchor_x < rect.right():
+                                point = QPoint(anchor_x, rect.center().y())
                     position = pane.tree.viewport().mapToGlobal(point)
                     view.context_menu(pane, point, global_pos=position)
                     context = getattr(self, '_launch_context_menu', None)
@@ -14304,6 +14327,42 @@ class Launcher(QWidget):
             return False
         return bool(view.show_web_url(url, new_tab=True))
 
+    def _resolve_registered_shell_shortcut(self, row):
+        """Resolve missing tracked files without touching physical .lnk files.
+
+        A successful relocation is saved via Studio Change Core; never edit
+        JSON directly. Old entries without tracking data use legacy behavior.
+        """
+        update = tracking_target_update(row)
+        if update is None:
+            return row
+        new_path, new_blob = update
+        page_id, item_id = str(row.get('page_id') or ''), str(row.get('item_id') or '')
+        if not page_id or not item_id:
+            raise ShellLinkError('追跡項目の登録IDが見つかりません')
+        current, sha = read_item_for_edit(CONFIG, page_id, item_id)
+        if not matches_original_tracking(current, row):
+            raise ShellLinkError('Studio側でショートカットが編集されました。再読み込みしてください')
+        changes = update_record_changes(current, new_path, new_blob)
+        try:
+            studio = studio_core_root(LAUNCH_HOME, self.expander().values.get('studio_root', ''))
+            plan = prepare_update(CONFIG, studio, page_id, item_id, changes, base_sha256=sha)
+            commit_update(plan)
+        except (RegistrationError, OSError, ValueError) as exc:
+            # Tracking succeeded, but Studio may be temporarily unavailable.
+            # Launch the located file rather than rendering the shortcut inert;
+            # never bypass Change Core by editing JSON here.
+            DIAG.warning('SHELL_LINK_SAVE_PENDING item=%s reason=%s', item_id, exc)
+            self.info_notice('ファイルは追跡できましたが、Launch登録情報の保存に失敗しました')
+        # Only a local execution snapshot is changed; main data refreshes via
+        # the pre-existing config reload, outside the active launch sequence.
+        result = dict(row)
+        result['launch_actions'] = [dict(a) for a in row['launch_actions']]
+        result['launch_actions'][0]['launch_target'] = new_path
+        result['launch_shell_link_data'] = new_blob
+        DIAG.info('SHELL_LINK_RESOLVED item=%s', item_id)
+        return result
+
     def execute(self,row,values=None):
         DIAG.info('ITEM id=%s title=%s busy=%s',row.get('item_id'),row.get('title'),self.busy)
         if self.busy:return
@@ -14313,6 +14372,7 @@ class Launcher(QWidget):
         if self.open_bookmark_web_view(row):
             return
         try:
+            row = self._resolve_registered_shell_shortcut(row)
             ex=self.expander(values)
             # Resolve all values before any side effects.
             self.queue=[]

@@ -224,6 +224,32 @@ def find_obsidian_executable():
     return None
 
 
+def dedicated_editor_available(target, *, obsidian_lookup=None, vscode_lookup=None):
+    """Only attempt an embedded guest when its native executable exists.
+
+    A missing executable should not reserve the third column or display an
+    editor error; the normal Windows file association remains the fallback.
+    """
+    if target.app == 'sakura':
+        return bool(target.executable and Path(target.executable).is_file())
+    if target.app == 'obsidian':
+        return bool((obsidian_lookup or find_obsidian_executable)())
+    if target.app == 'vscode':
+        from vscode_guest_bridge import find_executable
+        return bool((vscode_lookup or find_executable)())
+    return True
+
+
+def _open_with_windows_default(path, *, startfile=None):
+    """Open a physical document via its Windows association, never execute a shell."""
+    if not Path(path).is_file():
+        raise FileNotFoundError(f'対象ファイルが見つかりません: {path}')
+    opener = startfile if startfile is not None else getattr(os, 'startfile', None)
+    if opener is None:
+        raise OSError('Windows標準アプリによるファイル起動はWindows専用です')
+    return opener(str(path))
+
+
 def standalone_editor_command(target, *, obsidian_lookup=None):
     """Return the executable command; no implicit Studio or default-app fallback."""
     if target.app == 'sakura':
@@ -244,9 +270,20 @@ def standalone_editor_command(target, *, obsidian_lookup=None):
     raise ValueError('サポートされていない外部エディターです')
 
 
-def launch_external_standalone(target, *, popen=None, obsidian_lookup=None):
-    """Launch a real editor window without embedding or changing associations."""
+def launch_external_standalone(target, *, popen=None, obsidian_lookup=None,
+                               startfile=None):
+    """Prefer an installed editor; otherwise use the Windows default app.
+
+    No shell commands, no change to associations and no fallback on a generic
+    launch failure (such as access denied). Missing binaries only.
+    """
     import subprocess
-    command = standalone_editor_command(target, obsidian_lookup=obsidian_lookup)
-    process = (popen or subprocess.Popen)(command, cwd=str(Path(command[0]).parent))
-    return process
+    if not dedicated_editor_available(target, obsidian_lookup=obsidian_lookup):
+        return _open_with_windows_default(target.path, startfile=startfile)
+    try:
+        command = standalone_editor_command(target, obsidian_lookup=obsidian_lookup)
+        return (popen or subprocess.Popen)(command,
+                                          cwd=str(Path(command[0]).parent))
+    except FileNotFoundError:
+        # Removed/uninstalled after discovery, including a stale Sakura path.
+        return _open_with_windows_default(target.path, startfile=startfile)

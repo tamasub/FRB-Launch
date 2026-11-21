@@ -29,6 +29,7 @@ SEED_KEYS = (
     'embed_studio',
     'embed_obsidian',
     'embed_sakura',
+    'files_list_explorer_drag',
 )
 _BOOLEAN_KEYS = set(SEED_KEYS) - {'appearance_theme', 'folder_open_mode', 'remote_display_mode'}
 _TRUE = {'1', 'true', 'yes', 'on'}
