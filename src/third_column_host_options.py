@@ -10,27 +10,36 @@ import configparser
 import os
 from pathlib import Path
 
-_OPTION_NAMES = frozenset(('studio', 'sakura', 'obsidian'))
+_OPTION_NAMES = frozenset(('studio', 'sakura', 'obsidian', 'vscode'))
 _TRUE = frozenset(('true', '1', 'yes', 'on'))
 
 
-def embedded_editor_enabled(launch_home, app):
-    """Read [General] embed_<app> from the user's state.ini (not Launch home).
+def configured_embedded_editor(launch_home, app, *, environment=None):
+    """Return True/False for an explicitly configured switch, None otherwise.
 
-    ``launch_home`` is retained for compatibility with existing call sites.
-    Missing/invalid settings deliberately fail closed, especially on upgrades
-    of existing user state.ini files where newly introduced keys are absent.
+    Only the user's state.ini is authoritative. None permits the temporary
+    2026-11-19 trial environment switches on older, unconfigured installs.
     """
     if app not in _OPTION_NAMES:
-        return False
-    user_root = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'FRBLaunch'
-    settings_file = user_root / 'state.ini'
+        return None
+    env = os.environ if environment is None else environment
+    user_root = Path(env.get('LOCALAPPDATA') or Path.home()) / 'FRBLaunch'
     parser = configparser.ConfigParser(interpolation=None)
     try:
-        with settings_file.open('r', encoding='utf-8-sig') as source:
+        with (user_root / 'state.ini').open('r', encoding='utf-8-sig') as source:
             parser.read_file(source)
         if not parser.has_section('General'):
+            return None
+        value = parser.get('General', 'embed_' + app, fallback='').strip().lower()
+        if value in _TRUE:
+            return True
+        if value in {'false', '0', 'no', 'off'}:
             return False
-        return parser.get('General', 'embed_' + app, fallback='').strip().lower() in _TRUE
     except (OSError, UnicodeError, configparser.Error, ValueError):
-        return False
+        pass
+    return None
+
+
+def embedded_editor_enabled(launch_home, app):
+    """Read the explicit state.ini guest switch; missing/invalid is OFF."""
+    return configured_embedded_editor(launch_home, app) is True

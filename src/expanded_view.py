@@ -3307,9 +3307,49 @@ class ExpandedLauncherView(QWidget):
             dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
             self.toggle_directory_favorites()
         if popup.isVisible():
-            # Reuse the pre-existing Up/Down/Enter/Escape popup-tree handler.
-            choices.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            # This is a WA_ShowWithoutActivating Qt.Tool, not an active popup.
+            # Keep REAL keyboard focus on the Launcher-owned dropdown; the
+            # application event filter forwards arrow/confirm keys to choices.
+            # setFocus(choices) here can leave Windows with no key receiver.
+            dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
         return popup.isVisible()
+
+    def handle_directory_favorites_key(self, obj, event):
+        """Navigate the non-activating Ctrl+G history from the REAL key owner.
+
+        The favorite tree belongs to a separate WA_ShowWithoutActivating Tool
+        window. On Windows it may be visible without owning keyboard focus:
+        Launcher/Remote (usually the breadcrumb dropdown) still receives the
+        physical keys. Always route those keys to the visible history first,
+        regardless of which of those owned widgets currently holds focus.
+        """
+        popup = getattr(self, 'favorite_popup', None)
+        if (event.type() != QEvent.Type.KeyPress or popup is None
+                or not popup.isVisible() or not self.isVisible()
+                or getattr(self, '_workspace_mode', None) != 'files'
+                or event.modifiers() != Qt.KeyboardModifier.NoModifier
+                or QApplication.activeModalWidget() is not None
+                or not self._launch_owns_keyboard_source(obj)):
+            return False
+        key = event.key()
+        choices = self.favorite_choices
+        if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            move_tree_selection(choices, -1 if key == Qt.Key.Key_Up else 1)
+        elif key == Qt.Key.Key_Escape:
+            self.hide_favorite_popup()
+            self.focus_panel(self.middle)
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Right):
+            row = choices.currentItem()
+            if row is not None:
+                self.directory_favorite_clicked(row, 0)
+        elif key == Qt.Key.Key_Delete:
+            row = choices.currentItem()
+            if row is not None:
+                self.directory_favorite_clicked(row, 1)
+        else:
+            return False
+        event.accept()
+        return True
 
     def handle_middle_search_history_key(self, obj, event):
         """Keyboard adapter for the existing non-grabbing Files List menu.
@@ -4126,7 +4166,9 @@ class ExpandedLauncherView(QWidget):
         self.favorite_popup.show()
         self.favorite_popup.raise_()
         self.refresh_guest_popup_priority()
-        self.favorite_choices.setFocus(Qt.FocusReason.MouseFocusReason)
+        # A non-activating native Tool cannot promise its child gets Windows
+        # key focus. Keep focus on the owning Launcher window instead.
+        self.favorite_dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def hide_favorite_popup(self):
         self.favorite_popup.hide()
@@ -5447,6 +5489,10 @@ class ExpandedLauncherView(QWidget):
                 if event.reason() == QContextMenuEvent.Reason.Keyboard:
                     event.accept()
                     return True
+        # Ctrl+G uses a non-activating native popup. Keys still arrive on
+        # the Launcher-owned widget; route them before List/Exp arrow logic.
+        if self.handle_directory_favorites_key(obj, event):
+            return True
         # QHeaderView emits sectionResized for BOTH mouse drags and layout
         # changes. A mouse gesture is the only source of saved desired widths.
         header = getattr(self, '_middle_header_widget', None)
@@ -5684,29 +5730,6 @@ class ExpandedLauncherView(QWidget):
                 and obj is not self.favorite_popup
                 and not self.favorite_popup.isAncestorOf(obj)):
             self.hide_favorite_popup()
-        if (hasattr(self, 'favorite_choices') and self.favorite_popup.isVisible()
-                and obj in (self.favorite_choices, self.favorite_choices.viewport())
-                and event.type() == QEvent.Type.KeyPress):
-            if (event.modifiers() == Qt.KeyboardModifier.NoModifier
-                    and event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)):
-                move_tree_selection(self.favorite_choices,
-                                    -1 if event.key() == Qt.Key.Key_Up else 1)
-                event.accept()
-                return True
-            if event.key() == Qt.Key.Key_Escape:
-                self.hide_favorite_popup()
-                self.focus_panel(self.middle)
-                return True
-            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Right):
-                row = self.favorite_choices.currentItem()
-                if row:
-                    self.directory_favorite_clicked(row, 0)
-                return True
-            if event.key() == Qt.Key.Key_Delete:
-                row = self.favorite_choices.currentItem()
-                if row:
-                    self.directory_favorite_clicked(row, 1)
-                return True
         if (event.type() == QEvent.Type.Wheel and self.isVisible()
                 and obj in (self.left.tree, self.left.tree.viewport())
                 and not self._files_first_wan_enabled):

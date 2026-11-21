@@ -4,7 +4,12 @@ from pathlib import Path
 
 
 def enabled(environment=None):
+    """Use state.ini first; honor old trial env only when not configured."""
     env = os.environ if environment is None else environment
+    from third_column_host_options import configured_embedded_editor
+    configured = configured_embedded_editor(None, 'sakura', environment=env)
+    if configured is not None:
+        return configured
     return env.get('FRB_SAKURA_GUEST_OVERLAY', '').strip() == '1'
 
 

@@ -58,13 +58,13 @@ def test_ctrl_g_shows_breadcrumb_favorites_and_focuses_arrow_tree():
     assert show(view) is True
     assert calls == ['open']
     assert keyword_menu.hide_count == 1
-    assert choices.reasons == [42]
+    assert choices.reasons == []  # Native Tool must not steal real keyboard focus
     # Repeating Ctrl+G keeps the popup open, with its selection intact.
     assert show(view) is True
     assert calls == ['open']
     assert popup.isVisible()
-    assert choices.reasons == [42, 42]
-    assert button.reasons == [42]
+    assert choices.reasons == []
+    assert button.reasons == [42, 42, 42]
 
 
 def test_ctrl_h_shows_list_keyword_history_and_keeps_arrow_cursor():
@@ -114,7 +114,8 @@ def test_both_dispatchers_use_immediate_show_and_preserve_arrow_routes():
     assert 'self.expanded_view.show_middle_search_history()' in app
     assert 'self.show_directory_favorites()' in view
     assert 'self.show_middle_search_history()' in view
-    assert 'move_tree_selection(self.favorite_choices,' in view
+    assert 'move_tree_selection(choices,' in view
+    assert 'self.handle_directory_favorites_key(obj, event)' in view
     assert 'self.directory_favorite_clicked(row, 0)' in view
     assert 'menu.setActiveAction(action)' in view
     assert 'action.trigger()  # Calls existing select_middle_search_history.' in view

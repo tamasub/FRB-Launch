@@ -295,3 +295,11 @@ FRB Launchは、**「昨日の日付を入力するのが面倒だった」**と
   <p><sub>Fishing Rod Benchmark［FRB］ · By tamasub</sub></p>
 </div>
 
+
+
+## 2026-11-21 — Ctrl+Gぱんくず履歴と第3列エディター設定
+
+- Ctrl+G後、独立した非アクティブ化ToolへQtフォーカスを渡す方式を廃止し、Launch側のキー入力を表示中の履歴へ明示的にルーティング。↑/↓/Enter/→/Delete/Escを処理。
+- `defaults/state.ini` の初回標準値: `embed_studio=true`, `embed_obsidian=true`, `embed_vscode=true`, `embed_sakura=false`。実際の読み込み元はUserの`state.ini`で、旧ファイルは上書きしません。
+- Sakuraは引き続き第3列ゲストを無効（通常のエディター外部起動は変更なし）。
+- 既存インストールでは `%LOCALAPPDATA%\FRBLaunch\state.ini` の `[General]` を手動更新してください（詳細は docs/FRBLaunch_FirstInstall_StateIni_20261115.md）。

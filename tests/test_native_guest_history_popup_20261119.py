@@ -50,7 +50,7 @@ def test_breadcrumb_history_is_owned_native_tool_with_original_focus_routing():
     assert 'self.launcher, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint' in code
     assert 'Qt.WidgetAttribute.WA_ShowWithoutActivating, True' in code
     open_code=source_of(EXP, 'ExpandedLauncherView', 'toggle_directory_favorites')
-    assert 'self.favorite_choices.setFocus(' in open_code
+    assert 'self.favorite_dropdown.setFocus(' in open_code
     assert 'self.favorite_popup.show()' in open_code
     assert 'self.refresh_guest_popup_priority()' in open_code
 

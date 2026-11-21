@@ -39,6 +39,15 @@ experiment_remote_15_column=true
 - `experiment_mouse_pointer_rod_windows`: `true` / `false`
 - `experiment_mouse_pointer_rod_smart`: `true` / `false`
 
+- `embed_studio`: FRB Studioの第3列表示（初回標準 `true`）
+- `embed_obsidian`: Obsidianの第3列ご招待（初回標準 `true`。非親子化オーバーレイ方式）
+- `embed_vscode`: VS Codeの第3列ご招待（初回標準 `true`）
+- `embed_sakura`: サクラエディタの第3列ご招待（初回標準 `false`。通常の外部起動は継続）
+
+**既存インストールへの注意**：この変更は既存のユーザー `state.ini` を上書きしません。Obsidian・VS Codeを使う既存ユーザーは、Launchを終了し `%LOCALAPPDATA%\FRBLaunch\state.ini` の `[General]` に `embed_obsidian=true`、`embed_vscode=true` を追加または修正してください。Studioを第3列で使う場合は `embed_studio=true` も明示してください。`embed_sakura=false` のまま維持します。
+
+旧検証用環境変数 `FRB_VSCODE_GUEST_OVERLAY` / `FRB_SAKURA_GUEST_OVERLAY` は、ユーザー設定キーが未定義の環境でのみ互換動作します。`state.ini` の明示設定が優先です。Obsidianの `FRB_OBSIDIAN_IME_OVERLAY` も同様に、`state.ini` の明示設定がない場合だけ診断用として使います。
+
 このほかのキー（ウィンドウ位置・サイズ・履歴・現在選択など）はテンプレートから取り込みません。これは、PC固有の状態を初期値に混ぜないためです。
 
 ## 確認手順

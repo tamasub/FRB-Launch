@@ -52,7 +52,17 @@ SWP_SHOWWINDOW = 0x0040
 
 
 def overlay_enabled():
-    return os.environ.get('FRB_OBSIDIAN_IME_OVERLAY', '').strip() == '1'
+    """Use state.ini first; only use the legacy trial flag if unconfigured.
+
+    The shipped defaults/state.ini seeds the initial user state.ini.  Explicit
+    user state always wins over diagnostic batch flags, for all four editors.
+    """
+    from third_column_host_options import configured_embedded_editor
+    configured = configured_embedded_editor(None, 'obsidian')
+    if configured is not None:
+        return configured
+    trial = os.environ.get('FRB_OBSIDIAN_IME_OVERLAY')
+    return trial is not None and trial.strip() == '1'
 
 
 class ObsidianImeOverlay:
