@@ -582,7 +582,7 @@ FRB研究所、相変わらずおかしな方向に進んでおります。爆�
 ○studioくん　画面を改行できるようにする。
 ○studioくん　複数行テキストボックスの高さを調整できるようにする。（Editor画面のみ）
 
-○state.ini対応（Obsidian、VSCODE,sakuraエディター）
+●state.ini対応（Obsidian、VSCODE,sakuraエディター）
 
 ●エクスプローラーで反映されたファイル名変更を自動でLaunchの開いているList欄へ反映させることできる？
 ●Obsidian、VSCODE,sakuraエディターがインストールされていないPCへの配慮もお願いします。OS規定のアプリが起動されるでいい？

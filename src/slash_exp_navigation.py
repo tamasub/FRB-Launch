@@ -8,6 +8,7 @@ Launch action. No secondary store or filesystem mutation is introduced.
 
 import os
 import unicodedata
+import logging
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QKeyEvent, QPainter, QPainterPath, QPixmap, QStandardItem
@@ -23,6 +24,52 @@ from launch_appearance import (theme_palette, slash_exp_floating_qss,
                                slash_exp_floating_colors,
                                files_operation_menu_colors)
 from slash_popup_layout import popup_xy
+import windows
+
+
+def _trace_current_folder_enter(stage, launcher, menu=None, *, ticket=None, result=None):
+    """Diagnostic ONLY: show Qt.Tool depth versus Win32 foreground at Enter.
+
+    No paths, typed text, or action payloads are recorded. This function never
+    changes focus or the command result, and failures cannot block navigation.
+    """
+    try:
+        logger = logging.getLogger('frb.launch.diagnostics')
+        if not logger.isEnabledFor(logging.INFO):
+            return
+        launch_hwnd = int(launcher.winId())
+        menu_hwnd = None
+        root_hwnd = None
+        depth = 0
+        chain_hwnds = []
+        if menu is not None:
+            # Query the menu HWND only while it is still visible. Calling
+            # winId() on a closed widget could create a fresh native window.
+            if menu.isVisible():
+                menu_hwnd = int(menu.winId())
+            root = getattr(menu, 'root_menu', None)
+            if root is not None and root.isVisible():
+                root_hwnd = int(root.winId())
+            current = menu
+            while isinstance(current, SlashExpMenu):
+                depth += 1
+                if current.isVisible():
+                    chain_hwnds.append(int(current.winId()))
+                current = current.parentWidget()
+        front = int(windows.foreground()) if windows.IS_WINDOWS else None
+        tick = windows.last_user_input_tick() if windows.IS_WINDOWS else None
+        saved_tick = ticket[1] if isinstance(ticket, tuple) and len(ticket) >= 2 else None
+        logger.info(
+            'SLASH_ENTER_TRACE stage=%s depth=%s menu_hwnd=%s root_hwnd=%s '
+            'chain_hwnds=%s launcher_hwnd=%s foreground_hwnd=%s '
+            'foreground_in_chain=%s input_tick=%s saved_tick=%s '
+            'ticket=%s restored=%s',
+            stage, depth, menu_hwnd, root_hwnd, chain_hwnds, launch_hwnd,
+            front, front in chain_hwnds, tick, saved_tick,
+            ticket is not None, result)
+    except Exception:
+        # Logging is nonintrusive even when a Qt.Tool is disappearing.
+        pass
 
 
 _DATA_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -1282,9 +1329,24 @@ class SlashExpMenu(QMenu):
                 break
         parent._focus_search_for_ime()
 
-    def _close_then(self, callback):
+    def _close_then(self, callback, *, foreground_handoff=None, trace_enter=False):
+        if trace_enter:
+            _trace_current_folder_enter('before_root_close', self.launcher, self,
+                                        ticket=foreground_handoff)
         self.root_menu.close()
-        # Run only after the native menu releases the keyboard/mouse grab.
+        if trace_enter:
+            _trace_current_folder_enter('after_root_close', self.launcher, self,
+                                        ticket=foreground_handoff)
+        if foreground_handoff is not None:
+            # Try immediately, while the Enter keypress is still being
+            # dispatched. Waiting for the next Qt tick may see the Enter KEYUP
+            # as newer input and lose the guarded Windows handoff opportunity.
+            restored = windows.finish_menu_enter_handoff(
+                int(self.launcher.winId()), foreground_handoff)
+            if trace_enter:
+                _trace_current_folder_enter('immediate_restore', self.launcher,
+                                            ticket=foreground_handoff, result=restored)
+        # Navigate only after the Qt.Tool is hidden and its native grab freed.
         QTimer.singleShot(0, callback)
 
     def _build_existing_context(self, item):
@@ -1470,7 +1532,7 @@ class SlashExpMenu(QMenu):
                 submenu.setActiveAction(rows[0])
         submenu._focus_search_for_ime()
 
-    def _commit_terminal(self, item):
+    def _commit_terminal(self, item, *, foreground_handoff=None):
         """Enter commits a folder to Files List; Right is navigation only."""
         info = item.data(_DATA_ROLE) or {}
         node = info.get('virtual')
@@ -1479,10 +1541,12 @@ class SlashExpMenu(QMenu):
             if path and os.path.isdir(path):
                 return self._commit_folder_and_focus(
                     self.launcher.navigate_files_exp_folder(
-                        path, origin_panel=self.panel, origin_item=self.source_item))
+                        path, origin_panel=self.panel, origin_item=self.source_item),
+                    foreground_handoff=foreground_handoff)
             if isinstance(node, dict):
                 return self._commit_folder_and_focus(
-                    self.launcher.navigate_virtual_launch_folder(node))
+                    self.launcher.navigate_virtual_launch_folder(node),
+                    foreground_handoff=foreground_handoff)
             return False
         if node is not None:
             if node.get('kind') == 'file':
@@ -1521,16 +1585,18 @@ class SlashExpMenu(QMenu):
                     path, origin_panel=self.panel, origin_item=item))
         return False
 
-    def _commit_folder_and_focus(self, committed):
-        """Enter on a folder always lands at the top of Files List.
+    def _commit_folder_and_focus(self, committed, *, foreground_handoff=None):
+        """Folder Enter lands in Files List after the native menu closes.
 
-        The menu has already closed; dispatch on the next event-loop tick so
-        the native Qt.Popup keyboard grab cannot reclaim focus afterward.
-        Executable files, URL leaves and context actions never use this path.
+        Only keyboard Enter on (カレントフォルダー) may recover Launch's native
+        foreground; file execution and unrelated context actions never do.
         """
+        _trace_current_folder_enter('folder_committed' if committed else 'folder_failed',
+                                    self.launcher, ticket=foreground_handoff)
         if committed:
-            QTimer.singleShot(0, lambda launcher=self.launcher:
-                              focus_first_files_list_after_slash_enter(launcher))
+            QTimer.singleShot(0, lambda launcher=self.launcher, ticket=foreground_handoff:
+                              focus_first_files_list_after_slash_enter(
+                                  launcher, foreground_handoff=ticket))
         return committed
 
     def mouseReleaseEvent(self, event):
@@ -1666,7 +1732,17 @@ class SlashExpMenu(QMenu):
                 if submenu is not None:
                     self._open_explicit_submenu(action, submenu, event)
             else:
-                self._close_then(lambda target=item: self._commit_terminal(target))
+                # Enter on (カレントフォルダー) closes an activated Qt.Tool.
+                # On Windows the OS may reactivate Chrome behind Launch.
+                # Capture the foreground/last-input guard *before* closing.
+                _trace_current_folder_enter('enter_before_capture', self.launcher, self)
+                handoff = windows.capture_menu_enter_handoff(
+                    int(self.winId()), int(self.launcher.winId())) if windows.IS_WINDOWS else None
+                _trace_current_folder_enter('enter_after_capture', self.launcher, self,
+                                            ticket=handoff)
+                self._close_then(lambda target=item, ticket=handoff:
+                    self._commit_terminal(target, foreground_handoff=ticket),
+                    foreground_handoff=handoff, trace_enter=True)
             event.accept()
             return
         # Determine the terminal boundary ONLY when this row is activated.
@@ -1697,12 +1773,26 @@ class SlashExpMenu(QMenu):
         event.accept()
 
 
-def focus_first_files_list_after_slash_enter(launcher):
-    """Restore native List focus and select its FIRST row after folder Enter.
+def _restore_launch_after_current_folder_enter(launcher, handoff):
+    """One guarded Win32 recovery; a later user input cancels the ticket."""
+    view = getattr(launcher, 'expanded_view', None)
+    if (handoff is None or view is None or not view.isVisible()
+            or getattr(view, '_workspace_mode', None) != 'files'):
+        return False
+    restored = windows.finish_menu_enter_handoff(int(launcher.winId()), handoff)
+    _trace_current_folder_enter('deferred_restore', launcher,
+                                ticket=handoff, result=restored)
+    if restored:
+        launcher.activateWindow()
+    return restored
 
-    Use the one existing Files operating-area handoff for either Exp/List
-    origin. Empty folders still focus List but have no selectable first row.
-    Never reuse a remembered current row from the previous directory.
+
+def focus_first_files_list_after_slash_enter(launcher, *, foreground_handoff=None):
+    """Return List to its first row, optionally recovering Qt.Tool foreground.
+
+    The native recovery is restricted to (カレントフォルダー) keyboard Enter.
+    The delayed retry covers Windows' native activation after Tool hides; it
+    cannot steal focus if another physical input has happened since Enter.
     """
     view = getattr(launcher, 'expanded_view', None)
     if (view is None or not view.isVisible()
@@ -1712,6 +1802,12 @@ def focus_first_files_list_after_slash_enter(launcher):
     tree = getattr(pane, 'tree', None)
     if tree is None:
         return False
+    if foreground_handoff is not None:
+        _restore_launch_after_current_folder_enter(launcher, foreground_handoff)
+        # Native Tool deactivation may settle *after* the next event-loop tick.
+        # A short guarded retry is safe only if no newer user input occurred.
+        QTimer.singleShot(90, lambda app=launcher, ticket=foreground_handoff:
+                          _restore_launch_after_current_folder_enter(app, ticket))
     view._focus_files_keyboard_area('list')
     first = next((row for idx in range(tree.topLevelItemCount())
                   if (row := tree.topLevelItem(idx)) is not None
@@ -1721,6 +1817,9 @@ def focus_first_files_list_after_slash_enter(launcher):
         tree.scrollToItem(first)
     # Explicit focus again AFTER current-row selection, not on Exp or search.
     tree.setFocus(Qt.FocusReason.OtherFocusReason)
+    _trace_current_folder_enter('list_focus_requested', launcher,
+                                ticket=foreground_handoff,
+                                result=bool(tree.hasFocus()) if hasattr(tree, 'hasFocus') else None)
     return True
 
 

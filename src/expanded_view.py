@@ -3981,7 +3981,8 @@ class ExpandedLauncherView(QWidget):
             # Every history entry restores its own logical Exp identity.
             # Merely restoring the old first-column row is insufficient:
             # e.g. PC List + My Work Exp is an inconsistent pair.
-            self.align_files_exp_with_location()
+            self.align_files_exp_with_location(
+                expand=getattr(self.launcher, 'exp_auto_expand', False))
             self.focus_panel(self.middle)
         finally:
             self._restoring_directory_history = False
@@ -4235,11 +4236,12 @@ class ExpandedLauncherView(QWidget):
         self.refresh_middle()
         # Keep the Exp row selected even when navigating a virtual subfolder
         # via the List (without stealing the user's logical List focus).
-        for panel in (getattr(self, 'embedded_files_exp', None),
-                      getattr(getattr(self.launcher, 'remote_window', None),
-                              'files_exp_panel', None)):
-            if panel is not None and panel.isVisible():
-                panel.remote_select_virtual_node(node)
+        if getattr(self.launcher, 'exp_auto_expand', False):
+            for panel in (getattr(self, 'embedded_files_exp', None),
+                          getattr(getattr(self.launcher, 'remote_window', None),
+                                  'files_exp_panel', None)):
+                if panel is not None and panel.isVisible():
+                    panel.remote_select_virtual_node(node)
         return True
 
     def restore_json_folder_origin(self):
@@ -7760,12 +7762,13 @@ class ExpandedLauncherView(QWidget):
             if callable(update_count):
                 update_count()
 
-    def align_files_exp_with_location(self, explicit_panel=None):
-        """Select the Exp node named by the *displayed* logical location.
+    def align_files_exp_with_location(self, explicit_panel=None, *, expand=True):
+        """Select the breadcrumb's Exp node or its deepest visible ancestor.
 
         Expose this to startup and history restoration. A selected Exp row is
         never a second authority for Files List content. Physical aliases,
         JSON mounts, directly typed roots and PC remain distinct locations.
+        expand=False never opens ancestors or scrolls to hidden descendants.
         Selection helpers suppress callbacks, so alignment never navigates.
         """
         if explicit_panel is not None:
@@ -7780,6 +7783,7 @@ class ExpandedLauncherView(QWidget):
         registered = getattr(self, '_registered_root_origin', None)
         directory = self.current_directory()
         current = self.path[-1] if self.path else None
+        aligned = False
         for panel in panels:
             if panel is None:
                 continue
@@ -7793,20 +7797,26 @@ class ExpandedLauncherView(QWidget):
             if direct is None:
                 panel.clear_direct_roots()
             if virtual is not None:
-                panel.remote_select_virtual_node(virtual)
+                matched = panel.remote_select_virtual_node(virtual, expand=expand)
             elif origin is not None and directory:
-                panel.remote_select_mounted_directory(
-                    origin['node'], origin['entry_path'], directory)
+                matched = panel.remote_select_mounted_directory(
+                    origin['node'], origin['entry_path'], directory, expand=expand)
             elif direct is not None and directory:
-                panel.ensure_direct_root(direct)
-                panel.sync_current_directory(directory, prefer_direct=True)
+                if expand:
+                    panel.ensure_direct_root(direct)
+                matched = panel.sync_current_directory(
+                    directory, prefer_direct=True, expand=expand)
             elif registered is not None and directory:
-                panel.sync_current_directory(
-                    directory, preferred_root_id=registered['root_id'])
+                matched = panel.sync_current_directory(
+                    directory, preferred_root_id=registered['root_id'], expand=expand)
             elif current is not None and current.get('_system_drives_root'):
-                panel.remote_select_pc_root()
+                matched = panel.remote_select_pc_root()
             elif directory:
-                panel.sync_current_directory(directory)
+                matched = panel.sync_current_directory(directory, expand=expand)
+            else:
+                matched = False
+            aligned = bool(matched) or aligned
+        return aligned
 
     def reload_embedded_files_exp_roots(self, *, preserve_state=False):
         """Rebase the inline tree on authored roots, not the current folder.
@@ -7829,7 +7839,8 @@ class ExpandedLauncherView(QWidget):
         # Expanded/collapsed branches may be restored, but the highlighted
         # Exp node MUST correspond to the currently displayed List/breadcrumb.
         # This also works before the window first becomes visible.
-        self.align_files_exp_with_location(panel)
+        self.align_files_exp_with_location(
+            panel, expand=getattr(self.launcher, 'exp_auto_expand', False))
         return True
 
     def apply_remote_15_lane_mode(self):

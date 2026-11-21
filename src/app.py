@@ -3100,6 +3100,11 @@ class Launcher(QWidget):
             self.settings.value('dismiss_on_outside_click', 'true'))
         self.folder_open_mode = read_folder_open_mode(
             self.settings.value('folder_open_mode', 'single'))
+        # Existing AppData states lacking this new key use the new standard.
+        # defaults/state.ini controls the seed for fresh installations.
+        self.exp_auto_expand = str(self.settings.value(
+            'exp_auto_expand', 'false')).strip().lower() in (
+                'true', '1', 'yes', 'on')
         # 4択リモコン表示。旧state.iniの2フラグは最初の読み込み時に移行する。
         self.remote_display_mode = normalize_remote_display_mode(
             self.settings.value('remote_display_mode', None),
@@ -4703,11 +4708,36 @@ class Launcher(QWidget):
             self._remote_folder_root_menu = None
             self._remote_folder_source_path = None
 
+    def expand_exp_to_breadcrumb(self):
+        """Explicit List action: expand Exp along the breadcrumb, then focus it.
+
+        No filesystem navigation is emitted. Even with exp_auto_expand=false,
+        this user request may expand ancestors and scroll to the final node.
+        """
+        view = self.expanded_view
+        if not view.isVisible() or view._workspace_mode != 'files':
+            return False
+        panel = self._current_remote_files_exp()
+        if panel is None:
+            return False
+        # New standard: previously opened branches are not part of a fresh
+        # breadcrumb expansion. Fold them before revealing the current path.
+        if not getattr(self, 'exp_auto_expand', True):
+            panel.prepare_breadcrumb_expansion()
+        if not view.align_files_exp_with_location(panel, expand=True):
+            return False
+        self.remote_focus_area('files_exp')
+        panel.tree.setFocus(Qt.FocusReason.OtherFocusReason)
+        return True
+
     def on_files_directory_changed(self, directory):
-        """Breadcrumb is authoritative for Remote, Files Exp, and Files."""
-        # Store the former breadcrumb, not Exp's candidate row: a List-side
-        # parent navigation must collapse the *departed* child folder in Exp.
-        # This also covers the Remote's (List カレントフォルダー操作) and Go Up.
+        """Track the Files breadcrumb without forcing Exp navigation.
+
+        With exp_auto_expand=false, List moves never open, close, select or
+        scroll Exp branches. The legacy synchronization is opt-in.
+        """
+        # In legacy mode only, an upward List move collapses the departed
+        # child. New mode preserves all hand-operated Exp branch states.
         import ntpath
         previous = getattr(self, '_last_files_breadcrumb_directory', None)
         current = str(directory) if directory else None
@@ -4741,11 +4771,12 @@ class Launcher(QWidget):
                     directory, preferred_root_id=registered_root['root_id'])
             else:
                 exp_panel.sync_current_directory(directory)
-        align(panel)
         embedded = getattr(getattr(self, 'expanded_view', None),
                            'embedded_files_exp', None)
-        align(embedded)
-        if ascending_one_level:
+        if getattr(self, 'exp_auto_expand', True):
+            align(panel)
+            align(embedded)
+        if ascending_one_level and getattr(self, 'exp_auto_expand', True):
             for exp_panel in (panel, embedded):
                 if exp_panel is not None and exp_panel.isVisible():
                     exp_panel.collapse_departed_child(previous, current)
@@ -7241,7 +7272,9 @@ class Launcher(QWidget):
             return False
         origin = getattr(view, '_filesystem_entry_origin', None)
         directory = view.current_directory()
-        if origin is not None and directory:
+        if not getattr(self, 'exp_auto_expand', True):
+            aligned = view.align_files_exp_with_location(panel, expand=False)
+        elif origin is not None and directory:
             aligned = panel.remote_select_mounted_directory(
                 origin['node'], origin['entry_path'], directory)
         elif getattr(view, '_direct_entry_root', None) and directory:
@@ -7262,6 +7295,9 @@ class Launcher(QWidget):
         if not aligned:
             return False
         self.remote_focus_area('files_exp')
+        tree = getattr(panel, 'tree', None)
+        if tree is not None:
+            tree.setFocus(Qt.FocusReason.OtherFocusReason)
         return True
 
     def auto_shuriken_scroll_files_list_target(self):
@@ -13337,7 +13373,15 @@ class Launcher(QWidget):
                 menu.addSeparator()
                 continue
             action_id = definition['action_id']
-            if action_id == 'refresh_directory':
+            if action_id == 'expand_exp_to_breadcrumb':
+                if remote_folder_list:  # Exp/Remote menu is not a List command.
+                    continue
+                action = menu.addAction(definition['title'],
+                    lambda checked=False: QTimer.singleShot(
+                        50, self.expand_exp_to_breadcrumb))
+                menu.setMinimumWidth(255)
+                menu.setMaximumWidth(270)
+            elif action_id == 'refresh_directory':
                 action = menu.addAction(
                     definition['title'],
                     lambda checked=False, p=target_directory:
@@ -13641,7 +13685,15 @@ class Launcher(QWidget):
                     menu.addSeparator()
                     continue
                 action_id = definition['action_id']
-                if action_id == 'paste':
+                if action_id == 'expand_exp_to_breadcrumb':
+                    if not list_context or search_result:
+                        continue  # Never add this List-only command to Exp/Search.
+                    action = menu.addAction(definition['title'],
+                        lambda checked=False: QTimer.singleShot(
+                            50, self.expand_exp_to_breadcrumb))
+                    menu.setMinimumWidth(255)
+                    menu.setMaximumWidth(270)
+                elif action_id == 'paste':
                     action = menu.addAction(definition['title'],
                         lambda checked=False, parent=context_parent,
                                clicked=path if origin == 'folder' else None:
@@ -14735,19 +14787,51 @@ def main():
             return False
 
     def focus_docked_external_on_mouse_release(x, y):
-        """Foreign HWND input is independent from Qt's Files List focus.
+        """Temporary third-column diagnostic on native mouse release.
 
-        Called by the existing mouse hook after a real button release. Never
-        activate a third-party editor merely because it was displayed.
+        Keep the existing callback and focus policy unchanged.  Record state
+        before and after it, plus later Z-order samples to catch the 160-ms
+        overlay synchronizer if it reverts the workspace stacking.
         """
         preview = getattr(getattr(window, 'expanded_view', None),
                           'studio_preview', None)
+        attached = getattr(preview, '_attached', None)
+        guest_key = getattr(preview, '_external_key', None)
+        guest_type = str(guest_key[0]) if isinstance(guest_key, (list, tuple)) and guest_key else 'none'
+        if guest_type not in ('obsidian', 'vscode', 'sakura'):
+            return
+        from guest_zorder_trace import write as trace_guest
+        sequence = int(getattr(window, '_guest_trace_sequence', 0)) + 1
+        window._guest_trace_sequence = sequence
+        point = (x, y)
+
+        def capture(stage, **fields):
+            # The editor may be closed/detached before a delayed sample runs.
+            # Logging must never introduce a new UI failure.
+            try:
+                panel_visible = int(bool(preview and preview.isVisible()))
+            except (RuntimeError, ValueError):
+                panel_visible = -1
+            try:
+                trace_guest(stage, overlay=attached if getattr(attached, 'is_ime_overlay', False) else None,
+                            sequence=sequence, point=point, editor=guest_type,
+                            panel_visible=panel_visible, **fields)
+            except Exception:
+                pass
+
+        capture('qt_dispatch')
         if preview is None or not preview.isVisible():
+            capture('skip', reason='panel_hidden')
             return
         try:
-            preview.focus_external_after_native_click(x, y)
+            outcome = bool(preview.focus_external_after_native_click(x, y))
+            capture('qt_handled', action=int(outcome))
         except (OSError, RuntimeError, ValueError) as focus_error:
+            capture('qt_exception', exception=type(focus_error).__name__)
             DIAG.warning('EXTERNAL_NATIVE_FOCUS_FAILED: %s', focus_error)
+        # Read-only delayed probes; never activate or raise any window.
+        for ms in (100, 350):
+            QTimer.singleShot(ms, lambda delay=ms: capture('after_delay', delay_ms=delay))
 
     def dismiss_from_outside_click():
         # A new external editor window is in transit to the third-column

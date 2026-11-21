@@ -102,6 +102,10 @@
         "title": "最新の情報に更新"
       },
       {
+        "action_id": "expand_exp_to_breadcrumb",
+        "title": "パンくずまでExpを展開"
+      },
+      {
         "type": "separator"
       },
       {

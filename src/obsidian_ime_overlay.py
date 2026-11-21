@@ -196,7 +196,8 @@ class ObsidianImeOverlay:
         # workspace along. Move Launch up WITHOUT activating/focusing it, then
         # put Obsidian immediately above Launch below (IME keeps focus).
         above = self._window_above_launch(root)
-        if foreground == self.hwnd and above != self.hwnd:
+        if (foreground == self.hwnd and above != self.hwnd
+                and above not in self._popup_hwnds):
             root_level = HWND_TOPMOST if self._root_is_topmost(root) else HWND_TOP
             self.u.SetWindowPos(root, root_level, 0, 0, 0, 0,
                                 SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
@@ -256,6 +257,52 @@ class ObsidianImeOverlay:
         if self.u.SetWindowPos(self.hwnd, after, *rect, flags):
             self._last_rect = rect
             self._visible = True
+
+    def raise_workspace_from_guest_click(self, x, y):
+        """Bring Launch alongside a clicked overlay; trace-only additions.
+
+        All Z-order operations and guard conditions are preserved from the
+        previous fix. This diagnostic version reports the first failed guard.
+        """
+        from guest_zorder_trace import write as guest_trace
+        point = (x, y)
+        guest_trace('overlay_enter', overlay=self, point=point)
+        if not self.attached or not self._visible or not self.u.IsWindow(self.hwnd):
+            guest_trace('overlay_skip', overlay=self, point=point,
+                        reason='guest_not_attached_visible_or_valid')
+            return False
+        root = self._root_hwnd()
+        if not root or not self.u.IsWindow(root) or bool(self.u.IsIconic(root)):
+            guest_trace('overlay_skip', overlay=self, point=point,
+                        reason='launch_missing_or_minimized')
+            return False
+        hit = int(self.u.WindowFromPoint(wintypes.POINT(int(x), int(y))) or 0)
+        if not hit or not self.u.IsWindow(hit):
+            guest_trace('overlay_skip', overlay=self, point=point,
+                        reason='hit_invalid')
+            return False
+        if hit != self.hwnd and not self.u.IsChild(self.hwnd, hit):
+            guest_trace('overlay_skip', overlay=self, point=point,
+                        reason='hit_not_guest')
+            return False  # Other app / popup was clicked.
+
+        # Original logic: bring the workspace up WITHOUT activating Launch.
+        raised = bool(self.u.SetWindowPos(
+            root, HWND_TOPMOST if self._root_is_topmost(root) else HWND_TOP,
+            0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE))
+        guest_trace('overlay_raise', overlay=self, point=point, success=int(raised))
+        if not raised:
+            return False
+
+        for popup in self._popup_hwnds:
+            if popup and popup != self.hwnd and self.u.IsWindow(popup):
+                self.u.SetWindowPos(
+                    popup, HWND_TOPMOST if self._root_is_topmost(root) else HWND_TOP,
+                    0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
+        self.sync(popup_hwnds=self._popup_hwnds, qt_host_size=self._qt_host_size)
+        guest_trace('overlay_synced', overlay=self, point=point,
+                    popup_count=len(self._popup_hwnds))
+        return True
 
     def resize(self, width, height):
         # Win32 physical host rectangle is authoritative (DPI-safe). Keep

@@ -31,6 +31,7 @@ SEED_KEYS = (
     'embed_sakura',
     'embed_vscode',
     'files_list_explorer_drag',
+    'exp_auto_expand',
 )
 _BOOLEAN_KEYS = set(SEED_KEYS) - {'appearance_theme', 'folder_open_mode', 'remote_display_mode'}
 _TRUE = {'1', 'true', 'yes', 'on'}

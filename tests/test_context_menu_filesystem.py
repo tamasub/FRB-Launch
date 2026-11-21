@@ -67,7 +67,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual([x['action_id'] for x in menus['file'] if 'action_id' in x],
                          ['copy', 'cut', 'paste', 'copy_full_path', 'copy_cloud_link', 'copy_file_name', 'open_with', 'extract_all', 'open_parent_folder', 'open_parent_terminal', 'delete', 'rename', 'run_with_pause', 'git_commit_from_zip', 'properties'])
         self.assertEqual([x['action_id'] for x in menus['folder'] if 'action_id' in x],
-                         ['copy', 'cut', 'paste', 'refresh_directory', 'open_explorer', 'open_terminal', 'copy_path', 'copy_cloud_link', 'delete', 'rename', 'properties'])
+                         ['copy', 'cut', 'paste', 'refresh_directory', 'expand_exp_to_breadcrumb', 'open_explorer', 'open_terminal', 'copy_path', 'copy_cloud_link', 'delete', 'rename', 'properties'])
 
     def test_actions_are_validated_against_allowlist(self):
         with TemporaryDirectory() as folder:

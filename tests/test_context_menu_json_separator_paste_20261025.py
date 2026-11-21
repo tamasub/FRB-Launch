@@ -32,7 +32,7 @@ def test_file_and_folder_separators_and_paste_in_json():
     for kind in ('file', 'folder'):
         ids = actions(data[kind])
         if kind == 'folder':
-            assert ids[:5] == ['copy', 'cut', 'paste', 'refresh_directory', '|']
+            assert ids[:6] == ['copy', 'cut', 'paste', 'refresh_directory', 'expand_exp_to_breadcrumb', '|']
         else:
             assert ids[:4] == ['copy', 'cut', 'paste', '|']
         assert ids.count('|') >= 3

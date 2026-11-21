@@ -32,6 +32,14 @@ def context_action_icon(action_id):
         painter.drawRoundedRect(QRectF(3.5, 9.5, 11, 6), 3, 3)
         painter.drawRoundedRect(QRectF(9.5, 9.5, 11, 6), 3, 3)
         line(9, 12.5, 15, 12.5)
+    elif action_id == 'expand_exp_to_breadcrumb':
+        # Connected folder nodes + a downward expansion arrow.
+        painter.drawRoundedRect(QRectF(3, 4, 7, 6), 1.1, 1.1)
+        painter.drawRoundedRect(QRectF(13, 14, 8, 6), 1.1, 1.1)
+        line(6.5, 10, 6.5, 17)
+        line(6.5, 17, 12, 17)
+        line(10, 14, 13, 17)
+        line(10, 20, 13, 17)
     elif action_id == 'refresh_directory':
         # Compact clockwise refresh arrow, in the same stroke as other verbs.
         painter.drawArc(QRectF(5, 5, 14, 14), 45 * 16, 290 * 16)

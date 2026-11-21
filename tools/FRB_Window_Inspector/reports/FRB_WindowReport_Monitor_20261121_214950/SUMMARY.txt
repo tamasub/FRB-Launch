@@ -1,0 +1,126 @@
+﻿FRB Window / Process Inspector v1.0
+Mode: Monitor  /  Captured: 2026-11-21T21:50:25.2012410+09:00
+Windows process count: 260 / focus: 16
+Windows handle count (top-level + target child): 482 / focus: 106
+Events: 60 / focus: 46
+Focus filter: (?i)obsidian|code|frb|launch|python|pyw|sakura|notepad
+Z-order focused timeline rows: 1314
+ZRank: 0 = top of all top-level windows, larger value = farther back.
+
+FOCUSED WINDOWS (HWND | PID | process | kind | visible | class | parent | owner | root | rect | title)
+0x106CE | 21296 | codex-computer-use-swift.exe | TopLevel | False | CodexComputerUseSwiftOverlay | p=0x0 | o=0x0 | root=0x106CE | 0,0 1920x1080 | ChatGPT is using your computer. Esc to cancel
+0x530AC2 | 25436 | Obsidian.exe | TopLevel | False | Chrome_WidgetWin_0 | p=0x0 | o=0x0 | root=0x530AC2 | 0,0 0x0 | 
+0x250DD8 | 21124 | Obsidian.exe | TopLevel | True | Chrome_WidgetWin_1 | p=0x0 | o=0x0 | root=0x250DD8 | 751,325 1131x691 | 新しいMarkdown文書 (2) - Documents - Obsidian 1.15.1
+0x90D10 | 21124 | Obsidian.exe | Child | True | Chrome_RenderWidgetHostHWND | p=0x250DD8 | o=0x0 | root=0x250DD8 | 759,325 1115x683 | Chrome Legacy Window
+0x1B0B12 | 25436 | Obsidian.exe | Child | True | Intermediate D3D Window | p=0x250DD8 | o=0x0 | root=0x250DD8 | 759,325 1115x683 | 
+0x5608AA | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x5608AA | 0,0 136x39 | _q_titlebar
+0x2308C4 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x2308C4 | 0,0 136x39 | _q_titlebar
+0x4504BA | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x4504BA | 0,0 136x39 | _q_titlebar
+0x760786 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x760786 | 0,0 136x39 | _q_titlebar
+0x4904D6 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x4904D6 | 0,0 228x39 | _q_titlebar
+0x21013C | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x21013C | 0,0 136x39 | _q_titlebar
+0x43047C | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x43047C | 0,0 136x39 | _q_titlebar
+0x5B001A | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x5B001A | 0,0 1363x39 | _q_titlebar
+0x80E8A | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x80E8A | 0,0 136x39 | _q_titlebar
+0x60E34 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x60E34 | 0,0 136x39 | _q_titlebar
+0x60E2E | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x60E2E | 0,0 136x39 | _q_titlebar
+0x180E24 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x180E24 | 0,0 1130x39 | _q_titlebar
+0xD0E1C | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0xD0E1C | 0,0 270x39 | _q_titlebar
+0xC0DEE | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0xC0DEE | 0,0 136x39 | _q_titlebar
+0x430A1E | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x430A1E | 0,0 300x39 | _q_titlebar
+0x580486 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x580486 | 0,0 300x39 | _q_titlebar
+0x3902C8 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x3902C8 | 0,0 300x39 | _q_titlebar
+0x1D0D46 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x1D0D46 | 0,0 1363x39 | _q_titlebar
+0x120DC8 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x120DC8 | 0,0 1363x39 | _q_titlebar
+0x120DA6 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x120DA6 | 0,0 1363x39 | _q_titlebar
+0x2E0D7E | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x2E0D7E | 0,0 1363x39 | _q_titlebar
+0x230D48 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x230D48 | 0,0 190x39 | _q_titlebar
+0x90D3E | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x90D3E | 0,0 1363x39 | _q_titlebar
+0x100D28 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x100D28 | 0,0 136x39 | _q_titlebar
+0x2B0610 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x2B0610 | 0,0 1363x39 | _q_titlebar
+0xF0D22 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0xF0D22 | 0,0 640x39 | _q_titlebar
+0x2B0D02 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x2B0D02 | 0,0 640x39 | _q_titlebar
+0x130CEC | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x130CEC | 0,0 1375x39 | _q_titlebar
+0x160CDE | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x160CDE | 0,0 1375x39 | _q_titlebar
+0x3B0CB4 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x3B0CB4 | 0,0 136x39 | _q_titlebar
+0x140E3A | 18072 | python.exe | TopLevel | True | Qt6101QWindowIcon | p=0x0 | o=0x0 | root=0x140E3A | 462,2 1387x945 | FRB Launch
+0x2E02CA | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0x140E3A | o=0x0 | root=0x140E3A | 462,2 100x30 | python
+0x47042C | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0x140E3A | o=0x0 | root=0x140E3A | 462,2 100x30 | python
+0x160CE0 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x140E3A | o=0x0 | root=0x140E3A | 468,60 1375x875 | python
+0x90F10 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x160CE0 | o=0x0 | root=0x140E3A | 474,920 1363x15 | python
+0x350B6A | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x160CE0 | o=0x0 | root=0x140E3A | 474,60 1363x852 | python
+0x120E3E | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x350B6A | o=0x0 | root=0x140E3A | 668,477 60x60 | python
+0xF0D2C | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x350B6A | o=0x0 | root=0x140E3A | 474,60 1363x852 | python
+0x50015A | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0xF0D2C | o=0x0 | root=0x140E3A | 474,60 5x5 | python
+0x90E26 | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0xF0D2C | o=0x0 | root=0x140E3A | 521,60 5x30 | python
+0x140D5C | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0xF0D2C | o=0x0 | root=0x140E3A | 474,60 1363x852 | python
+0x190D98 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x140D5C | o=0x0 | root=0x140E3A | 474,60 1363x852 | python
+0x110DD0 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x190D98 | o=0x0 | root=0x140E3A | 474,103 1363x809 | python
+0x16077C | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x110DD0 | o=0x0 | root=0x140E3A | 1112,103 5x809 | python
+0x610482 | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0x110DD0 | o=0x0 | root=0x140E3A | 1832,103 5x809 | python
+0x190B04 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x110DD0 | o=0x0 | root=0x140E3A | 702,103 5x809 | python
+0x7A0774 | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0x110DD0 | o=0x0 | root=0x140E3A | 474,103 100x30 | python
+0x3A04CA | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x110DD0 | o=0x0 | root=0x140E3A | 474,103 228x809 | python
+0xB0E1E | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x110DD0 | o=0x0 | root=0x140E3A | 707,103 405x809 | python
+0x2F0DF6 | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0x110DD0 | o=0x0 | root=0x140E3A | 1837,103 270x809 | python
+0x860322 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x110DD0 | o=0x0 | root=0x140E3A | 1117,103 720x809 | python
+0x49082E | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x860322 | o=0x0 | root=0x140E3A | 1117,143 720x769 | python
+0x120DE4 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x49082E | o=0x0 | root=0x140E3A | 1117,143 720x769 | python
+0x300A48 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x860322 | o=0x0 | root=0x140E3A | 1117,103 720x40 | python
+0x1B0DC0 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x190D98 | o=0x0 | root=0x140E3A | 474,60 1363x43 | python
+0xE0D40 | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0xF0D2C | o=0x0 | root=0x140E3A | 474,60 190x852 | python
+0x110D24 | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0x350B6A | o=0x0 | root=0x140E3A | 474,60 100x44 | python
+0x260D16 | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0x160CE0 | o=0x0 | root=0x140E3A | 468,60 640x480 | python
+0x1D0CF2 | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0x160CE0 | o=0x0 | root=0x140E3A | 468,60 640x480 | python
+0x130CB8 | 18072 | python.exe | Child | True | Qt6101QWindowIcon | p=0x140E3A | o=0x0 | root=0x140E3A | 468,10 1375x50 | python
+0x7D0194 | 18072 | python.exe | Child | False | Qt6101QWindowIcon | p=0x140E3A | o=0x0 | root=0x140E3A | 462,2 100x30 | python
+0x340A7E | 18072 | python.exe | TopLevel | False | Qt6101TrayIconMessageWindowClass | p=0x0 | o=0x0 | root=0x340A7E | 130,130 1440x753 | QTrayIconMessageWindow
+0x290A8E | 18072 | python.exe | TopLevel | False | Qt6101ThemeChangeObserverWindow | p=0x0 | o=0x0 | root=0x290A8E | 104,104 1440x753 | 
+0xA9085A | 18072 | python.exe | TopLevel | False | Qt6101ScreenChangeObserverWindow | p=0x0 | o=0x0 | root=0xA9085A | 78,78 1440x753 | 
+0x1C0CE8 | 28544 | explorer.exe | TopLevel | True | CabinetWClass | p=0x0 | o=0x0 | root=0x1C0CE8 | 0,0 1130x754 | FRB_Launch - エクスプローラー
+0x260E00 | 28544 | explorer.exe | Child | True | ShellTabWindowClass | p=0x1C0CE8 | o=0x0 | root=0x1C0CE8 | 8,136 1114x610 | FRB_Launch
+0xCE089E | 27736 | WindowsTerminal.exe | TopLevel | True | CASCADIA_HOSTING_WINDOW_CLASS | p=0x0 | o=0x0 | root=0xCE089E | 200,208 1129x635 | FRB Window / Process Inspector
+0x16095A | 21124 | Obsidian.exe | TopLevel | True | Chrome_WidgetWin_1 | p=0x0 | o=0x0 | root=0x16095A | 1027,358 836x662 | __frblaunch_memo - FRB_Apps - Obsidian 1.15.1
+0xF0DC6 | 21124 | Obsidian.exe | Child | True | Chrome_RenderWidgetHostHWND | p=0x16095A | o=0x0 | root=0x16095A | 1035,358 820x654 | Chrome Legacy Window
+0x440AE4 | 25436 | Obsidian.exe | Child | True | Intermediate D3D Window | p=0x16095A | o=0x0 | root=0x16095A | 1035,358 820x654 | 
+0x9706DE | 25436 | Obsidian.exe | TopLevel | False | Chrome_WidgetWin_0 | p=0x0 | o=0x0 | root=0x9706DE | 0,0 0x0 | 
+0x250C94 | 21124 | Obsidian.exe | TopLevel | False | Chrome_WidgetWin_0 | p=0x0 | o=0x0 | root=0x250C94 | 234,234 1440x753 | 
+0x3E079C | 21124 | Obsidian.exe | TopLevel | False | Base_PowerMessageWindow | p=0x0 | o=0x0 | root=0x3E079C | 0,0 0x0 | 
+0x3C0AFE | 28544 | explorer.exe | TopLevel | True | CabinetWClass | p=0x0 | o=0x0 | root=0x3C0AFE | -32000,-32000 160x28 | FRB_Launch とその他 1 個のタブ - エクスプローラー
+0x170B2C | 28544 | explorer.exe | Child | True | ShellTabWindowClass | p=0x3C0AFE | o=0x0 | root=0x3C0AFE | -32000,-31864 0x0 | launch_app_20261121_204909_SlashEnterKeyUp_FIX_DIFF.zip
+0xB804A8 | 28544 | explorer.exe | Child | True | ShellTabWindowClass | p=0x3C0AFE | o=0x0 | root=0x3C0AFE | -32000,-31864 0x0 | FRB_Launch
+0x1C08BE | 15496 | FRBStudio.NativeShell.exe | TopLevel | False | .NET-BroadcastEventWindow.4.0.0.0.34f5582.0 | p=0x0 | o=0x0 | root=0x1C08BE | 0,0 0x0 | .NET-BroadcastEventWindow.4.0.0.0.34f5582.0
+0x3D061A | 15496 | FRBStudio.NativeShell.exe | TopLevel | False | GDI+ Hook Window Class | p=0x0 | o=0x0 | root=0x3D061A | 0,0 1x1 | GDI+ Window (FRBStudio.NativeShell.exe)
+0x17091E | 31372 | FRBStudio.NativeShell.exe | TopLevel | False | .NET-BroadcastEventWindow.4.0.0.0.34f5582.0 | p=0x0 | o=0x0 | root=0x17091E | 0,0 0x0 | .NET-BroadcastEventWindow.4.0.0.0.34f5582.0
+0x1904B2 | 31372 | FRBStudio.NativeShell.exe | TopLevel | False | GDI+ Hook Window Class | p=0x0 | o=0x0 | root=0x1904B2 | 0,0 1x1 | GDI+ Window (FRBStudio.NativeShell.exe)
+0x20798 | 7124 | FRBStudio.NativeShell.exe | TopLevel | False | .NET-BroadcastEventWindow.4.0.0.0.34f5582.0 | p=0x0 | o=0x0 | root=0x20798 | 0,0 0x0 | .NET-BroadcastEventWindow.4.0.0.0.34f5582.0
+0x40766 | 7124 | FRBStudio.NativeShell.exe | TopLevel | False | GDI+ Hook Window Class | p=0x0 | o=0x0 | root=0x40766 | 0,0 1x1 | GDI+ Window (FRBStudio.NativeShell.exe)
+0x260C88 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x260C88 | 0,0 1387x39 | _q_titlebar
+0x80BF8 | 18072 | python.exe | TopLevel | False | Chrome_WidgetWin_0 | p=0x0 | o=0x0 | root=0x80BF8 | 156,156 1440x753 | 
+0x230B2E | 18072 | python.exe | TopLevel | False | Base_PowerMessageWindow | p=0x0 | o=0x0 | root=0x230B2E | 0,0 0x0 | 
+0x5507C6 | 18072 | python.exe | TopLevel | False | _q_titlebar | p=0x0 | o=0x0 | root=0x5507C6 | 0,0 390x39 | _q_titlebar
+0x106D0 | 21296 | codex-computer-use-swift.exe | TopLevel | False | IME | p=0x106CE | o=0x106CE | root=0x106D0 | 0,0 0x0 | Default IME
+0x470544 | 21124 | Obsidian.exe | TopLevel | False | MSCTFIME UI | p=0x1E0C5A | o=0x1E0C5A | root=0x470544 | 0,0 0x0 | MSCTFIME UI
+0x1E0C5A | 21124 | Obsidian.exe | TopLevel | False | IME | p=0x250DD8 | o=0x250DD8 | root=0x1E0C5A | 0,0 0x0 | Default IME
+0x1B0D94 | 18072 | python.exe | TopLevel | False | MSCTFIME UI | p=0x32076C | o=0x32076C | root=0x1B0D94 | 0,0 0x0 | MSCTFIME UI
+0x32076C | 18072 | python.exe | TopLevel | False | IME | p=0x140E3A | o=0x140E3A | root=0x32076C | 0,0 0x0 | Default IME
+0x7608CC | 25436 | Obsidian.exe | TopLevel | False | IME | p=0x9706DE | o=0x9706DE | root=0x7608CC | 0,0 0x0 | Default IME
+0x3608B6 | 15496 | FRBStudio.NativeShell.exe | TopLevel | False | MSCTFIME UI | p=0x180866 | o=0x180866 | root=0x3608B6 | 0,0 0x0 | MSCTFIME UI
+0x180866 | 15496 | FRBStudio.NativeShell.exe | TopLevel | False | IME | p=0x1C08BE | o=0x1C08BE | root=0x180866 | 0,0 0x0 | Default IME
+0x2308A0 | 15496 | FRBStudio.NativeShell.exe | TopLevel | False | IME | p=0x3D061A | o=0x3D061A | root=0x2308A0 | 0,0 0x0 | Default IME
+0x1A0A28 | 31372 | FRBStudio.NativeShell.exe | TopLevel | False | MSCTFIME UI | p=0x120290 | o=0x120290 | root=0x1A0A28 | 0,0 0x0 | MSCTFIME UI
+0x120290 | 31372 | FRBStudio.NativeShell.exe | TopLevel | False | IME | p=0x17091E | o=0x17091E | root=0x120290 | 0,0 0x0 | Default IME
+0xAC096C | 31372 | FRBStudio.NativeShell.exe | TopLevel | False | IME | p=0x1904B2 | o=0x1904B2 | root=0xAC096C | 0,0 0x0 | Default IME
+0x806E4 | 7124 | FRBStudio.NativeShell.exe | TopLevel | False | MSCTFIME UI | p=0x2079A | o=0x2079A | root=0x806E4 | 0,0 0x0 | MSCTFIME UI
+0x2079A | 7124 | FRBStudio.NativeShell.exe | TopLevel | False | IME | p=0x20798 | o=0x20798 | root=0x2079A | 0,0 0x0 | Default IME
+0x6065E | 7124 | FRBStudio.NativeShell.exe | TopLevel | False | IME | p=0x40766 | o=0x40766 | root=0x6065E | 0,0 0x0 | Default IME
+
+PROCESS DETAILS: see processes_FOCUS.csv
+WINDOW PARENT/OWNER/ROOT: see windows_FOCUS.csv
+EVENTS: see window_events_FOCUS.csv (Monitor only)
+Z-ORDER: see zorder_timeline_FOCUS.csv (Snapshot + Monitor).
+TOPMOST: True = WS_EX_TOPMOST (0x8) in ExStyle. HWND_TOP cannot rise above TOPMOST windows.
+NearestOverlappingAbove is the first visible window geometrically intersecting this one (not pixel occlusion).
+NearestVisibleAbove may be unrelated to actual occlusion; compare HitRootHWND and cursor coordinates.
+NOTE: A window that disappears from TopLevel may become a child of Launch. Compare final RootHWND/ParentHWND.
+PRIVACY: Names, paths and titles may reveal local files. Inspect files before sharing.

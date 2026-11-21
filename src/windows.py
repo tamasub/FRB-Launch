@@ -3,6 +3,7 @@ import ctypes as c
 from ctypes import wintypes as w
 import os
 import time
+import logging
 
 IS_WINDOWS = os.name == 'nt'
 if IS_WINDOWS:
@@ -26,6 +27,8 @@ if IS_WINDOWS:
     user.SetWindowPos.restype = w.BOOL
     user.GetLastInputInfo.argtypes = [c.c_void_p]
     user.GetLastInputInfo.restype = w.BOOL
+    user.GetCursorPos.argtypes = [c.POINTER(w.POINT)]
+    user.GetCursorPos.restype = w.BOOL
     kernel = c.WinDLL('kernel32', use_last_error=True)
     kernel.GetCurrentThreadId.restype = w.DWORD
     user.IsWindow.argtypes = [w.HWND]
@@ -139,6 +142,163 @@ def activate_keyboard_window(hwnd, expected_foreground=None, input_window=None):
 
 class LastInputInfo(c.Structure):
     _fields_ = [('cbSize', w.UINT), ('dwTime', w.DWORD)]
+
+
+def last_user_input_tick():
+    """Win32 last physical input tick; None means a focus handoff is unsafe."""
+    if not IS_WINDOWS:
+        return None
+    info = LastInputInfo()
+    info.cbSize = c.sizeof(LastInputInfo)
+    if not user.GetLastInputInfo(c.byref(info)):
+        return None
+    return int(info.dwTime)
+
+
+# The Enter KeyUp is itself a physical input.  When multiple Qt.Tool columns
+# close, Win32 may record that release before Python regains control.  The
+# last-input timestamp alone cannot identify the event: use a deliberately
+# narrow, one-time keyboard-transition check rather than accepting any recent
+# input as harmless.  This is a best-effort guard, not a global input hook.
+_MENU_ENTER_VK = 0x0D
+_MENU_MOUSE_VKS = (0x01, 0x02, 0x04, 0x05, 0x06)
+_MENU_ENTER_RELEASE_LIMIT_MS = 250
+_MENU_ENTER_RELEASE_LIMIT_SEC = 0.40
+
+
+def _menu_handoff_input_snapshot():
+    """Read keyboard/button states and pointer position, without installing hooks.
+
+    Return None if native state is unavailable; in that case the existing
+    strict last-input guard remains in effect (fail closed).
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        point = w.POINT()
+        if not user.GetCursorPos(c.byref(point)):
+            return None
+        down = set()
+        mouse_activity = False
+        for key in range(1, 255):
+            status = int(user.GetAsyncKeyState(key))
+            if key in _MENU_MOUSE_VKS and status & 0x0001:
+                mouse_activity = True
+            if status & 0x8000:
+                down.add(key)
+        return {
+            'enter_down': _MENU_ENTER_VK in down,
+            'other_down': frozenset(down - {_MENU_ENTER_VK}),
+            'mouse_activity': mouse_activity,
+            'pointer': (int(point.x), int(point.y)),
+        }
+    except (OSError, AttributeError, TypeError, ValueError):
+        return None
+
+
+def _trace_menu_enter_release(decision, input_tick, now_tick):
+    """Diagnostics for the physical-input guard; no paths or typed text."""
+    logging.getLogger('frb.launch.diagnostics').info(
+        'SLASH_ENTER_RELEASE decision=%s delta_ms=%s',
+        decision, ((now_tick - input_tick) & 0xffffffff))
+
+
+def _menu_handoff_input_is_expected_release(guard, input_tick, now_tick, elapsed):
+    """Accept ONLY the first likely Enter key release; reject later input.
+
+    LastInputInfo does not disclose event type. An Enter down->up transition,
+    unchanged pointer/buttons/other keys, and a short time bound are all
+    required. Once accepted, only that exact Win32 input tick is permitted
+    on a retry. A later click or key changes it and revokes the allowance.
+    """
+    if not isinstance(guard, dict):
+        _trace_menu_enter_release('no_keyup_snapshot', input_tick, now_tick)
+        return False
+    accepted_tick = guard.get('accepted_release_tick')
+    if accepted_tick is not None:
+        same = now_tick == accepted_tick
+        _trace_menu_enter_release('same_keyup' if same else 'later_input',
+                                  input_tick, now_tick)
+        return same
+    initial = guard.get('initial')
+    if (not isinstance(initial, dict) or not initial.get('enter_down')
+            or elapsed > _MENU_ENTER_RELEASE_LIMIT_SEC
+            or not 0 < ((now_tick - input_tick) & 0xffffffff) <= _MENU_ENTER_RELEASE_LIMIT_MS):
+        _trace_menu_enter_release('not_eligible', input_tick, now_tick)
+        return False
+    current = _menu_handoff_input_snapshot()
+    if (current is None or current['enter_down']
+            or current['pointer'] != initial['pointer']
+            or current['other_down'] != initial['other_down']
+            or current['mouse_activity']
+            or any(vk in current['other_down'] for vk in _MENU_MOUSE_VKS)):
+        _trace_menu_enter_release('state_changed', input_tick, now_tick)
+        return False
+    guard['accepted_release_tick'] = now_tick
+    _trace_menu_enter_release('enter_keyup_accepted', input_tick, now_tick)
+    return True
+
+
+def capture_menu_enter_handoff(menu_hwnd, launcher_hwnd):
+    """Record a keyboard-initiated Qt.Tool -> Launch handoff BEFORE hide().
+
+    Only a foreground menu (or its own Launch parent) may authorize recovery.
+    The timestamp prevents us from stealing focus after a subsequent user
+    click or keypress. The ticket is deliberately short-lived.
+    """
+    if not IS_WINDOWS or not menu_hwnd or not launcher_hwnd:
+        return None
+    if not user.IsWindow(menu_hwnd) or not user.IsWindow(launcher_hwnd):
+        return None
+    current = foreground()
+    if current not in (menu_hwnd, launcher_hwnd):
+        return None
+    tick = last_user_input_tick()
+    if tick is None:
+        return None
+    # A fourth ticket field is optional, preserving legacy strict 3-tuples.
+    # Only genuine physical Enter presses qualify for a KeyUp allowance.
+    return (int(current), tick, time.monotonic(),
+            {'initial': _menu_handoff_input_snapshot(),
+             'accepted_release_tick': None})
+
+
+def finish_menu_enter_handoff(launcher_hwnd, ticket):
+    """Repair a Qt.Tool menu close that brought Chrome/another app forward.
+
+    Unlike a generic SetForegroundWindow retry, this is permitted ONLY after
+    an Enter observed in our OWN foreground Tool menu, while there has been
+    no newer physical user input. Do not set permanent TOPMOST or reactivate
+    a launcher after the user deliberately switched to a different app.
+    """
+    if not IS_WINDOWS or ticket is None or not launcher_hwnd:
+        return False
+    try:
+        origin, input_tick, captured_at = ticket[:3]
+        elapsed = time.monotonic() - captured_at
+        if not origin or elapsed < 0 or elapsed > 0.75:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if not user.IsWindow(launcher_hwnd):
+        return False
+    now_tick = last_user_input_tick()
+    if now_tick is None:
+        return False
+    if now_tick != input_tick:
+        release_guard = ticket[3] if len(ticket) > 3 else None
+        if not _menu_handoff_input_is_expected_release(
+                release_guard, input_tick, now_tick, elapsed):
+            return False
+    current = foreground()
+    if not current:
+        return False
+    if current == launcher_hwnd:
+        return True
+    # The parent was obscured by the OS when its activated Qt.Tool closed.
+    # Raise a normal window only; no persistent always-on-top flag.
+    raise_normal_window(launcher_hwnd)
+    return activate_keyboard_window(launcher_hwnd, expected_foreground=current)
 
 
 def desktop_click_still_last_input(mouse_tick, tolerance_ms=48):

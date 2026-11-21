@@ -36,6 +36,8 @@ using System.Text;
 public static class FRBWindowInspectorNative {
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X, Y; }
     public delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
 
     [DllImport("user32.dll")]
@@ -72,6 +74,11 @@ public static class FRBWindowInspectorNative {
     private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out POINT point);
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(POINT point);
     [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")]
     private static extern IntPtr GetWindowLongPtr64(IntPtr hwnd, int index);
     [DllImport("user32.dll", EntryPoint="GetWindowLongW")]
@@ -109,6 +116,8 @@ public static class FRBWindowInspectorNative {
     public static IntPtr Owner(IntPtr h) { return GetWindow(h, 4); }
     public static IntPtr Root(IntPtr h) { return GetAncestor(h, 2); }
     public static IntPtr Foreground() { return GetForegroundWindow(); }
+    public static POINT CursorPosition() { POINT p; GetCursorPos(out p); return p; }
+    public static IntPtr WindowAt(POINT p) { return WindowFromPoint(p); }
     public static RECT Bounds(IntPtr h) { RECT rect; GetWindowRect(h, out rect); return rect; }
     public static string Cloaked(IntPtr h) {
         try { int value; int rc = DwmGetWindowAttribute(h, 14, out value, 4);
@@ -172,7 +181,7 @@ function Refresh-ProcessNames([hashtable]$map) {
     } catch { }
 }
 
-function New-WindowEntry([IntPtr]$handle, [string]$kind, [hashtable]$processMap) {
+function New-WindowEntry([IntPtr]$handle, [string]$kind, [hashtable]$processMap, [int]$zRank = -1) {
     $windowProcessId = [int][FRBWindowInspectorNative]::ProcessId($handle)
     $name = ''
     if ($processMap.ContainsKey($windowProcessId)) { $name = [string]$processMap[$windowProcessId] }
@@ -181,6 +190,7 @@ function New-WindowEntry([IntPtr]$handle, [string]$kind, [hashtable]$processMap)
     return [pscustomobject]@{
         Timestamp = (Get-Date).ToString('o')
         Kind = $kind
+        ZRank = $zRank
         HWND = $h
         PID = $windowProcessId
         ProcessName = $name
@@ -203,6 +213,11 @@ function New-WindowEntry([IntPtr]$handle, [string]$kind, [hashtable]$processMap)
         Height = $r.Bottom - $r.Top
         Style = [FRBWindowInspectorNative]::LongHex($handle, -16)
         ExStyle = [FRBWindowInspectorNative]::LongHex($handle, -20)
+        # Read-only: WS_EX_TOPMOST is bit 0x8 of the Win32 extended style.
+        # Captured for ALL windows; the shared timeline exposes only the
+        # immediate/intersecting neighbors of the focused editor/workspace.
+        Topmost = (([Convert]::ToUInt32(
+            ([FRBWindowInspectorNative]::LongHex($handle, -20)).Substring(2), 16) -band 0x8) -ne 0)
     }
 }
 
@@ -215,8 +230,10 @@ function Test-FocusedWindow($window) {
 function Get-WindowInventory([hashtable]$processMap, [bool]$children) {
     $list = New-Object 'System.Collections.Generic.List[object]'
     $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    $zRank = 0
     foreach ($hwnd in [FRBWindowInspectorNative]::TopWindows()) {
-        $item = New-WindowEntry $hwnd 'TopLevel' $processMap
+        $item = New-WindowEntry $hwnd 'TopLevel' $processMap $zRank
+        $zRank++
         if ($seen.Add($item.HWND)) { $list.Add($item) }
         if ($children -and (Test-FocusedWindow $item)) {
             foreach ($child in [FRBWindowInspectorNative]::Children($hwnd)) {
@@ -226,6 +243,93 @@ function Get-WindowInventory([hashtable]$processMap, [bool]$children) {
         }
     }
     return $list.ToArray()
+}
+
+# Read-only focused Z-order diagnostic. EnumWindows lists top-level windows from
+# highest to lowest Z order. The nearest visible predecessor is NOT necessarily
+# an occluder; the cursor hit and geometry give additional evidence.
+function Get-FocusedZOrderSamples([object[]]$topWindows, [int]$sampleNumber) {
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    $byHwnd = @{}
+    foreach ($w in $topWindows) { $byHwnd[[string]$w.HWND] = $w }
+
+    $point = [FRBWindowInspectorNative]::CursorPosition()
+    $hit = [FRBWindowInspectorNative]::WindowAt($point)
+    $hitRoot = [FRBWindowInspectorNative]::Root($hit)
+    $hitHwnd = [FRBWindowInspectorNative]::Hex($hit)
+    $hitRootHwnd = [FRBWindowInspectorNative]::Hex($hitRoot)
+    $frontHwnd = [FRBWindowInspectorNative]::Hex([FRBWindowInspectorNative]::Foreground())
+    $hitRootWindow = $null
+    $frontWindow = $null
+    if ($byHwnd.ContainsKey($hitRootHwnd)) { $hitRootWindow = $byHwnd[$hitRootHwnd] }
+    if ($byHwnd.ContainsKey($frontHwnd)) { $frontWindow = $byHwnd[$frontHwnd] }
+
+    foreach ($w in $topWindows) {
+        if (-not (Test-FocusedWindow $w)) { continue }
+        $nearest = $null
+        $aboveCursor = $null
+        $overlapping = $null
+        $rank = [int]$w.ZRank
+        for ($i = ($rank - 1); $i -ge 0; $i--) {
+            $prev = $topWindows[$i]
+            $cloak = [string]$prev.Cloaked
+            if (-not $prev.Visible -or $prev.Minimized -or ($cloak -ne '0' -and $cloak -ne 'unknown')) { continue }
+            if ($null -eq $nearest) { $nearest = $prev }
+            # Geometric overlap is a stronger clue than mere stack order.
+            # Does not assume anything about alpha, window regions or DWM.
+            if ($null -eq $overlapping -and
+                [math]::Min($prev.Right, $w.Right) -gt [math]::Max($prev.Left, $w.Left) -and
+                [math]::Min($prev.Bottom, $w.Bottom) -gt [math]::Max($prev.Top, $w.Top)) {
+                $overlapping = $prev
+            }
+            if ($null -eq $aboveCursor -and
+                $point.X -ge $prev.Left -and $point.X -lt $prev.Right -and
+                $point.Y -ge $prev.Top -and $point.Y -lt $prev.Bottom) {
+                $aboveCursor = $prev
+            }
+        }
+        $rows.Add([pscustomobject]@{
+            Timestamp = (Get-Date).ToString('o')
+            Sample = $sampleNumber
+            HWND = $w.HWND
+            PID = $w.PID
+            ProcessName = $w.ProcessName
+            Title = $w.Title
+            ClassName = $w.ClassName
+            ZRank = $w.ZRank
+            Visible = $w.Visible
+            Cloaked = $w.Cloaked
+            Topmost = $w.Topmost
+            ExStyle = $w.ExStyle
+            Foreground = $w.Foreground
+            NearestVisibleAboveHWND = $(if ($null -ne $nearest) { $nearest.HWND } else { '' })
+            NearestVisibleAboveProcess = $(if ($null -ne $nearest) { $nearest.ProcessName } else { '' })
+            NearestVisibleAboveClass = $(if ($null -ne $nearest) { $nearest.ClassName } else { '' })
+            NearestVisibleAboveZRank = $(if ($null -ne $nearest) { $nearest.ZRank } else { -1 })
+            NearestVisibleAboveTopmost = $(if ($null -ne $nearest) { $nearest.Topmost } else { $false })
+            NearestVisibleAboveExStyle = $(if ($null -ne $nearest) { $nearest.ExStyle } else { '' })
+            NearestOverlappingAboveHWND = $(if ($null -ne $overlapping) { $overlapping.HWND } else { '' })
+            NearestOverlappingAboveProcess = $(if ($null -ne $overlapping) { $overlapping.ProcessName } else { '' })
+            NearestOverlappingAboveZRank = $(if ($null -ne $overlapping) { $overlapping.ZRank } else { -1 })
+            NearestOverlappingAboveTopmost = $(if ($null -ne $overlapping) { $overlapping.Topmost } else { $false })
+            NearestOverlappingAboveExStyle = $(if ($null -ne $overlapping) { $overlapping.ExStyle } else { '' })
+            AboveCursorHWND = $(if ($null -ne $aboveCursor) { $aboveCursor.HWND } else { '' })
+            AboveCursorProcess = $(if ($null -ne $aboveCursor) { $aboveCursor.ProcessName } else { '' })
+            AboveCursorClass = $(if ($null -ne $aboveCursor) { $aboveCursor.ClassName } else { '' })
+            AboveCursorTopmost = $(if ($null -ne $aboveCursor) { $aboveCursor.Topmost } else { $false })
+            CursorX = $point.X
+            CursorY = $point.Y
+            HitHWND = $hitHwnd
+            HitRootHWND = $hitRootHwnd
+            HitRootProcess = $(if ($null -ne $hitRootWindow) { $hitRootWindow.ProcessName } else { '' })
+            HitRootClass = $(if ($null -ne $hitRootWindow) { $hitRootWindow.ClassName } else { '' })
+            ForegroundHWND = $frontHwnd
+            ForegroundProcess = $(if ($null -ne $frontWindow) { $frontWindow.ProcessName } else { '' })
+            ForegroundZRank = $(if ($null -ne $frontWindow) { $frontWindow.ZRank } else { -1 })
+            ForegroundTopmost = $(if ($null -ne $frontWindow) { $frontWindow.Topmost } else { $false })
+        })
+    }
+    return $rows.ToArray()
 }
 
 function New-Event([string]$type, $win, [string]$detail) {
@@ -272,11 +376,15 @@ $processesBefore = @(Get-ProcessInventory)
 $names = New-ProcessNameIndex $processesBefore
 $windowsBefore = @(Get-WindowInventory $names $true)
 $events = New-Object 'System.Collections.Generic.List[object]'
+$zOrderTimeline = New-Object 'System.Collections.Generic.List[object]'
+$sampleNumber = 0
 
 if ($Mode -eq 'Monitor') {
     Write-Host ("MONITOR: for {0}s / {1}ms sampling. Trigger your app action now." -f $DurationSeconds, $IntervalMs) -ForegroundColor Yellow
     $previous = @{}
-    foreach ($w in @(Get-WindowInventory $names $false)) { $previous[$w.HWND] = $w }
+    $initialTop = @(Get-WindowInventory $names $false)
+    foreach ($w in $initialTop) { $previous[$w.HWND] = $w }
+    foreach ($row in @(Get-FocusedZOrderSamples $initialTop $sampleNumber)) { $zOrderTimeline.Add($row) }
     $lastForeground = [FRBWindowInspectorNative]::Hex([FRBWindowInspectorNative]::Foreground())
     $started = Get-Date
     $refreshAt = Get-Date
@@ -286,8 +394,11 @@ if ($Mode -eq 'Monitor') {
             Refresh-ProcessNames $names
             $refreshAt = (Get-Date).AddSeconds(2)
         }
+        $sampleNumber++
         $now = @{}
-        foreach ($w in @(Get-WindowInventory $names $false)) {
+        $currentTop = @(Get-WindowInventory $names $false)
+        foreach ($row in @(Get-FocusedZOrderSamples $currentTop $sampleNumber)) { $zOrderTimeline.Add($row) }
+        foreach ($w in $currentTop) {
             $now[$w.HWND] = $w
             if (-not $previous.ContainsKey($w.HWND)) {
                 $events.Add((New-Event 'NEW_TOP_LEVEL' $w ''))
@@ -322,6 +433,10 @@ if ($Mode -eq 'Monitor') {
 $processesAfter = @(Get-ProcessInventory)
 $names = New-ProcessNameIndex $processesAfter
 $windowsAfter = @(Get-WindowInventory $names $true)
+if ($Mode -eq 'Snapshot') {
+    $snapshotTop = @($windowsAfter | Where-Object { $_.Kind -eq 'TopLevel' })
+    foreach ($row in @(Get-FocusedZOrderSamples $snapshotTop $sampleNumber)) { $zOrderTimeline.Add($row) }
+}
 $focusedProcesses = @($processesAfter | Where-Object { $_.Name -match $FocusRegex })
 $focusedWindows = @($windowsAfter | Where-Object { Test-FocusedWindow $_ })
 $focusedEvents = @($events.ToArray() | Where-Object { Test-FocusedWindow $_ })
@@ -332,6 +447,7 @@ Save-Csv $processesAfter (Join-Path $dest 'processes_after_ALL.csv')
 Save-Csv $windowsAfter (Join-Path $dest 'windows_after_ALL.csv')
 Save-Csv $focusedProcesses (Join-Path $dest 'processes_FOCUS.csv')
 Save-Csv $focusedWindows (Join-Path $dest 'windows_FOCUS.csv')
+Save-Csv $zOrderTimeline.ToArray() (Join-Path $dest 'zorder_timeline_FOCUS.csv')
 if ($Mode -eq 'Monitor') {
     Save-Csv $events.ToArray() (Join-Path $dest 'window_events_ALL.csv')
     Save-Csv $focusedEvents (Join-Path $dest 'window_events_FOCUS.csv')
@@ -347,8 +463,9 @@ $meta = [ordered]@{
     CommandLineIncluded = [bool]$IncludeCommandLine
     ProcessTotal = $processesAfter.Count
     WindowTotal = $windowsAfter.Count
+    ZOrderSamples = $zOrderTimeline.Count
 }
-Save-Json ([ordered]@{ Meta=$meta; Processes=$focusedProcesses; Windows=$focusedWindows; Events=$focusedEvents }) (Join-Path $dest 'FOCUS.json')
+Save-Json ([ordered]@{ Meta=$meta; Processes=$focusedProcesses; Windows=$focusedWindows; Events=$focusedEvents; ZOrder=$zOrderTimeline.ToArray() }) (Join-Path $dest 'FOCUS.json')
 Save-Json ([ordered]@{ Meta=$meta; Processes=$processesAfter; Windows=$windowsAfter; Events=@($events.ToArray()) }) (Join-Path $dest 'FULL_LOCAL.json')
 
 $lines = New-Object 'System.Collections.Generic.List[string]'
@@ -358,6 +475,8 @@ $lines.Add(('Windows process count: ' + $processesAfter.Count + ' / focus: ' + $
 $lines.Add(('Windows handle count (top-level + target child): ' + $windowsAfter.Count + ' / focus: ' + $focusedWindows.Count))
 $lines.Add(('Events: ' + $events.Count + ' / focus: ' + $focusedEvents.Count))
 $lines.Add(('Focus filter: ' + $FocusRegex))
+$lines.Add(('Z-order focused timeline rows: ' + $zOrderTimeline.Count))
+$lines.Add('ZRank: 0 = top of all top-level windows, larger value = farther back.')
 $lines.Add('')
 $lines.Add('FOCUSED WINDOWS (HWND | PID | process | kind | visible | class | parent | owner | root | rect | title)')
 foreach ($w in $focusedWindows) {
@@ -367,19 +486,23 @@ $lines.Add('')
 $lines.Add('PROCESS DETAILS: see processes_FOCUS.csv')
 $lines.Add('WINDOW PARENT/OWNER/ROOT: see windows_FOCUS.csv')
 $lines.Add('EVENTS: see window_events_FOCUS.csv (Monitor only)')
+$lines.Add('Z-ORDER: see zorder_timeline_FOCUS.csv (Snapshot + Monitor).')
+$lines.Add('TOPMOST: True = WS_EX_TOPMOST (0x8) in ExStyle. HWND_TOP cannot rise above TOPMOST windows.')
+$lines.Add('NearestOverlappingAbove is the first visible window geometrically intersecting this one (not pixel occlusion).')
+$lines.Add('NearestVisibleAbove may be unrelated to actual occlusion; compare HitRootHWND and cursor coordinates.')
 $lines.Add('NOTE: A window that disappears from TopLevel may become a child of Launch. Compare final RootHWND/ParentHWND.')
 $lines.Add('PRIVACY: Names, paths and titles may reveal local files. Inspect files before sharing.')
 [System.IO.File]::WriteAllLines((Join-Path $dest 'SUMMARY.txt'), $lines.ToArray(), ([System.Text.UTF8Encoding]::new($true)))
 
 $shareNote = @'
 FRB Window Inspector - sharing guidance
-This ZIP contains only focus-matched process/window records, not the all-process inventory.
-It can still contain process paths, document titles, and local file names.
+This ZIP contains focus-matched process/window records plus nearby window IDs/process/class, topmost flags and extended styles for Z-order diagnosis. It is not the all-process inventory.
+It can still contain process paths, document titles, local file names, and other programs' process/class information.
 Please inspect before sharing. Nothing is uploaded by this tool.
 For the full inventory, consult the unzipped local report directory instead.
 '@
 [System.IO.File]::WriteAllText((Join-Path $dest 'READ_BEFORE_SHARING.txt'), $shareNote, ([System.Text.UTF8Encoding]::new($true)))
-$shareFiles = @('SUMMARY.txt','READ_BEFORE_SHARING.txt','processes_FOCUS.csv','windows_FOCUS.csv','FOCUS.json')
+$shareFiles = @('SUMMARY.txt','READ_BEFORE_SHARING.txt','processes_FOCUS.csv','windows_FOCUS.csv','zorder_timeline_FOCUS.csv','FOCUS.json')
 if ($Mode -eq 'Monitor') { $shareFiles += 'window_events_FOCUS.csv' }
 $sharePath = Join-Path $dest 'FRB_WindowReport_FOCUS_SHARE.zip'
 $shareFilePaths = @($shareFiles | ForEach-Object { Join-Path $dest $_ })

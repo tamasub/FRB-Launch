@@ -388,6 +388,15 @@ class DesktopDoubleClick:
                 info = c.cast(param, c.POINTER(LowLevelMouseInfo)).contents
                 if (message == self.WM_LBUTTONUP
                         and getattr(self, 'on_embedded_mouse_release', None) is not None):
+                    # Temporary diagnostic: one record per native left-button UP.
+                    # Keep this on the hook lightweight; no Qt or Z-order calls.
+                    try:
+                        from guest_zorder_trace import enabled
+                        if enabled() and self.logger:
+                            self.logger.info('GUEST_ZTRACE stage=hook_up x=%s y=%s tick=%s',
+                                             info.pt.x, info.pt.y, info.time)
+                    except Exception:
+                        pass
                     # Hook callbacks must stay fast. The Qt event loop checks
                     # the precise native HWND and applies focus *only* if the
                     # release happened inside the docked Obsidian editor.

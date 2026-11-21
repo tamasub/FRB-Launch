@@ -1,0 +1,5 @@
+﻿FRB Window Inspector - sharing guidance
+This ZIP contains focus-matched process/window records plus nearby window IDs/process/class, topmost flags and extended styles for Z-order diagnosis. It is not the all-process inventory.
+It can still contain process paths, document titles, local file names, and other programs' process/class information.
+Please inspect before sharing. Nothing is uploaded by this tool.
+For the full inventory, consult the unzipped local report directory instead.

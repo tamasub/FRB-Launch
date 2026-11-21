@@ -1887,20 +1887,23 @@ class StudioPreviewPanel(QFrame):
                     and self._attached is not None and self._attached.attached)
 
     def focus_external_after_native_click(self, x, y):
-        """Give the clicked editor native input focus for Sakura AND Obsidian.
+        """React only to a real native click on an attached editor.
 
-        Both are cross-process Win32 children. The click must actually land on
-        the attached HWND; the shared Win32 helper rejects other applications,
-        toolbar/list clicks and delayed events, so it never transfers typing
-        from Files List merely because a preview is visible.
+        Non-parented Obsidian, VSCode and Sakura need the Launch workspace
+        raised alongside them, *without* changing the editor's native keyboard
+        focus or IME context. Studio's SetParent host is unaffected.
         """
-        if (self._external_key is None
-                or self._external_key[0] not in ('obsidian', 'sakura')
-                or not self.external_embedded_active()):
+        if self._external_key is None or not self.external_embedded_active():
             return False
+        attached = self._attached
+        if getattr(attached, 'is_ime_overlay', False):
+            return bool(attached.raise_workspace_from_guest_click(x, y))
+        if self._external_key[0] not in ('obsidian', 'sakura'):
+            return False
+        # Legacy SetParent guests still use the pre-existing input handoff.
         from studio_win32_host import focus_embedded_editor_from_click
         return focus_embedded_editor_from_click(
-            self._attached.hwnd, int(self.host.winId()), x, y)
+            attached.hwnd, int(self.host.winId()), x, y)
 
     def focus_obsidian_after_native_click(self, x, y):
         """Backwards-compatible name for the previous Obsidian-only hook."""

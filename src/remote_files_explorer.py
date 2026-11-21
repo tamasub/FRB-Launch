@@ -601,6 +601,9 @@ class RemoteFilesExplorer(QWidget):
             self._schedule_visible_exp_watch_sync)
         self.tree.horizontalScrollBar().valueChanged.connect(self._schedule_tree_state_save)
         self.tree.expanded.connect(self._expand_index)
+        # New navigation standard: a manually opened branch replaces older
+        # expanded branches, rather than reviving a previous folder trail.
+        self.tree.expanded.connect(self._collapse_stale_exp_branches)
         self.tree.expanded.connect(self._schedule_visible_exp_watch_sync)
         self.tree.collapsed.connect(self._schedule_visible_exp_watch_sync)
         # Clicking the triangle is navigation too: Qt does not guarantee a
@@ -750,7 +753,7 @@ class RemoteFilesExplorer(QWidget):
         data = item.data(_DATA_ROLE) if item is not None else None
         return data.get('virtual') if isinstance(data, dict) else None
 
-    def remote_select_virtual_node(self, node):
+    def remote_select_virtual_node(self, node, *, expand=True):
         """Find a virtual folder in Exp without firing a new navigation.
 
         Used when the user goes List -> Exp, including after entering a
@@ -777,6 +780,8 @@ class RemoteFilesExplorer(QWidget):
                 if found is None:
                     return None
                 if pos < len(lineage) - 1 and not self.tree.isExpanded(found):
+                    if not expand:
+                        return found
                     self.tree.expand(found)
                 parent = found
             return found
@@ -794,7 +799,8 @@ class RemoteFilesExplorer(QWidget):
         finally:
             self._syncing_directory = old_sync
 
-    def remote_select_mounted_directory(self, node, entry_path, target_path):
+    def remote_select_mounted_directory(self, node, entry_path, target_path,
+                                        *, expand=True):
         """Keep an authored JSON alias as the ONLY ancestor of its OS contents.
 
         Never synchronize a mounted path through PC -> C: -> Users: this
@@ -804,8 +810,14 @@ class RemoteFilesExplorer(QWidget):
         from directory_entry_origin import within_entry
         if not within_entry(target_path, entry_path):
             return False
-        if not self.remote_select_virtual_node(node):
+        if not self.remote_select_virtual_node(node, expand=expand):
             return False
+        # A collapsed virtual ancestor may be the deepest visible node.
+        # Never try to traverse physical children from the wrong virtual root.
+        selected = self.remote_current_virtual_node()
+        if not expand and (not isinstance(selected, dict) or
+                           selected.get('node_id') != node.get('node_id')):
+            return True
         relative = ntpath.relpath(target_path, entry_path)
         if relative == '.':
             return True
@@ -816,8 +828,11 @@ class RemoteFilesExplorer(QWidget):
             index = self.tree.currentIndex()
             current_path = entry_path
             for name in relative.split('\\'):
+                if not expand and not self.tree.isExpanded(index):
+                    break
                 self._expand_index(index)
-                self.tree.expand(index)
+                if expand:
+                    self.tree.expand(index)
                 parent = self.model.itemFromIndex(index)
                 current_path = ntpath.join(current_path, name)
                 expected = ntpath.normcase(ntpath.normpath(current_path))
@@ -1603,12 +1618,115 @@ class RemoteFilesExplorer(QWidget):
         if path:
             self.folder_selected.emit(path)
 
+    def _collapse_exp_branches_except(self, keep_index=None):
+        """Close stale branches without navigating Files or losing the active path.
+
+        For a manual disclosure, keep the newly opened node and its ancestors;
+        collapse *all* other loaded branches, including hidden descendants of
+        previously collapsed folders. A subsequent disclosure must not revive
+        an old child chain. With keep_index=None, start from fully folded Exp.
+        """
+        keep = []
+        index = keep_index
+        while index is not None and index.isValid():
+            keep.append(index)
+            index = index.parent()
+        to_close = []
+
+        def visit(parent):
+            for row in range(self.model.rowCount(parent)):
+                child = self.model.index(row, 0, parent)
+                if not child.isValid():
+                    continue
+                # Traverse even a collapsed parent: Qt can remember the
+                # expanded state of its descendants for the next reopening.
+                visit(child)
+                if child not in keep and self.tree.isExpanded(child):
+                    to_close.append(child)
+
+        visit(QModelIndex())
+        if not to_close:
+            return False
+        previous_sync = self._syncing_directory
+        self._syncing_directory = True
+        try:
+            self._selection_timer.stop()
+            for stale in to_close:
+                self.tree.collapse(stale)
+        finally:
+            self._syncing_directory = previous_sync
+        self._schedule_tree_state_save()
+        return True
+
+    def _collapse_stale_exp_branches(self, index):
+        """New standard: keep just the manually disclosed Exp path open.
+
+        Programmatic breadcrumb synchronization, restored sessions and the
+        legacy exp_auto_expand=true mode retain their existing semantics.
+        """
+        launcher = getattr(self, '_launcher', None)
+        if (self._syncing_directory or self._restoring_tree
+                or launcher is None
+                or getattr(launcher, 'exp_auto_expand', True)):
+            return
+        self._collapse_exp_branches_except(index)
+
+    def prepare_breadcrumb_expansion(self):
+        """Explicit menu command starts fresh, then opens the current path.
+
+        Clearing selection as well as branches avoids the same-directory fast
+        path in sync_current_directory() skipping a newly folded ancestor.
+        This is not Files navigation and must not fire folder_selected.
+        """
+        previous_sync = self._syncing_directory
+        self._syncing_directory = True
+        try:
+            self._selection_timer.stop()
+            self.tree.clear_wheel_pending()
+            self._collapse_exp_branches_except()
+            self.tree.clearSelection()
+            self.tree.setCurrentIndex(QModelIndex())
+        finally:
+            self._syncing_directory = previous_sync
+        self._schedule_tree_state_save()
+
     def _activate_disclosure(self, index):
-        """The explicit ▶/▼ control updates the same breadcrumb as a row click."""
+        """Disclosure only opens/closes Exp in the new navigation mode."""
         if self._syncing_directory:
             return
         self._selection_timer.stop()
         self.tree.setCurrentIndex(index)
+        launcher = self._launcher
+        if launcher is not None and not getattr(launcher, 'exp_auto_expand', True):
+            view = getattr(launcher, 'expanded_view', None)
+            if view is not None and view._workspace_mode == 'files':
+                # Only auto-advance the green Exp current when the human opens
+                # an ancestor of the breadcrumb. An unrelated branch stays
+                # selected, while its disclosure still never navigates List.
+                path = self._index_path(index)
+                target = view.current_directory()
+                on_route = False
+                if path and target:
+                    try:
+                        common = os.path.commonpath((
+                            os.path.normcase(os.path.normpath(path)),
+                            os.path.normcase(os.path.normpath(target))))
+                        on_route = common == os.path.normcase(os.path.normpath(path))
+                    except ValueError:
+                        pass
+                virtual = self.remote_current_virtual_node()
+                current_virtual = getattr(view, '_virtual_directory_node', None)
+                origin = getattr(view, '_filesystem_entry_origin', None)
+                if isinstance(origin, dict) and current_virtual is None:
+                    current_virtual = origin.get('node')
+                if isinstance(virtual, dict) and isinstance(current_virtual, dict):
+                    on_route = (virtual.get('node_id') in
+                                tuple(current_virtual.get('lineage') or
+                                      (current_virtual.get('node_id'),)))
+                if on_route:
+                    view.align_files_exp_with_location(self, expand=False)
+                launcher.set_files_operating_target('files_exp')
+            return  # Never navigate the breadcrumb as a side effect.
         # The disclosure triangle already performed this expansion. Do not
         # toggle the virtual branch again via _activate_virtual().
         virtual = getattr(self, 'remote_current_virtual_node', lambda: None)()
@@ -1619,10 +1737,12 @@ class RemoteFilesExplorer(QWidget):
         self._activate_index(index)
 
     def sync_current_directory(self, directory, *, prefer_direct=False,
-                               preferred_root_id=None):
-        """Reflect every Files breadcrumb transition in the visible tree.
+                               preferred_root_id=None, expand=True):
+        """Locate a directory, optionally opening only its ancestor branch.
 
-        A programmatic selection must never emit folder_selected again; that
+        expand=False stops at the deepest already-visible ancestor without
+        changing expanded/collapsed branches. A programmatic selection must
+        never emit folder_selected again; that
         would cause Files -> Exp -> Files recursion, duplicate history, and
         unexpected focus/cursor movement. Expand ONLY the path to the target.
         Registered roots retain their display order and duplicate aliases.
@@ -1672,8 +1792,12 @@ class RemoteFilesExplorer(QWidget):
                 _, node, base = candidate
             elif pc_root is not None:
                 node = pc_root
+                if not expand and not self.tree.isExpanded(node):
+                    self.tree.setCurrentIndex(node)
+                    return True
                 self._expand_index(node)
-                self.tree.expand(node)
+                if expand:
+                    self.tree.expand(node)
                 base = None
                 for i in range(self.model.itemFromIndex(node).rowCount()):
                     child = self.model.itemFromIndex(node).child(i)
@@ -1693,8 +1817,11 @@ class RemoteFilesExplorer(QWidget):
             relative = os.path.relpath(target, base)
             if relative not in ('.', ''):
                 for part in relative.split(os.sep):
+                    if not expand and not self.tree.isExpanded(node):
+                        break
                     self._expand_index(node)
-                    self.tree.expand(node)
+                    if expand:
+                        self.tree.expand(node)
                     parent_item = self.model.itemFromIndex(node)
                     next_node = None
                     for i in range(parent_item.rowCount()):
