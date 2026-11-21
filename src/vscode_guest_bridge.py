@@ -104,3 +104,33 @@ def new_hwnd_for_file(windows, baseline, target_file):
 
 def caption_matches_file(caption, path):
     return bool(caption and Path(path).name.casefold() in caption.casefold())
+
+
+def verified_previous_hwnd(windows, hwnd, expected_pid):
+    """Reattach only the exact VS Code HWND/PID previously used by Launch.
+
+    `windows` must come from editor_windows('vscode', include_hidden=True),
+    which independently verifies that the PID still belongs to Code.exe.
+    Titles may change when the user selects another tab on the desktop.
+    """
+    if not hwnd or not expected_pid:
+        return False
+    return any(int(h) == int(hwnd) and int(p) == int(expected_pid)
+               for h, p, _title in windows)
+
+
+def show_previous_window(hwnd, *, user32=None):
+    """Restore a known minimized Code HWND without activating or docking it.
+
+    Caller verifies HWND/PID first; this routine never enumerates other apps.
+    """
+    if user32 is None:
+        import ctypes
+        if os.name != 'nt':
+            return False
+        user32 = ctypes.windll.user32
+    if not user32.IsWindow(int(hwnd)):
+        return False
+    if user32.IsIconic(int(hwnd)):
+        user32.ShowWindow(int(hwnd), 4)  # SW_SHOWNOACTIVATE
+    return bool(user32.IsWindow(int(hwnd)) and not user32.IsIconic(int(hwnd)))

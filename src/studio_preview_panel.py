@@ -72,6 +72,7 @@ class StudioPreviewPanel(QFrame):
         self._studio_dock_completed.connect(self._on_studio_dock_completed)
         self._studio_dock_pending = False
         self._studio_popout_pending = False
+        self._after_studio_popout = None
         # Suspended Studio HWNDs are not destroyed. Keep their process and HWND
         # for a later reselect of the same file (including uncommitted edits).
         self._parked = {}
@@ -80,6 +81,9 @@ class StudioPreviewPanel(QFrame):
         # sessions. They are never killed by Preview's × button.
         self._external_key = None
         self._external_parked = {}
+        # Windows made visible by an automatic seat switch stay user-owned.
+        # Preview × must not silently close or forget their re-dock identity.
+        self._auto_ejected_keys = set()
         # Never borrow a parked Obsidian HWND for a DIFFERENT registered vault.
         # Record the authenticated vault at parking time, not via a later path lookup.
         self._obsidian_parked_vaults = {}
@@ -89,6 +93,8 @@ class StudioPreviewPanel(QFrame):
         self._vscode_profile_dir = None
         self._vscode_switch_pending = None
         self._vscode_queued = None
+        # Verified Launch-managed HWND -> PID for safe desktop re-docking.
+        self._vscode_window_pids = {}
         self._sakura_guest_switch = None
         self._sakura_guest_queued = None
         # A positively identified vault MAIN window may be borrowed and docked.
@@ -537,31 +543,79 @@ class StudioPreviewPanel(QFrame):
         self.content_stack.setCurrentWidget(self.host)
         self.title_label.setText('VS Code — '+Path(target.path).name)
         self.title_label.setToolTip(target.path)
-        parked = None
-        parked_key = None
-        for key in reversed(tuple(self._external_parked)):
-            if key[0] == 'vscode':
-                parked_key, parked = key, self._external_parked.pop(key)
-                break
-        if parked is not None:
+        # Reuse ONLY a previously verified Launch guest. A desktop user may
+        # close that window or Windows may recycle its HWND while it is away.
+        # Verify BOTH the native HWND and its original Code.exe PID before
+        # restoring; never borrow an unrelated user's VS Code window.
+        from vscode_guest_bridge import verified_previous_hwnd
+        from external_win32_host import editor_windows
+        candidates = [key for key in reversed(tuple(self._external_parked))
+                      if key[0] == 'vscode']
+        if target.key in candidates:
+            candidates.remove(target.key)
+            candidates.insert(0, target.key)
+        for parked_key in candidates:
+            parked = self._external_parked[parked_key]
+            expected_pid = getattr(self, '_vscode_window_pids', {}).get(int(parked))
             try:
+                same_window = verified_previous_hwnd(
+                    editor_windows('vscode', include_hidden=True), parked, expected_pid)
+            except (OSError, RuntimeError, ValueError) as exc:
+                same_window = False
+                trace('REDOCK_PROBE_FAILED', hwnd=int(parked), reason=type(exc).__name__)
+            if not same_window:
+                # Stale, ambiguous or unavailable HWND: discard only this Launch binding.
+                trace('REDOCK_STALE', hwnd=int(parked))
+                self._external_parked.pop(parked_key, None)
+                getattr(self, '_auto_ejected_keys', set()).discard(parked_key)
+                getattr(self, '_vscode_window_pids', {}).pop(int(parked), None)
+                continue
+            restored = None
+            try:
+                from vscode_guest_bridge import show_previous_window
+                if not show_previous_window(parked):
+                    raise OSError('VS Codeの復元対象がありません')
                 from guest_window_overlay import GuestWindowOverlay
-                self._attached = GuestWindowOverlay(parked, int(self.host.winId()))
+                restored = GuestWindowOverlay(parked, int(self.host.winId()))
+                restored.resize(self.host.width(), self.host.height())
+                self._attached = restored
                 self._external_key = parked_key
-                self._attached.resize(self.host.width(), self.host.height())
+                self._external_parked.pop(parked_key, None)
+                getattr(self, '_auto_ejected_keys', set()).discard(parked_key)
                 self._sync_popout_button()
                 self.status_label.hide()
-                trace('RESTORED', hwnd=int(parked))
+                trace('REDOCKED', hwnd=int(parked), pid=int(expected_pid))
                 if parked_key != target.key:
                     return self._open_vscode_guest(target)
                 return True
             except (OSError, RuntimeError, ValueError) as exc:
-                # Keep the old HWND available for safe desktop recovery.
-                self._external_parked[parked_key] = parked
+                # If positioning partially succeeded, return the ORIGINAL
+                # VS Code to desktop before trying a fresh dedicated window.
+                # Never orphan a still-attached foreign HWND.
+                if restored is not None and getattr(restored, 'attached', False):
+                    try:
+                        restored.detach(foreground=False, show_window=True)
+                    except (OSError, RuntimeError, ValueError):
+                        self._attached, self._external_key = restored, parked_key
+                        trace('REDOCK_FALLBACK_BLOCKED', hwnd=int(parked),
+                              reason='detach_failed')
+                        return False
+                    if getattr(restored, 'attached', False):
+                        self._attached, self._external_key = restored, parked_key
+                        trace('REDOCK_FALLBACK_BLOCKED', hwnd=int(parked),
+                              reason='still_attached')
+                        return False
                 self._attached = None
-                self.status_label.setText('VS Codeの復帰に失敗: '+str(exc))
-                self.status_label.show()
-                return False
+                self._external_key = None
+                # The old editor is left alive, visible and user-owned.
+                # Drop only the untrustworthy binding and use the normal
+                # --new-window route. A re-open must never end in a dead pane.
+                self._external_parked.pop(parked_key, None)
+                getattr(self, '_auto_ejected_keys', set()).discard(parked_key)
+                getattr(self, '_vscode_window_pids', {}).pop(int(parked), None)
+                trace('REDOCK_FALLBACK_NEW', hwnd=int(parked),
+                      reason=type(exc).__name__)
+                continue
         if self._vscode_profile_dir is None:
             self._vscode_profile_dir = new_profile_root()
         try:
@@ -623,7 +677,8 @@ class StudioPreviewPanel(QFrame):
         target, baseline, _pid, started = pending
         try:
             from external_win32_host import editor_windows
-            hwnd = new_hwnd_for_file(editor_windows('vscode'), baseline, target.path)
+            windows = editor_windows('vscode')
+            hwnd = new_hwnd_for_file(windows, baseline, target.path)
             if hwnd:
                 from guest_window_overlay import GuestWindowOverlay
                 attached = GuestWindowOverlay(hwnd, int(self.host.winId()))
@@ -634,7 +689,11 @@ class StudioPreviewPanel(QFrame):
                 attached.resize(self.host.width(), self.host.height())
                 self.status_label.hide()
                 self._sync_popout_button()
-                trace('DOCKED', hwnd=int(hwnd))
+                if not hasattr(self, '_vscode_window_pids'):
+                    self._vscode_window_pids = {}
+                self._vscode_window_pids[int(hwnd)] = next(
+                    (int(pid) for h, pid, _title in windows if int(h) == int(hwnd)), 0)
+                trace('DOCKED', hwnd=int(hwnd), pid=self._vscode_window_pids[int(hwnd)])
                 queued, self._vscode_queued = self._vscode_queued, None
                 if queued is not None and queued.key != target.key:
                     self._open_vscode_guest(queued)
@@ -797,6 +856,7 @@ class StudioPreviewPanel(QFrame):
                 from guest_window_overlay import SakuraGuestOverlay
                 self._attached = SakuraGuestOverlay(hwnd, int(self.host.winId()))
                 self._external_key = key
+                getattr(self, '_auto_ejected_keys', set()).discard(key)
                 self._attached.resize(self.host.width(), self.host.height())
                 self.status_label.hide()
                 self._sync_popout_button()
@@ -980,6 +1040,7 @@ class StudioPreviewPanel(QFrame):
         except (OSError, RuntimeError, ValueError):
             return False
         self._external_parked[key] = hwnd
+        getattr(self, '_auto_ejected_keys', set()).add(key)
         self._attached = None
         self._external_key = None
         self._external_timer.stop()
@@ -1666,6 +1727,8 @@ class StudioPreviewPanel(QFrame):
         if not self._studio_popout_pending:
             return
         self._studio_popout_pending = False
+        callback = getattr(self, '_after_studio_popout', None)
+        self._after_studio_popout = None
         if reply != 'OK':
             self.status_label.setText('Studioの外出しを中止しました。\n'
                 'Studio最新版のNativeShell再ビルドが必要な場合があります。\n' + reply)
@@ -1689,7 +1752,27 @@ class StudioPreviewPanel(QFrame):
         self._timer.stop()
         self._sync_popout_button()
         self.popout_requested.emit()
+        if callback is not None:
+            # Let Qt finish removing the old pane before opening the next.
+            QTimer.singleShot(0, callback)
         return True
+
+    def request_studio_autoswitch(self, callback):
+        """Async Studio release before switching to a different third-column app.
+
+        Unlike a plain SetParent detach, Studio requires native owner-release
+        acknowledgement. A failure keeps Studio in place; no new app starts.
+        """
+        if (self._target is None or self._process is None
+                or self._process.poll() is not None):
+            return False
+        if self._studio_popout_pending:
+            return False
+        self._after_studio_popout = callback
+        if self.pop_out_studio():
+            return True
+        self._after_studio_popout = None
+        return False
 
     def _restore_launch_focus_during_handoff(self):
         pending = self._external_pending
@@ -1988,14 +2071,18 @@ class StudioPreviewPanel(QFrame):
         if self._external_parked:
             from studio_win32_host import restore_parked_studio_window
             for key, hwnd in tuple(self._external_parked.items()):
+                # A previous editor automatically ejected to desktop is NOT
+                # part of the currently closing pane. Keep its re-dock handle.
+                if key in getattr(self, '_auto_ejected_keys', set()):
+                    continue
                 try:
                     restore_parked_studio_window(hwnd)
                     windows.append((hwnd, key[0]))
                 except (OSError, RuntimeError, ValueError):
                     # Preserve failed HWNDs for a future recovery attempt.
                     return False
-            self._external_parked.clear()
-            getattr(self, '_obsidian_parked_vaults', {}).clear()
+                self._external_parked.pop(key, None)
+                getattr(self, '_obsidian_parked_vaults', {}).pop(key, None)
         if windows:
             from studio_win32_host import request_editor_window_close
             for hwnd, app in set(windows):
@@ -2148,14 +2235,31 @@ class StudioPreviewPanel(QFrame):
             self._sakura_switch_from = None
             self.status_label.show()
 
-    def _park_external(self):
+    def auto_release_external_for_switch(self):
+        """Show the previous overlay on desktop before seating a different app.
+
+        Unlike Preview × (hidden parking), this is a visible, non-activating
+        desktop ejection. Legacy SetParent Sakura stays protected: its existing
+        explicit consent/close rules are not silently bypassed.
+        """
+        if self._external_key is None:
+            return True
+        if (self._external_key[0] == 'sakura' and
+                not getattr(self._attached, 'is_ime_overlay', False)):
+            return False
+        return bool(self._park_external(desktop=True))
+
+    def _park_external(self, *, desktop=False):
         if self._external_key is None:
             return
         is_sakura = (self._external_key[0] == 'sakura' and
                      not getattr(self._attached, 'is_ime_overlay', False))
-        if self._external_key[0] == 'vscode':
-            self._vscode_switch_pending = None
-            self._vscode_queued = None
+        # No handoff during an in-flight editor start or document switch.
+        if (self._external_pending is not None or
+                getattr(self, '_vscode_switch_pending', None) is not None or
+                getattr(self, '_sakura_guest_switch', None) is not None or
+                getattr(self, '_obsidian_cli_busy', None) is not None):
+            return False
         if is_sakura:
             # Strict Sakura contract: no implicit WM_CLOSE, detach or parking.
             # The explicit pop-out and × commands own those transitions.
@@ -2171,11 +2275,29 @@ class StudioPreviewPanel(QFrame):
         attached = self._attached
         if attached is not None:
             try:
-                attached.detach(foreground=False, show_window=False)
-                self._external_parked[self._external_key] = attached.hwnd
+                hwnd = int(attached.hwnd)
+                # For VS Code validate its PID before offering this window
+                # for future automatic re-docking. Do not inspect document text.
+                if desktop and self._external_key[0] == 'vscode':
+                    from external_win32_host import editor_window_pid
+                    pid = editor_window_pid(hwnd)
+                    expected = getattr(self, '_vscode_window_pids', {}).get(hwnd)
+                    if not pid or (expected and int(expected) != int(pid)):
+                        return False
+                    self._vscode_window_pids[hwnd] = int(pid)
+                attached.detach(foreground=False, show_window=desktop)
+                if desktop and getattr(attached, 'attached', False):
+                    return False
+                self._external_parked[self._external_key] = hwnd
+                if desktop:
+                    getattr(self, '_auto_ejected_keys', set()).add(self._external_key)
                 if old_obsidian_vault:
                     self._obsidian_parked_vaults[self._external_key] = old_obsidian_vault
-            except (OSError, RuntimeError):
+                if desktop and self._external_key[0] == 'vscode':
+                    from vscode_guest_trace import trace
+                    trace('AUTO_EJECTED', hwnd=hwnd,
+                          pid=self._vscode_window_pids[hwnd])
+            except (OSError, RuntimeError, ValueError):
                 return False
             self._attached = None
         self._external_key = None
@@ -2189,8 +2311,13 @@ class StudioPreviewPanel(QFrame):
 
     def open_options(self, launch_home, state_dir, studio_root):
         """Reuse the existing Qt WebEngine + Node save bridge as a child pane."""
-        if self.sakura_attached():
+        if self.sakura_attached() and not getattr(self._attached, 'is_ime_overlay', False):
             self._explain_sakura_switch_blocked()
+            return False
+        if self._external_key is not None and not self.auto_release_external_for_switch():
+            return False
+        # Studio has an independent asynchronous RELEASE handshake in the view.
+        if self._target is not None and self._process is not None:
             return False
         if self._options_widget is None:
             from option_settings_window import OptionSettingsWindow
@@ -2261,7 +2388,10 @@ class StudioPreviewPanel(QFrame):
             self.status_label.show()
 
     def _park_current(self):
-        """Put the previous NativeShell on an invisible desktop, not a popup."""
+        """Eject overlays visibly; live Studio needs an async owner release."""
+        if (self._target is not None and self._process is not None
+                and self._process.poll() is None):
+            return False  # Keep its docking timer and unsaved session alive.
         self._timer.stop()
         # This path is called when the user switches to/from C# Studio as well
         # as between external editors. Preserve the other app before reuse.
@@ -2269,12 +2399,17 @@ class StudioPreviewPanel(QFrame):
                 not getattr(self._attached, 'is_ime_overlay', False)):
             return False  # Legacy Sakura dock is not auto-parked.
         if getattr(self, '_external_key', None) is not None:
-            self._park_external()
+            self._park_external(desktop=True)
             if self._external_key is not None:
-                return
+                return False
         attached = self._attached
         process = self._process
         target = self._target
+        # A native Studio session uses a private owner pipe; it must never be
+        # auto-parked when another app is seated. The view requests an async
+        # RELEASE acknowledgement before switching applications.
+        if target is not None and process is not None and process.poll() is None:
+            return False
         self._attached = self._process = self._target = None
         if not target or not process or process.poll() is not None:
             return
@@ -2398,6 +2533,8 @@ class StudioPreviewPanel(QFrame):
                 except (OSError, RuntimeError, ValueError):
                     pass
             self._external_parked.clear()
+        getattr(self, '_auto_ejected_keys', set()).clear()
+        getattr(self, '_vscode_window_pids', {}).clear()
         getattr(self, '_obsidian_parked_vaults', {}).clear()
         self._external_key = None
         self._sakura_owned_windows.clear()

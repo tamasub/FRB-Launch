@@ -7072,9 +7072,7 @@ class ExpandedLauncherView(QWidget):
             return
         if not self._ensure_web_view():
             return
-        if not self.web_view.tabs.count():
-            self.web_view.add_tab(self.launcher.webview_settings.get(
-                'new_tab_url', 'https://www.google.com/'))
+        self.web_view.ensure_default_tab()
 
     def _ensure_web_view(self):
         """Create the full Browser in the third column; never use the old tab."""
@@ -7230,9 +7228,7 @@ class ExpandedLauncherView(QWidget):
             return False
         if not self._ensure_web_view():
             return False
-        if not self.web_view.tabs.count():
-            self.web_view.add_tab(self.launcher.webview_settings.get(
-                'new_tab_url', 'https://www.google.com/'))
+        self.web_view.ensure_default_tab()
         return self._show_browser_third_column()
 
     def show_web_url(self, url, *, new_tab=None):
@@ -7313,6 +7309,19 @@ class ExpandedLauncherView(QWidget):
             return False  # Installed apps and future runtime catalogs are not URLs.
         return bool(self.launcher.preview_authored_launch_url(virtual.get('row')))
 
+    def _defer_studio_app_switch(self, callback):
+        """Release a live Studio NativeShell before seating a different app.
+
+        Only Studio needs the async pipe acknowledgement. Its refusal means
+        the old pane stays untouched. External editors eject synchronously.
+        """
+        panel = getattr(self, 'studio_preview', None)
+        if (panel is None or panel.isHidden()
+                or getattr(panel, '_target', None) is None
+                or getattr(panel, '_process', None) is None):
+            return False
+        return bool(panel.request_studio_autoswitch(callback))
+
     def show_browser_preview(self, url, *, new_tab=None):
         """Show URL in the third column, safely releasing Sakura if needed.
 
@@ -7328,7 +7337,15 @@ class ExpandedLauncherView(QWidget):
         sakura_owns_column = bool(
             studio is not None and not studio.isHidden()
             and getattr(studio, 'sakura_attached', lambda: False)())
-        if not self._show_browser_third_column():
+        studio_session = (studio is not None and not studio.isHidden()
+                          and getattr(studio, '_target', None) is not None
+                          and getattr(studio, '_process', None) is not None)
+        if studio_session:
+            if not self._defer_studio_app_switch(
+                    lambda: self.show_browser_preview(url, new_tab=new_tab)):
+                self.launcher.info_notice('Studioの外出しが完了していないため、URL表示を保留しました。')
+            return True  # Handled; never send a duplicate request to Chrome.
+        if not self._show_browser_third_column(ensure_default_tab=False):
             if sakura_owns_column:
                 self.launcher.info_notice(
                     'サクラエディタの安全な外出しを確認できませんでした。'
@@ -7338,22 +7355,38 @@ class ExpandedLauncherView(QWidget):
         self.browser_preview.navigate(url, new_tab=new_tab)
         return True
 
-    def _show_browser_third_column(self):
-        """Show the single Browser; retain Exp/List selection and Web tabs."""
+    def _show_browser_third_column(self, *, ensure_default_tab=True):
+        """Show Browser; retain Exp/List selection and all existing Web tabs.
+
+        For a direct URL request, navigate first rather than adding a spare
+        Google tab. Opening Browser without a URL instead creates the home tab.
+        """
         if self._workspace_mode != 'files':
             return False
         studio = getattr(self, 'studio_preview', None)
         if studio is not None and not studio.isHidden():
+            if (getattr(studio, '_external_pending', None) is not None
+                    or getattr(studio, '_vscode_switch_pending', None) is not None
+                    or getattr(studio, '_sakura_guest_switch', None) is not None):
+                return False  # A new guest is still being identified.
             keep_maximized = self._preview_maximized
             keep_normal = self._preview_normal_columns
+            if getattr(studio, '_target', None) is not None and getattr(studio, '_process', None) is not None:
+                # Browser mode has no target URL here; defer the entire switch
+                # until Studio has acknowledged its owner release.
+                return self._defer_studio_app_switch(
+                    lambda: self._show_browser_third_column(
+                        ensure_default_tab=ensure_default_tab))
             if getattr(studio, 'sakura_attached', lambda: False)():
-                # Release to desktop, retain verified HWND for re-docking.
-                # Never use normal close/WM_CLOSE for this automatic handoff.
+                # Preserve the existing Sakura GDI repaint workaround.
                 if not studio.release_sakura_guest_for_browser():
                     return False
-                self._hide_studio_preview_only()
-            else:
-                self.close_studio_preview()
+            elif getattr(studio, '_external_key', None) is not None:
+                if not studio.auto_release_external_for_switch():
+                    return False
+            # A successful handoff is NOT Preview ×: it must never send
+            # WM_CLOSE to previously parked/auto-ejected VS Code guests.
+            self._hide_studio_preview_only()
             if not studio.isHidden():
                 return False  # Editor was not safely released.
             if keep_maximized:
@@ -7361,6 +7394,8 @@ class ExpandedLauncherView(QWidget):
                 self._preview_normal_columns = keep_normal
         if not self._ensure_web_view():
             return False
+        if ensure_default_tab:
+            self.web_view.ensure_default_tab()
         keep_list_focus = self.middle.tree.hasFocus()
         was_open = not self.browser_preview.isHidden()
         if not was_open:
@@ -7626,6 +7661,14 @@ class ExpandedLauncherView(QWidget):
             from sakura_guest_bridge import enabled as sakura_guest_enabled
             if not sakura_guest_enabled():
                 return False
+        studio = getattr(self, 'studio_preview', None)
+        if (studio is not None and not studio.isHidden()
+                and getattr(studio, '_target', None) is not None
+                and getattr(studio, '_process', None) is not None):
+            return self._defer_studio_app_switch(
+                lambda: self.show_external_preview(target))
+        if (studio is not None and getattr(studio, '_studio_popout_pending', False)):
+            return False
         was_open = bool(self.studio_preview and not self.studio_preview.isHidden())
         prepared = self._ensure_studio_preview(owner=target.app)
         if target.app == 'sakura':
@@ -7650,6 +7693,14 @@ class ExpandedLauncherView(QWidget):
 
     def show_option_settings_preview(self, launch_home, state_dir, studio_root):
         """Use the real Options Editor/Node save server in the third column."""
+        studio = getattr(self, 'studio_preview', None)
+        if (studio is not None and not studio.isHidden()
+                and getattr(studio, '_target', None) is not None
+                and getattr(studio, '_process', None) is not None):
+            return self._defer_studio_app_switch(
+                lambda: self.show_option_settings_preview(launch_home, state_dir, studio_root))
+        if (studio is not None and getattr(studio, '_studio_popout_pending', False)):
+            return False
         was_open = bool(self.studio_preview and not self.studio_preview.isHidden())
         if not self._ensure_studio_preview(owner='options'):
             return False

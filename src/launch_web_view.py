@@ -22,6 +22,7 @@ from browser_nav_icons import browser_navigation_icon
 from launch_downloads import safe_download_name, unique_path, safe_extract_zip
 from launch_appearance import theme_family, theme_palette, history_popup_qss
 from browser_url_favorites import BrowserUrlFavorites, normalize_favorite_url
+from browser_url_drag import browser_url_drag_data
 from combo_chevron_icon import combo_chevron_icon
 from reorderable_tree import ReorderablePopupTree
 from wheel_adaptive import wheel_steps
@@ -130,12 +131,18 @@ class _WebTabBar(QTabBar):
         self._queue_new_tab_position()
 
     def reserve_new_tab_space(self):
-        """Leave room for '+' on narrow windows instead of covering a tab."""
+        """Reserve a separate slot for '+' after QTabBar's scroll arrows.
+
+        The old 40px minimum overrode the reservation on very narrow tabs.
+        In that case the '+' was clamped back *onto* Qt's right scroll arrow.
+        """
         button = self._new_tab_button
         host = self.parentWidget()
-        if button is None or host is None or host.width() <= 60:
+        if button is None or host is None:
             return
-        max_width = max(40, host.width() - button.width() - 16)
+        # QTabWidget may indent QTabBar by a few pixels depending on the style.
+        origin = self.mapTo(host, QPoint(0, 0)).x()
+        max_width = max(1, host.width() - button.width() - 16 - max(0, origin))
         if self.maximumWidth() != max_width:
             self.setMaximumWidth(max_width)
 
@@ -144,15 +151,34 @@ class _WebTabBar(QTabBar):
         host = self.parentWidget()
         if button is None or host is None:
             return
-        # tabRect includes title, favicon and the close X.  Using the host
-        # coordinate system means '+' is *outside* the tab bar and cannot
-        # steal the last tab's close-button area.
+        self.reserve_new_tab_space()
+
+        # A scrolled QTabBar contains native < and > controls INSIDE its own
+        # geometry.  The '+' must sit AFTER the whole bar, not after the
+        # visible edge of a tab (which may lie on the scroll controls).
+        bar_right = self.mapTo(host, QPoint(self.width(), 0)).x()
+        right_limit = host.width() - button.width() - 4
         last_right = self.tabRect(self.count() - 1).right() if self.count() else -1
+        first_left = self.tabRect(0).left() if self.count() else 0
+        overflow = bool(self.count() and
+                        (last_right >= self.width() - 1 or first_left < 0))
         visible_right = min(last_right, self.width() - 1)
         pos = self.mapTo(host, QPoint(visible_right + 8 if self.count() else 6, 0))
-        x = max(3, min(pos.x(), host.width() - button.width() - 4))
+        desired_x = max(pos.x(), bar_right + 6) if overflow else pos.x()
+
+        # A transient Qt layout (or an extremely narrow host) can leave no
+        # space for both the native arrows and '+'. Never draw one on top of
+        # the other; the bar's resize/layout event will place '+' again.
+        if desired_x > right_limit and overflow and bar_right + 6 > right_limit:
+            button.hide()
+            return
+        x = max(3, min(desired_x, right_limit))
+        if overflow and x < bar_right + 4:
+            button.hide()
+            return
         y = self.mapTo(host, QPoint(0, max(0, (self.height() - button.height()) // 2))).y()
         button.move(x, y)
+        button.show()
         button.raise_()
 
     def _queue_new_tab_position(self):
@@ -479,7 +505,9 @@ class _WebUrlDragButton(QToolButton):
         super().__init__(parent)
         self._url_and_title = url_and_title
         self._pressed_at = None
-        self.setToolTip('現在のURLをドラッグしてLaunchメニューに登録')
+        self.setObjectName('launchWebUrlDrag')
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setToolTip('この🔗をドラッグしてExpのPage／カテゴリへDrop：URLを登録')
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setFixedSize(23, 25)
         self.setText('🔗')
@@ -499,12 +527,16 @@ class _WebUrlDragButton(QToolButton):
             return
         self._pressed_at = None
         url, title = self._url_and_title()
-        if not url or not url.startswith(('https://', 'http://')):
+        source = browser_url_drag_data(url, title)
+        if source is None:
             return
         payload = QMimeData()
-        payload.setUrls([QUrl(url)])
-        payload.setText(url)
-        payload.setData('text/x-moz-url', f'{url}\n{title or url}'.encode('utf-16-le'))
+        payload.setUrls([QUrl(source['url'])])
+        payload.setText(source['url'])
+        # The destination has an established HTML/moz-url decoder. Include the
+        # page title so a drop creates a recognisable bookmark, not raw URL.
+        payload.setHtml(source['html'])
+        payload.setData('text/x-moz-url', source['moz_url'])
         drag = QDrag(self)
         drag.setMimeData(payload)
         drag.exec(Qt.DropAction.CopyAction, Qt.DropAction.CopyAction)
@@ -650,7 +682,7 @@ class LaunchWebView(QFrame):
         new_tab.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         new_tab.setToolTip('新しいWebタブ')
         new_tab.clicked.connect(lambda: self.add_tab(
-            self.web_settings.get('new_tab_url', 'https://www.google.com/'), activate=True))
+            self.default_tab_url(), activate=True))
         self.new_tab_button = new_tab
         bar = self.tabs.tabBar()
         bar.set_new_tab_button(new_tab)
@@ -1011,6 +1043,22 @@ class LaunchWebView(QFrame):
         self._resize_preview.hide()
         self._resize_preview.clear_preview()
 
+    def default_tab_url(self):
+        """Return the configured home page, falling back to Google."""
+        from webview_settings import valid_http_url
+        value = self.web_settings.get('new_tab_url')
+        return value if valid_http_url(value) else 'https://www.google.com/'
+
+    def ensure_default_tab(self):
+        """Keep a page visible when Browser has no tabs.
+
+        Never reload an existing tab: pages may contain unsaved form data,
+        browser history, or navigation pending in a newly opened popup.
+        """
+        if self.tabs.count() == 0:
+            return self.add_tab(self.default_tab_url(), activate=True)
+        return self.current_view()
+
     def add_tab(self, url=None, *, activate=True):
         view = _LaunchWebPage(self)
         view.setPage(QWebEnginePage(self.profile, view))
@@ -1084,8 +1132,7 @@ class LaunchWebView(QFrame):
     def tab_context_menu(self):
         """A menu for the *current Web tab* (no hidden DOM position assumed)."""
         menu = QMenu(self)
-        menu.addAction('新しいWebタブ', lambda: self.add_tab(
-            self.web_settings.get('new_tab_url', 'https://www.google.com/')))
+        menu.addAction('新しいWebタブ', lambda: self.add_tab(self.default_tab_url()))
         has_tab = self.current_view() is not None
         close_action = menu.addAction('現在のタブを閉じる',
                                       lambda: self.close_tab(self.tabs.currentIndex()))
@@ -1108,8 +1155,7 @@ class LaunchWebView(QFrame):
         menu = QMenu(self)
         view = self.current_view()
         if view is None:
-            menu.addAction('新しいWebタブ', lambda: self.add_tab(
-                self.web_settings.get('new_tab_url', 'https://www.google.com/')))
+            menu.addAction('新しいWebタブ', lambda: self.add_tab(self.default_tab_url()))
             return menu
         back = menu.addAction('戻る', self.go_back)
         back.setEnabled(view.history().canGoBack())
@@ -1387,6 +1433,9 @@ class LaunchWebView(QFrame):
             return
         self.tabs.removeTab(index)
         view.deleteLater()
+        # Closing the last tab must not leave a blank Browser pane with only
+        # a '+' control. Restore home without affecting any remaining tabs.
+        self.ensure_default_tab()
         self.address.setText(self.current_view().url().toString() if self.current_view() else '')
         self.update_url_favorite_button()
         self.update_navigation()
@@ -1436,8 +1485,10 @@ class LaunchWebView(QFrame):
                  border:0;padding:2px 5px;font-size:12px;}}
             QLineEdit#launchWebAddress:focus {{border:0;}}
             QToolButton#launchWebFavoriteSave,
-            QToolButton#launchWebFavoriteDropdown {{background:transparent;border:0;
+            QToolButton#launchWebFavoriteDropdown,
+            QToolButton#launchWebUrlDrag {{background:transparent;border:0;
                  padding:0;margin:0;}}
+            QToolButton#launchWebUrlDrag:hover {{background:{hover};border-radius:7px;}}
             QToolButton#launchWebFavoriteSave:hover,
             QToolButton#launchWebFavoriteDropdown:hover {{background:{hover};border-radius:7px;}}
             QToolButton {{background:{bg};color:{text};border:1px solid {border};border-radius:7px;}}

@@ -41,6 +41,8 @@ class MockButton:
     def parentWidget(self): return self.host
     def move(self, x, y): self.xy = (x, y)
     def raise_(self): self.raised = True
+    def show(self): self.visible = True
+    def hide(self): self.visible = False
 
 
 class MockHost:
@@ -57,7 +59,10 @@ class MockBar:
         self.tabs = tabs
         self.origin = origin
     def parentWidget(self): return self.host
+    def reserve_new_tab_space(self): pass
     def tabRect(self, index):
+        if index == 0:
+            return SimpleNamespace(left=lambda: 0, right=lambda: self.tab_right if self.tabs == 1 else 70)
         assert index == self.tabs - 1
         return SimpleNamespace(right=lambda: self.tab_right)
     def count(self): return self.tabs

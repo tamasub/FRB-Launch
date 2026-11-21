@@ -29,6 +29,8 @@ from launch_virtual_tree import (virtual_exp_roots, virtual_item_identity,
                                  virtual_exp_folders, virtual_studio_target)
 from launch_menu_registration import mime_sources
 from launch_json_move import (MOVE_MIME, encode_source, decode_source,
+                              PAGE_MOVE_MIME, encode_page_source, decode_page_source,
+                              page_root_identity, page_root_reorder_placement,
                               exp_folder_placement, registered_root_reorder_placement)
 from registered_root_studio import verified_registered_root, authored_files_root_identity
 
@@ -59,6 +61,7 @@ class FilesExpWheelTree(QTreeView):
         # The same QModelIndex is an outline-only memory when List is active.
         self.current_outline_color = QColor('#8fc7ab')
         self._active_registered_root_drag = None
+        self._active_page_root_drag = None
 
     def _registration_target(self, pos, mime):
         panel = self.parentWidget()
@@ -72,6 +75,22 @@ class FilesExpWheelTree(QTreeView):
         item = panel.model.itemFromIndex(index) if index.isValid() else None
         data = item.data(_DATA_ROLE) if item is not None else None
         node = data.get('virtual') if isinstance(data, dict) else None
+        # Root Page rows (including the promoted System bookmark category)
+        # have pages[].sort_order, not items[].sort_order. Keep their drag
+        # completely separate from category/item and physical Files moves.
+        page_source = (panel.page_root_identity(item) if panel is not None
+                       and item is not None else None)
+        if page_source is not None:
+            mime = QMimeData()
+            mime.setData(PAGE_MOVE_MIME, encode_page_source(page_source))
+            drag = QDrag(self)
+            drag.setMimeData(mime)
+            self._active_page_root_drag = page_source
+            try:
+                drag.exec(Qt.DropAction.MoveAction, Qt.DropAction.MoveAction)
+            finally:
+                self._active_page_root_drag = None
+            return
         source = (panel._launcher.launch_json_move_source(node)
                   if panel is not None and panel._launcher is not None else None)
         registered_root = (panel.registered_root_identity(item)
@@ -97,7 +116,20 @@ class FilesExpWheelTree(QTreeView):
                                             event.mimeData(), event.source())
                 if panel is not None else None)
 
+    def _page_move_target(self, event):
+        panel = self.parentWidget()
+        return (panel.page_move_target_at(event.position().toPoint(),
+                                          event.mimeData(), event.source())
+                if panel is not None else None)
+
     def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(PAGE_MOVE_MIME):
+            if self._page_move_target(event) is not None:
+                event.setDropAction(Qt.DropAction.MoveAction)
+                event.accept()
+            else:
+                event.ignore()
+            return
         if event.mimeData().hasFormat(MOVE_MIME):
             if self._launch_move_target(event) is not None:
                 event.setDropAction(Qt.DropAction.MoveAction)
@@ -112,6 +144,13 @@ class FilesExpWheelTree(QTreeView):
             event.ignore()
 
     def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(PAGE_MOVE_MIME):
+            if self._page_move_target(event) is not None:
+                event.setDropAction(Qt.DropAction.MoveAction)
+                event.accept()
+            else:
+                event.ignore()
+            return
         if event.mimeData().hasFormat(MOVE_MIME):
             if self._launch_move_target(event) is not None:
                 event.setDropAction(Qt.DropAction.MoveAction)
@@ -126,6 +165,18 @@ class FilesExpWheelTree(QTreeView):
             event.ignore()
 
     def dropEvent(self, event):
+        if event.mimeData().hasFormat(PAGE_MOVE_MIME):
+            placement = self._page_move_target(event)
+            panel = self.parentWidget()
+            launcher = getattr(panel, '_launcher', None)
+            if (placement is not None and launcher is not None and
+                    launcher.launch_page_reorder_drop(event.mimeData(), placement,
+                                                    sender=event.source())):
+                event.setDropAction(Qt.DropAction.MoveAction)
+                event.accept()
+            else:
+                event.ignore()
+            return
         if event.mimeData().hasFormat(MOVE_MIME):
             placement = self._launch_move_target(event)
             panel = self.parentWidget()
@@ -719,8 +770,11 @@ class RemoteFilesExplorer(QWidget):
                 self._virtual_folder_icon)
         item = QStandardItem(icon, node['title'])
         item.setEditable(False)
-        item.setDragEnabled(bool(node.get('item_id') and
-                                 not node.get('runtime_catalog')))
+        # The Page heading previously had item_id="" and was not draggable.
+        # The actual drag starter re-verifies a root Page identity before
+        # issuing PAGE_MOVE_MIME; all child-item Move rules remain unchanged.
+        item.setDragEnabled(bool((node.get('kind') == 'page' or node.get('item_id'))
+                                 and not node.get('runtime_catalog')))
         # Drop validation lives in launch_move_target_at, never on model flags.
         item.setDropEnabled(False)
         item.setData({'virtual': node, 'pc': False, 'path': None}, _DATA_ROLE)
@@ -2029,6 +2083,39 @@ class RemoteFilesExplorer(QWidget):
         # Require the current authored row still exists, not just old UI data.
         return (identity if self._launcher.launch_json_move_source(
             data['studio_identity']) == identity else None)
+
+    def page_root_identity(self, item):
+        """Only a genuine top-level displayed Page can initiate Page Move."""
+        if item is None or item.parent() is not None or self._launcher is None:
+            return None
+        data = item.data(_DATA_ROLE)
+        node = data.get('virtual') if isinstance(data, dict) else None
+        options = getattr(self._launcher, 'expanded_options', {}) or {}
+        return page_root_identity(
+            node, system_page_id=str(options.get('page_id') or 'system'),
+            bookmarks_item_id=str(options.get('bookmarks_item_id') or
+                                  '__browser_bookmarks_root'))
+
+    def page_move_target_at(self, local_pos, mime, sender):
+        """Root Page reorder only; never parent items into Files directories."""
+        launcher = self._launcher
+        if (launcher is None or sender is not self.tree or
+                not mime.hasFormat(PAGE_MOVE_MIME)):
+            return None
+        source = decode_page_source(mime.data(PAGE_MOVE_MIME))
+        if (not source or source != getattr(self.tree,
+                                           '_active_page_root_drag', None)):
+            return None
+        index = self.tree.indexAt(local_pos)
+        item = self.model.itemFromIndex(index) if index.isValid() else None
+        target = self.page_root_identity(item) if item is not None else None
+        if index.isValid() and target is None:
+            return None  # Files roots, PC, nested menu folders are excluded
+        fraction = 0.5
+        if index.isValid():
+            rect = self.tree.visualRect(index)
+            fraction = (local_pos.y() - rect.top()) / max(1, rect.height())
+        return page_root_reorder_placement(source, target, fraction=fraction)
 
     def launch_move_target_at(self, local_pos, mime, sender):
         """JSON Move only: registered roots reorder; virtual folders reparent.

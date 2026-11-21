@@ -89,7 +89,8 @@ from clipboard_paste import clipboard_sources, is_cut_clipboard, make_paste_plan
 from virtual_clipboard_paste import is_virtual_file_clipboard, virtual_clipboard_names, preflight_virtual_destination, paste_virtual_shell_items
 from launch_virtual_tree import virtual_execution_row, virtual_bookmark_execution_row, virtual_lookup_node, virtual_studio_target
 from registered_folder_route import embedded_folder_target
-from launch_page_registration import commit_page_operation, page_operation_plan
+from launch_page_registration import (commit_page_operation, page_operation_plan,
+                                      commit_page_reorder)
 from launch_shell_tracking import tracking_target_update, update_record_changes, matches_original_tracking
 from shell_link_stream import ShellLinkError
 from launch_menu_registration import (RegistrationError, category_record, commit_add,
@@ -98,7 +99,8 @@ from launch_menu_registration import (RegistrationError, category_record, commit
     eligible_parent, files_exp_root_target, mime_sources, normalize_sources, records_for_sources,
     studio_core_root)
 from launch_virtual_tree import virtual_item_identity
-from launch_json_move import MOVE_MIME, decode_source
+from launch_json_move import (MOVE_MIME, decode_source,
+                              PAGE_MOVE_MIME, decode_page_source)
 from context_menu_icons import context_action_icon
 from context_menu_presentation import style_context_menu
 from files_column_context import install_column_navigation
@@ -6887,6 +6889,30 @@ class Launcher(QWidget):
             return self._registration_commit(page_id, parent_id, records_for_sources(sources))
         except (RegistrationError, ValueError, OSError) as exc:
             self.error('ドラッグ＆ドロップ登録失敗: ' + str(exc))
+            return False
+
+    def launch_page_reorder_drop(self, mime, placement, *, sender=None):
+        """Sort Files Exp Page roots using approved Studio Change Core only."""
+        if (not self.launch_json_move_sender_valid(sender) or
+                not mime.hasFormat(PAGE_MOVE_MIME)):
+            return False
+        page_id = decode_page_source(mime.data(PAGE_MOVE_MIME))
+        if not page_id or not isinstance(placement, dict):
+            return False
+        options = self.expanded_options or {}
+        try:
+            root = studio_core_root(LAUNCH_HOME, self.expander().values.get('studio_root', ''))
+            result = commit_page_reorder(
+                CONFIG, root, page_id, placement,
+                system_page_id=str(options.get('page_id') or 'system'),
+                bookmarks_item_id=str(options.get('bookmarks_item_id') or
+                                      '__browser_bookmarks_root'))
+            if result is not None:
+                self.reload(force=True)
+                self.footer.setText('Exp Pageの表示順を保存しました')
+            return True
+        except (RegistrationError, OSError, ValueError) as exc:
+            self.error('Exp Pageの順序変更失敗: ' + str(exc))
             return False
 
     def launch_json_move_source(self, node):
