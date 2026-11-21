@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt, QTimer, QThread, QSettings, QEvent, QEventLoop, Q
 from PySide6.QtGui import QActionGroup, QIcon, QPixmap, QPainter, QColor, QBrush, QKeyEvent, QShortcut, QKeySequence, QCursor, QAction, QPainterPath, QRegion, QPen, QFont, QLinearGradient
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLineEdit, QTabBar, QTreeWidget, QTreeWidgetItem, QMenu, QSystemTrayIcon, QFileIconProvider, QMessageBox, QFileDialog, QDialog, QLabel, QHBoxLayout, QDialogButtonBox, QComboBox, QPlainTextEdit, QCheckBox, QPushButton, QWidgetAction, QAbstractItemView, QHeaderView, QFrame, QStyle, QStyleOption, QSizePolicy, QToolButton, QProgressBar)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from shiboken6 import isValid as qt_object_is_valid
 from PySide6.QtCore import QFileInfo
 from remote_confirmation import RemoteConfirmation
 from app_version import APP_VERSION, APP_ABOUT_TEXT
@@ -2829,12 +2830,17 @@ class FrameEdgeCursorResetFilter(QObject):
         self.launcher = launcher
 
     def eventFilter(self, obj, event):
-        launcher = self.launcher
-        if not launcher.isVisible() or getattr(launcher, '_size_drag', None):
-            return False
         if event.type() not in (QEvent.Type.MouseMove, QEvent.Type.Leave,
                                 QEvent.Type.Enter, QEvent.Type.HoverMove,
                                 QEvent.Type.HoverEnter):
+            return False
+        launcher = self.launcher
+        # QApplication filters can be called during Qt's final teardown,
+        # after the C++ Launcher has already gone away.
+        if (not qt_object_is_valid(launcher)
+                or getattr(launcher, '_application_filters_removed', False)):
+            return False
+        if not launcher.isVisible() or getattr(launcher, '_size_drag', None):
             return False
         if launcher.cursor().shape() == Qt.CursorShape.ArrowCursor:
             return False
@@ -2860,10 +2866,13 @@ class HistoryOutsideClickFilter(QObject):
         self.launcher = launcher
 
     def eventFilter(self, obj, event):
+        if event.type() != QEvent.Type.MouseButtonPress or not isinstance(obj, QWidget):
+            return False
         launcher = self.launcher
-        if (event.type() != QEvent.Type.MouseButtonPress
-                or not isinstance(obj, QWidget)
-                or not getattr(launcher, 'history_popup', None)
+        if (not qt_object_is_valid(launcher)
+                or getattr(launcher, '_application_filters_removed', False)):
+            return False
+        if (not getattr(launcher, 'history_popup', None)
                 or not launcher.history_popup.isVisible()):
             return False
         # The remote is a separate Qt.Tool child window. Its mouse press
@@ -2907,7 +2916,12 @@ class CascadeOutsideClickFilter(QObject):
         self.launcher = launcher
 
     def eventFilter(self, obj, event):
+        if event.type() not in (QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
+            return False
         launcher = self.launcher
+        if (not qt_object_is_valid(launcher)
+                or getattr(launcher, '_application_filters_removed', False)):
+            return False
         # Ordinary Qt mouse presses (e.g. Files pane) also dismiss the Remote
         # filesystem preview.  A click inside the opener, nested Tool column,
         # or a file's own context menu must continue to work normally.
@@ -3007,10 +3021,13 @@ class NormalWindowClickActivationFilter(QObject):
         self.launcher = launcher
 
     def eventFilter(self, obj, event):
+        if event.type() != QEvent.Type.MouseButtonPress or not isinstance(obj, QWidget):
+            return False
         launcher = self.launcher
-        if (event.type() != QEvent.Type.MouseButtonPress
-                or not isinstance(obj, QWidget)
-                or launcher.dismiss_on_outside_click
+        if (not qt_object_is_valid(launcher)
+                or getattr(launcher, '_application_filters_removed', False)):
+            return False
+        if (launcher.dismiss_on_outside_click
                 or not launcher.isVisible() or launcher.isMinimized()
                 or obj.window() is not launcher):
             return False
@@ -3783,6 +3800,7 @@ class Launcher(QWidget):
         # An empty-area double-click navigates back only while inside a submenu.
         self.list.viewport().installEventFilter(self)
         QApplication.instance().focusChanged.connect(self.capture_last_focus_change)
+        self._application_filters_removed = False
         self._cascade_outside_click_filter = CascadeOutsideClickFilter(self)
         QApplication.instance().installEventFilter(self._cascade_outside_click_filter)
         self._history_outside_click_filter = HistoryOutsideClickFilter(self)
@@ -3791,6 +3809,9 @@ class Launcher(QWidget):
         QApplication.instance().installEventFilter(self._frame_cursor_reset_filter)
         self._normal_click_activation_filter = NormalWindowClickActivationFilter(self)
         QApplication.instance().installEventFilter(self._normal_click_activation_filter)
+        # Also cover exits not initiated through the tray menu (e.g. system
+        # shutdown). Detach application-level filters before Qt destroys us.
+        QApplication.instance().aboutToQuit.connect(self._remove_application_event_filters)
         QApplication.instance().applicationStateChanged.connect(self.app_state)
         # Page: Ctrl+F1..F12. Second layer (visible roots): Ctrl+Shift+F1..F12.
         # Free unmodified F2 for Explorer-style inline rename, and F5 for
@@ -14479,6 +14500,49 @@ class Launcher(QWidget):
         DIAG.info('SHELL_LINK_RESOLVED item=%s', item_id)
         return result
 
+    def _try_registered_editor_preview(self, step, studio_root):
+        """Offer one menu document to the existing Files third-column hosts.
+
+        The host retains all HWND/IME/Z-order responsibility. Do not dismiss
+        Launch, spawn a second editor or convert unsupported Run operations.
+        """
+        view = getattr(self, 'expanded_view', None)
+        if (view is None or not view.isVisible()
+                or getattr(view, '_workspace_mode', None) != 'files'
+                or getattr(self, 'view_mode', None) != 'expanded'):
+            return False
+        from registered_editor_preview import registered_editor_preview
+        preview = registered_editor_preview(step, studio_root)
+        if preview is None:
+            return False
+        from third_column_host_options import embedded_editor_enabled
+        if preview.kind == 'studio':
+            if not embedded_editor_enabled(LAUNCH_HOME, 'studio'):
+                return False
+            accepted = view.show_studio_preview(preview.target)
+        else:
+            target = preview.target
+            if target.app == 'sakura':
+                from sakura_guest_bridge import enabled as guest_enabled
+                allowed = guest_enabled()
+            elif target.app == 'vscode':
+                from vscode_guest_bridge import enabled as guest_enabled
+                allowed = guest_enabled()
+            else:
+                allowed = embedded_editor_enabled(LAUNCH_HOME, target.app)
+            if not allowed:
+                return False
+            from external_preview_route import dedicated_editor_available, find_vault_root
+            if (target.app == 'obsidian' and find_vault_root(target.path) is None):
+                return False  # Vault-outside notes keep their normal window.
+            if not dedicated_editor_available(target):
+                return False
+            accepted = view.show_external_preview(target)
+        if accepted:
+            DIAG.info('REGISTERED_THIRD_COLUMN kind=%s app=%s',
+                      preview.kind, getattr(preview.target, 'app', 'studio'))
+        return bool(accepted)
+
     def execute(self,row,values=None):
         DIAG.info('ITEM id=%s title=%s busy=%s',row.get('item_id'),row.get('title'),self.busy)
         if self.busy:return
@@ -14493,13 +14557,24 @@ class Launcher(QWidget):
             # Resolve all values before any side effects.
             self.queue=[]
             studio_root = getattr(ex, 'values', {}).get('studio_root', '')
+            expanded_steps = []
             for raw in row.get('launch_actions',[]):
                 step={k:([ex.expand(a) for a in val] if k=='launch_arguments' else ex.expand(val) if isinstance(val,str) else val) for k,val in raw.items()}
+                expanded_steps.append(step)
                 # Directly registered local files must behave exactly like
                 # file-index hits and expanded-folder files. In particular, a
                 # Studio-managed JSON opens via --open-json instead of the OS
                 # file association. Authored Run/browser actions remain intact.
                 self.queue.extend(file_index.route_registered_open_step(step, studio_root))
+            # The editor route must inspect the ORIGINAL authored action:
+            # route_registered_open_step can turn a plain .md/.json Open into
+            # Run, and the ordinary Run queue must remain unchanged on refusal.
+            # Multi-step jobs always use the original sequential semantics.
+            if (len(expanded_steps) == 1 and
+                    getattr(self, '_try_registered_editor_preview',
+                            lambda *_: False)(expanded_steps[0], studio_root)):
+                self.queue.clear()
+                return
             # A user-authored URL without an explicit external destination
             # opens in a NEW Launch Browser tab. Never dismiss Launch first;
             # its Browser needs to be visible. Multi-step commands retain the
@@ -14620,6 +14695,32 @@ class Launcher(QWidget):
         event.ignore()
         self.dismiss(force=True)
 
+    def _remove_application_event_filters(self):
+        """Detach Launcher-owned filters from the longer-lived QApplication.
+
+        A parented QObject filter is not a safe reference to keep on qApp:
+        during interpreter/Qt teardown its Python wrapper can outlive the
+        underlying C++ Launcher. The cleanup is intentionally idempotent.
+        """
+        if getattr(self, '_application_filters_removed', False):
+            return
+        self._application_filters_removed = True
+        app = QApplication.instance()
+        if app is None:
+            return
+        for name in ('_cascade_outside_click_filter',
+                     '_history_outside_click_filter',
+                     '_frame_cursor_reset_filter',
+                     '_normal_click_activation_filter'):
+            filt = getattr(self, name, None)
+            if filt is not None:
+                try:
+                    if qt_object_is_valid(filt):
+                        app.removeEventFilter(filt)
+                except RuntimeError:
+                    # Qt might already be destroying an individual filter.
+                    pass
+
     def quit(self):
         # A cross-process WinForms editor must be undocked before Qt destroys
         # the host HWND. Never terminate Studio with potentially unsaved data.
@@ -14632,7 +14733,9 @@ class Launcher(QWidget):
             self.apps_proc.kill();self.apps_proc.wait();self.apps_output.unlink(missing_ok=True)
         for hotkey_id in self.registered_menu_hotkeys:
             windows.unhotkey(int(self.winId()), hotkey_id)
-        windows.unhotkey(int(self.winId()));self.dismiss(force=True);self.tray.hide();QApplication.quit()
+        windows.unhotkey(int(self.winId()));self.dismiss(force=True);self.tray.hide()
+        self._remove_application_event_filters()
+        QApplication.quit()
 
 
 def main():

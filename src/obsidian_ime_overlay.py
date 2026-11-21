@@ -94,6 +94,7 @@ class ObsidianImeOverlay:
         self._popup_mask = NativePopupMask(self.u, self.hwnd)
         self._popup_hwnds = ()
         self._qt_host_size = None
+        self._last_sync_foreground = None
         if not self.u.IsWindow(self.hwnd) or not self.u.IsWindow(self.host_hwnd):
             raise OSError('Obsidianまたは第3列のウィンドウが無効です')
         self._configure_api()
@@ -163,6 +164,36 @@ class ObsidianImeOverlay:
         # Chrome window occlude only the covered area of the guest.
         return int(self.u.GetWindow(root, GW_HWNDPREV) or 0)
 
+    def _raise_workspace_pair(self, root):
+        """Lift the guest AND Launch as one normal-tier workspace.
+
+        Putting Launch at HWND_TOP and later aligning an already-adjacent
+        guest can leave both below Chrome. Instead, raise the guest first and
+        insert Launch directly beneath that specific HWND. Neither call
+        activates a window or makes a normal Launch permanently TOPMOST.
+        """
+        root_topmost = self._root_is_topmost(root)
+        guest_topmost = bool(int(self.u.GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE))
+                             & WS_EX_TOPMOST)
+        flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE
+        if root_topmost != guest_topmost:
+            tier = HWND_TOPMOST if root_topmost else HWND_NOTOPMOST
+            if not self.u.SetWindowPos(self.hwnd, tier, 0, 0, 0, 0, flags):
+                return False
+        tier = HWND_TOPMOST if root_topmost else HWND_TOP
+        if not self.u.SetWindowPos(self.hwnd, tier, 0, 0, 0, 0, flags):
+            return False
+        if not self.u.SetWindowPos(root, self.hwnd, 0, 0, 0, 0, flags):
+            return False
+        # Native Qt history/dropdown Tool windows must stay above the editor,
+        # including when recovery is triggered by foreground polling.
+        for popup in self._popup_hwnds:
+            if popup and popup != self.hwnd and self.u.IsWindow(popup):
+                self.u.SetWindowPos(
+                    popup, HWND_TOPMOST if root_topmost else HWND_TOP,
+                    0, 0, 0, 0, flags)
+        return self._window_above_launch(root) == self.hwnd
+
     def sync(self, *, panel_visible=True, popup_hwnds=(), qt_host_size=None):
         """Track geometry and position the guest immediately above Launch.
 
@@ -183,6 +214,7 @@ class ObsidianImeOverlay:
             return
         rect = self._desktop_rect() if panel_visible else None
         if rect is None or bool(self.u.IsIconic(root)):
+            self._last_sync_foreground = None
             self._popup_mask.clear()
             # Minimized/hidden Launch and a closed third column must still
             # hide the floating guest. Never change its parent or kill it.
@@ -192,16 +224,20 @@ class ObsidianImeOverlay:
             return
 
         foreground = int(self.u.GetForegroundWindow() or 0)
-        # Explicitly clicking the Obsidian editor should bring its Launch
-        # workspace along. Move Launch up WITHOUT activating/focusing it, then
-        # put Obsidian immediately above Launch below (IME keeps focus).
+        newly_activated_guest = (foreground == self.hwnd and
+                                 self._last_sync_foreground != self.hwnd)
+        self._last_sync_foreground = foreground
         above = self._window_above_launch(root)
-        if (foreground == self.hwnd and above != self.hwnd
-                and above not in self._popup_hwnds):
-            root_level = HWND_TOPMOST if self._root_is_topmost(root) else HWND_TOP
-            self.u.SetWindowPos(root, root_level, 0, 0, 0, 0,
-                                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
-            above = self._window_above_launch(root)
+        # A genuine foreground transition is a second path to recover when
+        # the delayed native mouse hook misses a click. The old condition only
+        # checked whether guest was *immediately* above Launch; a third-party
+        # window could still cover the entire pair without triggering repair.
+        # Never change the background pair while Chrome has foreground.
+        if (foreground == self.hwnd and
+                (newly_activated_guest or
+                 (above != self.hwnd and above not in self._popup_hwnds))):
+            if self._raise_workspace_pair(root):
+                above = self._window_above_launch(root)
 
         # A previous revision unconditionally set HWND_TOPMOST. When Launch is
         # a normal window (non-auto-dismiss mode), that made Obsidian float
@@ -259,10 +295,10 @@ class ObsidianImeOverlay:
             self._visible = True
 
     def raise_workspace_from_guest_click(self, x, y):
-        """Bring Launch alongside a clicked overlay; trace-only additions.
+        """Raise the clicked guest/Launch pair while preserving guest IME.
 
-        All Z-order operations and guard conditions are preserved from the
-        previous fix. This diagnostic version reports the first failed guard.
+        The native hook re-verifies the actual hit window; clicks on Chrome,
+        Launch or a popup must not lift the guest. Diagnostic trace remains.
         """
         from guest_zorder_trace import write as guest_trace
         point = (x, y)
@@ -286,19 +322,18 @@ class ObsidianImeOverlay:
                         reason='hit_not_guest')
             return False  # Other app / popup was clicked.
 
-        # Original logic: bring the workspace up WITHOUT activating Launch.
-        raised = bool(self.u.SetWindowPos(
-            root, HWND_TOPMOST if self._root_is_topmost(root) else HWND_TOP,
-            0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE))
+        # Move guest first, then place Launch immediately beneath it.
+        # _raise_workspace_pair applies SWP_NOACTIVATE to both windows.
+        # A normal guest/root remains in the normal (non-TOPMOST) tier.
+        raised = self._raise_workspace_pair(root)
         guest_trace('overlay_raise', overlay=self, point=point, success=int(raised))
         if not raised:
             return False
 
-        for popup in self._popup_hwnds:
-            if popup and popup != self.hwnd and self.u.IsWindow(popup):
-                self.u.SetWindowPos(
-                    popup, HWND_TOPMOST if self._root_is_topmost(root) else HWND_TOP,
-                    0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
+        # The pair helper already restored native popup priority. Avoid a
+        # second raise in sync immediately after the same guest click.
+        if int(self.u.GetForegroundWindow() or 0) == self.hwnd:
+            self._last_sync_foreground = self.hwnd
         self.sync(popup_hwnds=self._popup_hwnds, qt_host_size=self._qt_host_size)
         guest_trace('overlay_synced', overlay=self, point=point,
                     popup_count=len(self._popup_hwnds))

@@ -7268,10 +7268,9 @@ class ExpandedLauncherView(QWidget):
                     studio_root = self.launcher.expander().values.get('studio_root', '')
                     external = external_preview_target(row, studio_root=studio_root)
             if external is not None:
-                # Sakura third-column embedding is retired. Always use the
-                # editor's ordinary external launch, even if an old user
-                # state.ini still contains embed_sakura=true. Never borrow,
-                # reparent or close another Sakura window from this route.
+                # Sakura uses the same optional third-column route as the
+                # other editors, with its native-window safeguards intact.
+                # A disabled guest setting retains normal standalone Open.
                 from vscode_guest_bridge import enabled as vscode_guest_enabled
                 from sakura_guest_bridge import enabled as sakura_guest_enabled
                 enabled = (vscode_guest_enabled() if external.app == 'vscode' else
@@ -7615,7 +7614,7 @@ class ExpandedLauncherView(QWidget):
         return True
 
     def show_external_preview(self, target):
-        """Dock supported editors; Sakura is external-only after withdrawal.
+        """Offer supported editors (including Sakura) to their existing overlay host.
 
         Unlike Studio documents, external HWNDs must receive normal Windows
         keyboard focus when clicked. Forcing List.setFocus() after a
