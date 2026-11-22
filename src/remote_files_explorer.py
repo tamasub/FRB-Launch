@@ -642,7 +642,7 @@ class RemoteFilesExplorer(QWidget):
         self.tree.clicked.connect(self._activate_index)
         self._selection_timer = QTimer(self)
         self._selection_timer.setSingleShot(True)
-        self._selection_timer.setInterval(130)
+        self._selection_timer.setInterval(350)
         self._selection_timer.timeout.connect(self._commit_current_selection)
         self.tree.selectionModel().currentChanged.connect(self._selection_changed)
         self.tree.expanded.connect(self._schedule_tree_state_save)
