@@ -117,7 +117,7 @@ def test_open_indexed_search_folder_keeps_search_until_destination_valid(tmp_pat
              '_file': str(tmp_path)}
     assert fn(owner, valid)
     assert visited == ['remember', 'clear',
-                       ('open', str(tmp_path), {'direct_anchor': True})]
+                       ('open', str(tmp_path), {'absolute_location': True})]
     assert owner._suspend_folder_location_record is False
 
 

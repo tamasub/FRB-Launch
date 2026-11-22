@@ -2649,7 +2649,7 @@ class RemoteFilesExplorer(QWidget):
             QFrame#filesExpHeader {{background:{exp_header};
                 border:1px solid transparent;border-bottom:1px solid {colors['panel_border']};
                 border-radius:0px;}}
-            QFrame#filesExpHeader[operatingActive="true"] {{
+            QFrame#filesExpHeader[keyboardFocusActive="true"] {{
                 background:{operating_title};border:1px solid {operating_outline};
                 border-radius:3px;}}
             QLabel#filesExpTitle {{background:transparent;color:{colors['text']};
@@ -2674,7 +2674,7 @@ class RemoteFilesExplorer(QWidget):
                 font-size:11px;border:0;}}
             QTreeView#filesExpTree {{background:{colors['panel']};color:{colors['text']};
                 border:0;outline:0;}}
-            QTreeView#filesExpTree[operatingActive="true"] {{background:{operating_bg};}}
+            QTreeView#filesExpTree[keyboardFocusActive="true"] {{background:{operating_bg};}}
             QTreeView#filesExpTree::item {{height:24px;padding:0;}}
             /* Passive memory = outlined current row, NO green fill. */
             QTreeView#filesExpTree::item:selected,

@@ -116,11 +116,11 @@ def slash_menu_page_target(current, visible_count, viewport_height, row_height,
 SLASH_MENU_ROWS = {'compact': 27, 'normal': 37}
 
 def slash_source_from_search_result(launcher, view, panel):
-    """Keyboard EX starts from the *selected search folder*, never a fake path.
+    """Resolve Keyboard EX from the actual selected search result.
 
-    Search Location has no breadcrumb ancestry. Resolve only the selected
-    folder's actual JSON identity or indexed physical path. An invalid match
-    returns None instead of browsing the folder that happened to be open.
+    A result folder opens its own contents. A file/JSON action starts from
+    its *parent* (never an unrelated remembered physical/virtual Location).
+    Selection-type Mail candidates intentionally remain outside EX.
     """
     tree = getattr(getattr(view, 'middle', None), 'tree', None)
     if tree is None:
@@ -128,25 +128,64 @@ def slash_source_from_search_result(launcher, view, panel):
     item = tree.currentItem()
     row = view.row_data(item) if item is not None else None
     if (not isinstance(row, dict) or not row.get('_main_search_result') or
-            row.get('item_kind') not in ('category', 'directory')):
+            row.get('_search_selection_owner') or row.get('item_kind') == 'selection'):
         return None
+
     page_id, item_id = row.get('page_id'), row.get('item_id')
-    if (page_id and item_id and not row.get('_file')):
+    # Actual JSON category => itself. JSON leaf (including URL/action) =>
+    # its canonical containing category/page. A projected row is never trusted
+    # to supply fabricated parent children or authority.
+    if page_id and item_id and not any(row.get(k) for k in
+                                       ('_file', '_indexed_file', '_browse_file')):
         from launch_virtual_tree import virtual_lookup_node
         node = virtual_lookup_node(launcher.pages, launcher.authored_items,
             page_id, item_id, (launcher.data or {}).get('items', ()))
+        if not isinstance(node, dict):
+            return None
+        if node.get('kind') == 'file':
+            node = virtual_lookup_node(launcher.pages, launcher.authored_items,
+                page_id, node.get('parent_item_id') or '',
+                (launcher.data or {}).get('items', ()))
         if not isinstance(node, dict) or node.get('kind') == 'file':
             return None
+        linked_path = None
+        if node.get('kind') == 'linked_directory':
+            raw = (node.get('row') or {}).get('launch_browse_target')
+            if raw:
+                linked_path = launcher.expander().expand(raw)
         source = QStandardItem(QIcon(), str(node.get('title') or row.get('title', '')))
-        source.setData({'virtual': node, 'pc': False, 'path': None}, _DATA_ROLE)
+        source.setData({'virtual': node, 'pc': False, 'path': None,
+                        'linked_path': linked_path,
+                        # A detached search source is never an Exp model row.
+                        # A linked directory must preserve its JSON mount when
+                        # (カレントフォルダー) commits via the physical path.
+                        'slash_transient': bool(linked_path),
+                        'slash_mount_origin': ({'node': node, 'entry_path': linked_path}
+                                               if linked_path else None)}, _DATA_ROLE)
         source.setData(True, _LOADED_ROLE)
         return source
-    path = row.get('_file')
-    if not isinstance(path, str) or not os.path.isdir(path):
+
+    path = next((row.get(key) for key in ('_indexed_file', '_browse_file', '_file')
+                 if isinstance(row.get(key), str) and row.get(key)), None)
+    if not path:
         return None
-    source = QStandardItem(QIcon(), row.get('title') or os.path.basename(path))
-    source.setData({'path': path, 'pc': False, 'slash_transient': True}, _DATA_ROLE)
-    source.setData(False, _LOADED_ROLE)  # Populate its real children lazily.
+    if os.path.isdir(path):
+        folder = path
+    elif os.path.isfile(path):
+        folder = os.path.dirname(path)
+    else:
+        return None
+    if not folder or not os.path.isdir(folder):
+        return None
+    resolve_origin = getattr(view, 'search_folder_navigation_options', None)
+    origin = (resolve_origin(folder, panel) if callable(resolve_origin)
+              else {'absolute_location': True})
+    source = QStandardItem(QIcon(), os.path.basename(folder.rstrip('\\/')) or folder)
+    source.setData({'path': folder, 'pc': False, 'slash_transient': True,
+                    'slash_search_result': True, 'slash_search_origin': origin}, _DATA_ROLE)
+    # Detached search source is NOT an Exp QModelIndex. Its children are
+    # created by _transient_physical_folders, never panel._expand_index.
+    source.setData(True, _LOADED_ROLE)
     return source
 
 
@@ -627,6 +666,7 @@ class SlashExpMenu(QMenu):
         """Read child folders without touching the Exp model or mount alias."""
         info = parent.data(_DATA_ROLE) or {}
         mount = info.get('slash_mount_origin')
+        search_origin = info.get('slash_search_origin')
         node = info.get('virtual')
         if (mount is None and isinstance(node, dict)
                 and node.get('kind') == 'linked_directory'):
@@ -644,7 +684,9 @@ class SlashExpMenu(QMenu):
             item.setToolTip(child_path)
             item.setData({'path': child_path, 'pc': False,
                           'slash_transient': True,
-                          'slash_mount_origin': mount}, _DATA_ROLE)
+                          'slash_mount_origin': mount,
+                          'slash_search_result': bool(info.get('slash_search_result')),
+                          'slash_search_origin': search_origin}, _DATA_ROLE)
             item.setData(True, _LOADED_ROLE)
             parent.appendRow(item)
 
@@ -1138,6 +1180,12 @@ class SlashExpMenu(QMenu):
                     self._close_then(lambda: self._commit_terminal(target)))
             if (item.data(_DATA_ROLE) or {}).get('current_folder'):
                 self._context_hint_actions.add(action)
+                # The Keyboard EX self-row is also a mouse command. Before,
+                # Enter navigated but clicking simply dismissed the QMenu.
+                # Right still enters the existing context submenu.
+                action.triggered.connect(
+                    lambda checked=False, target=item:
+                    self._close_then(lambda: self._commit_terminal(target)))
             if has_children:
                 sub = SlashExpMenu(self.launcher, self.panel,
                                    root=self.root_menu, source_item=item, parent=self)

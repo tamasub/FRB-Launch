@@ -4396,6 +4396,29 @@ class Launcher(QWidget):
         self.show_expanded_background_paste_menu(
             QCursor.pos(), remote_folder_list=True)
 
+    def _leave_search_before_exp_navigation(self):
+        """Exit Search Location before committing an EX/Exp folder target.
+
+        The popup's selected DATA remains authoritative. Merely calling
+        go_to_directory() with the global search still active would redraw
+        search results instead of showing the requested folder. Do not lose
+        the search visit (or its cursor) in navigation history.
+        """
+        view = getattr(self, 'expanded_view', None)
+        if view is None or not getattr(view, '_main_search_active', False):
+            return False
+        view._remember_main_search_cursor()
+        timer = getattr(self, '_live_search_timer', None)
+        if timer is not None:
+            timer.stop()
+        previous = getattr(view, '_suspend_folder_location_record', False)
+        view._suspend_folder_location_record = True
+        try:
+            self.search.clear()
+        finally:
+            view._suspend_folder_location_record = previous
+        return True
+
     def navigate_files_exp_pc(self):
         """Select the virtual PC ROOT in Launch when Files Exp clicks PC.
 
@@ -4415,6 +4438,9 @@ class Launcher(QWidget):
                             '_system_drives_root')), None)
         if pc_item is None:
             return False
+        prepare_search = getattr(self, '_leave_search_before_exp_navigation', None)
+        if callable(prepare_search):
+            prepare_search()
         tree.setCurrentItem(pc_item)
         view.choose_files(pc_item, 0)  # PC breadcrumb + real drive rows.
         # Files Exp owns focus: only change the *logical* active column,
@@ -4452,6 +4478,16 @@ class Launcher(QWidget):
                    'registered_root': registered_root}
         if mounted_from_menu is not None:
             options['mount_origin'] = mounted_from_menu
+        elif info.get('slash_search_result'):
+            # The detached EX item carries an immutable snapshot of the
+            # EXISTING Exp/JSON ancestry from the moment / was pressed.
+            # Opening the menu did not move Exp or rewrite the breadcrumb;
+            # only the committed folder navigation may now apply it.
+            origin = info.get('slash_search_origin') or {'absolute_location': True}
+            options.update(origin)
+        prepare_search = getattr(self, '_leave_search_before_exp_navigation', None)
+        if callable(prepare_search):
+            prepare_search()
         return bool(view.go_to_directory(directory, **options))
 
     def show_files_exp_folder_menu(self, directory, position):
@@ -4668,19 +4704,9 @@ class Launcher(QWidget):
         focused = QApplication.focusWidget()
         if isinstance(focused, (QLineEdit, QPlainTextEdit, QComboBox)):
             return False
-        view = getattr(self, 'expanded_view', None)
-        if view is not None and getattr(view, '_main_search_active', False):
-            item = view.middle.tree.currentItem()
-            row = view.row_data(item) if item is not None else None
-            if row and row.get('item_kind') not in ('category', 'directory'):
-                # Files use the existing Files List menu, not an unrelated
-                # remembered breadcrumb. JSON choices deliberately have none.
-                if row.get('_search_selection_owner'):
-                    return False
-                rect = view.middle.tree.visualItemRect(item)
-                pos = view.middle.tree.viewport().mapToGlobal(rect.center())
-                view.context_menu(view.middle, rect.center(), global_pos=pos)
-                return True
+        # Global-search rows now use exactly the same Keyboard EX as Files.
+        # The source is resolved from the selected DATA (folder/file parent),
+        # never from an unrelated remembered breadcrumb or context popup.
         return self.show_slash_exp_navigation_menu()
 
     def show_slash_exp_navigation_menu(self):
@@ -4706,9 +4732,10 @@ class Launcher(QWidget):
             panel = getattr(view, 'embedded_files_exp', None)
         if panel is None or panel.model.rowCount() == 0:
             return False
-        # The breadcrumb owns the logical path. A green-FILLED Files List
-        # folder is the one explicit, direct-child extension of that path.
-        # Passive green outline and file selection leave the path unchanged.
+        # Normal Files uses the logical breadcrumb (optionally extended by a
+        # filled child folder). Search results have no common breadcrumb: EX
+        # starts at the selected result folder or its real/JSON parent.
+        breadcrumb_source = None  # Search Locations have no folder breadcrumb.
         if getattr(view, '_main_search_active', False):
             source_item = slash_source_from_search_result(self, view, panel)
         else:
@@ -6664,6 +6691,9 @@ class Launcher(QWidget):
             return False
         if view._workspace_mode != 'files':
             view.show_files_view()
+        prepare_search = getattr(self, '_leave_search_before_exp_navigation', None)
+        if callable(prepare_search):
+            prepare_search()
         return bool(view.show_virtual_launch_directory(node))
 
     def preview_virtual_bookmark(self, row):
@@ -8383,7 +8413,8 @@ class Launcher(QWidget):
             f'background:{colors["search_bg"]};color:{colors["search_fg"]};'
             f'border:1px solid {colors["search_border"]};'
             'border-radius:17px;padding:5px 14px;font-size:15px; } '
-            'QLineEdit#mainSearchField:focus { '
+            'QLineEdit#mainSearchField[keyboardFocusActive="true"] { '
+            f'background:{colors["files_list_active_bg"]};'
             f'border-color:{colors["search_focus"]}; }}')
         self.search_glyph.setStyleSheet(
             'QToolButton#searchGlyph { background:transparent; border:0; padding:0; }')
@@ -9461,7 +9492,91 @@ class Launcher(QWidget):
             return self.expanded_focus_area(widget)
         return None
 
+    def _search_list_focus_context(self, widget):
+        """True for Files List and its local search; never for main search.
+
+        A search result List is an operating session: local folder filtering
+        and its menus stay inside the session, while Exp/breadcrumb/main search
+        are separate keyboard destinations.
+        """
+        if widget is None:
+            return False
+        view = getattr(self, 'expanded_view', None)
+        if view is None:
+            return False
+        controls = (getattr(getattr(view, 'middle', None), 'tree', None),
+                    getattr(view, 'middle_search', None),
+                    getattr(view, 'middle_search_history_button', None),
+                    getattr(view, 'middle_search_history_menu', None))
+        for control in controls:
+            if control is not None and (widget is control or
+                    (callable(getattr(control, 'isAncestorOf', None)) and
+                     control.isAncestorOf(widget))):
+                return True
+        # Only a context popup that originated from the List inherits its
+        # focus. The global Launch-action/settings menus do not.
+        for menu in (getattr(self, '_search_list_context_popup', None),
+                     getattr(self, '_slash_exp_navigation_menu', None)):
+            if menu is None:
+                continue
+            try:
+                if (menu.isVisible() and (widget is menu or
+                        menu.isAncestorOf(widget))):
+                    return True
+            except RuntimeError:
+                continue
+        return False
+
+    def _search_list_popup_open(self):
+        """A visible List-owned Tool/Popup is not a departure from the List."""
+        view = getattr(self, 'expanded_view', None)
+        menus = (getattr(self, '_search_list_context_popup', None),
+                 getattr(self, '_slash_exp_navigation_menu', None),
+                 getattr(view, 'middle_search_history_menu', None))
+        for menu in menus:
+            try:
+                if menu is not None and menu.isVisible():
+                    return True
+            except RuntimeError:
+                pass
+        return False
+
+    def _finish_search_list_focus_exit(self):
+        """Deferred: Qt may report a transient None before opening a QMenu."""
+        view = getattr(self, 'expanded_view', None)
+        if (view is None or not getattr(view, '_main_search_active', False)):
+            self._search_list_focus_session = False
+            return False
+        if not getattr(self, '_search_list_focus_session', False):
+            return False
+        focused = QApplication.focusWidget()
+        # Alt+Tab and native menu handoff may temporarily have no Qt widget.
+        if (focused is None or self._search_list_focus_context(focused)
+                or self._search_list_popup_open()):
+            return False
+        self._search_list_focus_session = False
+        return self.clear_global_search_from_list(preserve_focus=True)
+
+    def _track_search_list_focus(self, widget):
+        """Dismissing Search View is tied to leaving List, not typing a query."""
+        view = getattr(self, 'expanded_view', None)
+        if (view is None or not getattr(view, '_main_search_active', False)):
+            self._search_list_focus_session = False
+            return
+        if self._search_list_focus_context(widget):
+            self._search_list_focus_session = True
+        elif getattr(self, '_search_list_focus_session', False):
+            QTimer.singleShot(0, self._finish_search_list_focus_exit)
+
     def capture_last_focus_change(self, previous, widget):
+        # The warm (pink-toned) Files surface follows actual keyboard focus,
+        # never the last remembered Remote/Files operating target.
+        view = getattr(self, 'expanded_view', None)
+        if view is not None and hasattr(view, 'set_files_keyboard_focus_visual'):
+            area = (view._files_keyboard_focus_area(widget)
+                    if widget is not None else None)
+            view.set_files_keyboard_focus_visual(area)
+        self._track_search_list_focus(widget)
         # Qt's focusChanged signal catches mouse, Tab and arrow navigation
         # without modifying the legacy eventFilter / menu event routing.
         if self.isVisible() and not self._restoring_last_focus:
@@ -10110,16 +10225,26 @@ class Launcher(QWidget):
         if active:
             roots, left, right = targets
             query = self.search.text().strip()
+            # Leaving a search must NOT rebuild Files Exp: a mouse click in
+            # Exp already selected its destination, and set_roots() would
+            # replace that QModelIndex with the previous folder/first root.
+            # Restore just the List presentation when underlying DATA is the
+            # same; a genuinely reloaded JSON still gets the full refresh.
+            same_data = (self.expanded_view.isVisible() and
+                         getattr(self.expanded_view, '_search_data_ref', None) is self.data)
+            leaving_search = (not query and same_data and
+                              getattr(self.expanded_view, '_main_search_active', False))
             if not query:
                 self.expanded_view.leave_global_search_results()
             # Search edits update only one List projection. Rebuilding Files
             # Exp/buttons on *every typed character* is both slow and can
             # reset the keyboard/mouse target. A new DATA object still forces
             # a full refresh to pick up reloaded Launch JSON.
-            cached = (query and self.expanded_view.isVisible() and
-                      getattr(self.expanded_view, '_main_search_active', False) and
-                      getattr(self.expanded_view, '_search_data_ref', None) is self.data)
-            if not cached:
+            cached = (query and same_data and
+                      getattr(self.expanded_view, '_main_search_active', False))
+            if leaving_search:
+                self.expanded_view.refresh_middle(presentation_only=True)
+            elif not cached:
                 self.expanded_view.refresh(roots, left, right, self.expanded_options)
             if query and self.selection is None:
                 self.expanded_view.show_global_search_results(
@@ -10476,6 +10601,14 @@ class Launcher(QWidget):
     def navigate_home(self):
         if not self.data or not self.pages:
             return
+        # HOME is a location change, not a filter applied inside the Search
+        # Location. Clear the main query for toolbar, physical Home key and
+        # Remote alike BEFORE selecting the configured Exp root.
+        search = getattr(self, 'search', None)
+        if search is not None and search.text().strip():
+            self._live_search_timer.stop()
+            self.hide_history_popup()
+            search.clear()
         # A selection palette (emoji / recipients) or a classic Page can hide
         # the Files workspace even while Three-layer mode is selected. HOME
         # still means Files Exp home, not Page[0] (ZIP / Quick). Restore the
@@ -11494,7 +11627,42 @@ class Launcher(QWidget):
         if getattr(self, 'composing', False):
             self._live_search_timer.start(235)
             return
+        # Live search only updates DATA/VIEW. Do not move keyboard focus
+        # until an explicit Enter or search-history selection commits it.
         self.render()
+
+    def focus_settled_global_search_results(self):
+        """Enter/history only: commit focus to the Files search List."""
+        view = getattr(self, 'expanded_view', None)
+        if (view is None or not view.isVisible() or
+                getattr(view, '_workspace_mode', None) != 'files' or
+                not getattr(view, '_main_search_active', False) or
+                not self.search.text().strip() or
+                getattr(self, 'selection', None) is not None or
+                getattr(self, 'composing', False) or
+                QApplication.activeModalWidget() is not None):
+            return False
+        view._focus_files_keyboard_area('list')
+        return True
+
+    def clear_global_search_from_list(self, *, preserve_focus=False):
+        """Leave a Search Location via Backspace or a genuine List focus exit.
+
+        Backspace keeps the keyboard in List; focus-exit must NOT steal it back
+        from Exp, breadcrumb, toolbar, or the global search editor.
+        """
+        view = getattr(self, 'expanded_view', None)
+        if (view is None or not getattr(view, '_main_search_active', False)
+                or not self.search.text().strip()):
+            return False
+        self._live_search_timer.stop()
+        self.hide_history_popup()
+        self.search.clear()  # Existing render restores the folder Location.
+        self._search_list_focus_session = False
+        if (not preserve_focus and view.isVisible() and
+                getattr(view, '_workspace_mode', None) == 'files'):
+            view._focus_files_keyboard_area('list')
+        return True
 
     def flush_live_search(self):
         """Finish deferred results before the user navigates or clicks a hit."""
@@ -11920,7 +12088,8 @@ class Launcher(QWidget):
         self.search.setCursorPosition(len(keyword))
         if self.list.topLevelItemCount():
             self.list.setCurrentItem(self.list.topLevelItem(0))
-        self.list.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        if not self.focus_settled_global_search_results():
+            self.list.setFocus(Qt.FocusReason.ShortcutFocusReason)
         DIAG.info('SEARCH_HISTORY selected keyword=%s', keyword)
 
     def change_history_row(self, value, action):
@@ -12104,6 +12273,17 @@ class Launcher(QWidget):
                 return True
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self.select_history_keyword()
+                event.accept()
+                return True
+        if (obj is self.search and not self.history_popup.isVisible()
+                and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and modifiers == Qt.KeyboardModifier.NoModifier):
+            # Typing (including English live filtering) stays in the editor.
+            # Only the explicit Enter commits the Search Location to Files List.
+            self.flush_live_search()
+            if self.focus_settled_global_search_results():
+                self.record_session_search()
+                self._session_edit_draft = None
                 event.accept()
                 return True
         if not popup_input or not self.history_popup.isVisible():
@@ -13141,17 +13321,22 @@ class Launcher(QWidget):
             wheel = getattr(self, '_remote_context_wheel', None)
             if wheel is not None and getattr(wheel, 'root', None) is self.theme_menu:
                 wheel.stop()
-            # Expanded Files mode gets an in-place editor column. Keep the
-            # existing standalone Qt dialog as fallback for Compact modes.
+            # Options always owns the Files third column on Windows, even
+            # when the independent 'embed_studio' guest preference is OFF.
+            # That preference is about Studio NativeShell, not the Options
+            # editor. Compact / unsupported hosts retain the Qt dialog.
             view = getattr(self, 'expanded_view', None)
-            from third_column_host_options import embedded_editor_enabled
-            if (view is not None and view.isVisible()
-                    and embedded_editor_enabled(LAUNCH_HOME, 'studio')):
+            if view is not None and view.isVisible() and os.name == 'nt':
                 view.show_files_view()
                 if view.show_option_settings_preview(
                         LAUNCH_HOME, STATE,
                         self.expander().values.get('studio_root', '')):
                     return
+                # A live Studio guest may require an asynchronous release,
+                # or it may refuse to yield the third column. Never create a
+                # competing standalone Options window behind that guest.
+                self.info_notice('第3列の画面切替を完了できませんでした。既存画面を保持します。')
+                return
             existing = getattr(self, '_option_settings_window', None)
             if existing is not None and existing.isVisible():
                 existing.raise_()

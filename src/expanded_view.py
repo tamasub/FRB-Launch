@@ -2779,10 +2779,9 @@ class ExpandedLauncherView(QWidget):
             QToolButton#expandedFilesRefresh:hover {{background:{hover};}}
             QToolButton#expandedFilesRefresh:pressed {{background:{hover};}}
             QWidget#expandedMiddleSearchBar {{background:{bg};border:0;border-bottom:1px solid {border};}}
-            QWidget#expandedMiddleSearchBar[operatingActive="true"] {{background:{operating_bg};}}
             QFrame#filesListTitleBox {{background:{'#f8fcf9' if light else '#395247'};
                 border:1px solid transparent;border-bottom:1px solid {border};border-radius:0px;}}
-            QFrame#filesListTitleBox[operatingActive="true"] {{
+            QFrame#filesListTitleBox[keyboardFocusActive="true"] {{
                 background:{operating_title};border:1px solid {operating_outline};
                 border-radius:3px;}}
             QLabel#filesListTitle {{color:{text};font-size:12px;font-weight:bold;
@@ -2805,23 +2804,25 @@ class ExpandedLauncherView(QWidget):
                 color:{colors['history_selected_text']};}}
             QLineEdit#expandedMiddleSearch {{background:{bg};color:{text};border:1px solid {border};
                 border-radius:7px;padding:3px 7px;font-size:12px;selection-background-color:#78bba0;}}
+            QLineEdit#expandedMiddleSearch[keyboardFocusActive="true"] {{
+                background:{operating_bg};border:1px solid {operating_outline};}}
             QLineEdit#expandedMiddleSearch:focus {{border:1px solid #55a38c;}}
             QHeaderView#expandedMiddleColumnsHeader::section {{
                 color:{colors['muted_text']};background:{list_grid_header};border:0;
                 border-right:1px solid {border};border-bottom:1px solid {border};
                 padding:1px 8px;font-size:12px;font-weight:400;}}
-            QHeaderView#expandedMiddleColumnsHeader[operatingActive="true"]::section {{
+            QHeaderView#expandedMiddleColumnsHeader[keyboardFocusActive="true"]::section {{
                 background:{operating_grid_header};}}
             QHeaderView#expandedMiddleColumnsHeader::section:hover {{background:{list_grid_header};}}
-            QHeaderView#expandedMiddleColumnsHeader[operatingActive="true"]::section:hover {{
+            QHeaderView#expandedMiddleColumnsHeader[keyboardFocusActive="true"]::section:hover {{
                 background:{operating_grid_header};}}
             QTreeWidget#expandedTree[detailsColumns="true"] {{font-size:12px;}}
             QWidget#expandedMiddleTreeContainer {{background:{bg};border:0;}}
-            QWidget#expandedMiddleTreeContainer[operatingActive="true"] {{background:{operating_bg};}}
+            QWidget#expandedMiddleTreeContainer[keyboardFocusActive="true"] {{background:{operating_bg};}}
             QWidget#expandedBackLane {{background:{bg};border:0;}}
-            QWidget#expandedBackLane[operatingActive="true"] {{background:{operating_bg};}}
+            QWidget#expandedBackLane[keyboardFocusActive="true"] {{background:{operating_bg};}}
             QTreeWidget#expandedTree {{background:{bg};color:{text};border:0;outline:0;}}
-            QTreeWidget#expandedTree[detailsColumns="true"][remoteInactive="false"] {{
+            QTreeWidget#expandedTree[keyboardFocusActive="true"] {{
                 background:{operating_bg};}}
             QTreeWidget#expandedTree::item {{min-height:{height}px;padding:{pad}px 7px;border:0;}}
             QTreeWidget#expandedTree::item:hover {{background:{hover};}}
@@ -2836,6 +2837,8 @@ class ExpandedLauncherView(QWidget):
             /* Align the Files breadcrumb pill with the Browser address bar. */
             QFrame#addressBreadcrumbSurface {{border:1px solid {colors['search_border']};
                 border-radius:12px;background:{colors['search_bg']};}}
+            QFrame#addressBreadcrumbSurface[keyboardFocusActive="true"] {{
+                background:{operating_bg};border-color:{operating_outline};}}
             QToolButton#addressCrumb {{border:0;background:transparent;color:{text};padding:2px 3px;}}
             QToolButton#addressCrumb:hover {{background:{active};border-radius:4px;}}
             QLabel#addressSeparator {{border:0;color:{text};background:transparent;padding:0 2px;}}
@@ -2843,6 +2846,8 @@ class ExpandedLauncherView(QWidget):
             QLineEdit#directoryAddressEdit {{background:{colors['search_bg']};color:{colors['muted_text']};
                 border:1px solid {colors['search_border']};border-radius:12px;padding:4px 10px;
                 selection-background-color:#138c8d;selection-color:white;font-size:12px;}}
+            QLineEdit#directoryAddressEdit[keyboardFocusActive="true"] {{
+                background:{operating_bg};border-color:{operating_outline};}}
             QLineEdit#directoryAddressEdit:focus {{border:1px solid {colors['search_focus']};}}
         ''')
         self.favorite_popup.setStyleSheet(history_popup_qss(
@@ -3695,6 +3700,24 @@ class ExpandedLauncherView(QWidget):
         # refresh_middle will restore physical/JSON columns and breadcrumb.
         return True
 
+    def search_folder_navigation_options(self, directory, panel=None):
+        """Resolve a search result's Exp ancestry without altering Exp/crumbs.
+
+        Search is a Location, NOT a directory/root. Reuse actual authored Exp
+        roots and virtual JSON mounts as the operation context. Until an
+        explicit navigation commits, nothing about Files Exp or breadcrumb
+        should change. This is also used by the search -> Keyboard EX path.
+        """
+        from search_exp_origin import search_exp_origin_from_panel
+        if panel is None:
+            getter = getattr(self.launcher, '_current_remote_files_exp', None)
+            panel = getter() if callable(getter) else None
+            if panel is None or not getattr(panel, 'model', None) or not panel.model.rowCount():
+                panel = getattr(self, 'embedded_files_exp', None)
+        return search_exp_origin_from_panel(
+            directory, panel, self.launcher.expander().expand,
+            Qt.ItemDataRole.UserRole + 1)
+
     def open_main_search_folder(self, row):
         """Search row -> real folder Location; never manufacture a parent.
 
@@ -3724,7 +3747,10 @@ class ExpandedLauncherView(QWidget):
             self._suspend_folder_location_record = False
         if node is not None:
             return self.show_virtual_launch_directory(node)
-        return self.go_to_directory(str(path), direct_anchor=True)
+        resolve_origin = getattr(self, 'search_folder_navigation_options', None)
+        origin = (resolve_origin(str(path)) if callable(resolve_origin)
+                  else {'absolute_location': True})
+        return self.go_to_directory(str(path), **origin)
 
     def _main_search_choice_changed(self, item, column):
         """Checking a Mail result enters the unchanged classic F12 picker."""
@@ -4070,7 +4096,13 @@ class ExpandedLauncherView(QWidget):
             self._in_place_files_refresh = previous
             self._sync_file_list_directory_watch()
 
-    def refresh_middle(self):
+    def refresh_middle(self, *, presentation_only=False):
+        """Redraw List; Search -> Folder view reset is NOT Exp navigation.
+
+        presentation_only preserves the Exp selection and navigation history:
+        clicking an Exp row must not lose its live QModelIndex to a stale
+        breadcrumb realignment while search presentation is removed.
+        """
         if (getattr(self, '_main_search_active', False) and
                 self.launcher.search.text().strip()):
             self.show_global_search_results(
@@ -4104,7 +4136,8 @@ class ExpandedLauncherView(QWidget):
             self._sync_breadcrumb_directory_watch()
             self._fill_middle_from_current()
             self.update_directory_favorite_button()
-            self._record_directory_location()
+            if not presentation_only:
+                self._record_directory_location()
             self.launcher._nav_update_buttons()
             return
         header_getter = getattr(self.middle.tree, 'header', None)
@@ -4148,10 +4181,12 @@ class ExpandedLauncherView(QWidget):
         # Record only completed folder transitions, regardless of origin:
         # Files first column, folder contents, breadcrumbs, favorites, Up.
         # The history model deduplicates F5/re-render of the same destination.
-        self._record_directory_location()
+        if not presentation_only:
+            self._record_directory_location()
         self.launcher._nav_update_buttons()
         changed = getattr(self.launcher, 'on_files_directory_changed', None)
-        if callable(changed) and not getattr(self, '_in_place_files_refresh', False):
+        if (not presentation_only and callable(changed)
+                and not getattr(self, '_in_place_files_refresh', False)):
             changed(self.current_directory())
 
     def _restore_directory_history(self, entry):
@@ -4823,7 +4858,8 @@ class ExpandedLauncherView(QWidget):
 
     def go_to_directory(self, path, *, preserve_remote_popup=False,
                         source_virtual=None, direct_anchor=False,
-                        registered_root=None, mount_origin=None):
+                        registered_root=None, mount_origin=None,
+                        absolute_location=False):
         """Breadcrumb/edit/favorite navigation stays inside FRB Launch.
 
         A folder *clicked inside an open Remote context submenu* must update
@@ -4855,6 +4891,12 @@ class ExpandedLauncherView(QWidget):
             self._registered_root_origin = None
         elif source_virtual is not None and not direct_anchor:
             self._filesystem_entry_origin = next_entry_origin(None, source_virtual, target)
+            self._direct_entry_root = None
+            self._registered_root_origin = None
+        elif absolute_location:
+            # Search origin with no authored/Exp ancestry: represent the real
+            # path without inheriting a stale JSON mount or adding an Exp root.
+            self._filesystem_entry_origin = None
             self._direct_entry_root = None
             self._registered_root_origin = None
         elif direct_anchor:
@@ -5318,6 +5360,50 @@ class ExpandedLauncherView(QWidget):
         self._queue_files_selection_status()
         return True
 
+    def set_files_keyboard_focus_visual(self, area):
+        """Warm only the Files area receiving keys, not the remembered target.
+
+        Remote/rail operating target and selected row are independent state.
+        Breadcrumb, folder-filter and main-search have their own warm surface;
+        Exp and List retain their existing green row-selection semantics.
+        """
+        if getattr(self, '_workspace_mode', None) != 'files' or not self.isVisible():
+            area = None
+        if area not in ('exp', 'list', 'breadcrumb', 'folder_search', 'main_search'):
+            area = None
+        self._files_keyboard_visual_area = area
+        exp = getattr(self, 'embedded_files_exp', None)
+        launcher = getattr(self, 'launcher', None)
+        standalone = getattr(getattr(launcher, 'remote_window', None),
+                             'files_exp_panel', None)
+        title = getattr(self, 'files_list_title_box', None)
+        tree = getattr(getattr(self, 'middle', None), 'tree', None)
+        header = tree.header() if tree is not None else None
+        address = getattr(self, 'address_bar', None)
+        groups = (
+            (area == 'exp', (getattr(exp, 'exp_header', None),
+                             getattr(exp, 'tree', None),
+                             getattr(standalone, 'exp_header', None),
+                             getattr(standalone, 'tree', None))),
+            (area == 'list', (title, getattr(self, 'middle_tree_container', None),
+                              getattr(self, 'middle_back_lane', None), tree, header)),
+            (area == 'breadcrumb', (getattr(address, 'surface', None),
+                                     getattr(address, 'editor', None))),
+            (area == 'folder_search', (getattr(self, 'middle_search', None),)),
+            (area == 'main_search', (getattr(launcher, 'search', None),)),
+        )
+        for active, widgets in groups:
+            for widget in widgets:
+                if widget is None or widget.property('keyboardFocusActive') == active:
+                    continue
+                widget.setProperty('keyboardFocusActive', active)
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+                widget.update()
+                viewport = getattr(widget, 'viewport', None)
+                if callable(viewport):
+                    viewport().update()
+
     def set_files_operating_area(self, area):
         """Show the controller's true target on BOTH column titles and rows.
 
@@ -5544,6 +5630,18 @@ class ExpandedLauncherView(QWidget):
         if not owned:
             return False
         key, mods = event.key(), event.modifiers()
+        # Backspace leaves only the *search-results List* for its original
+        # folder. Do not steal Backspace from either search editor, a rename,
+        # a regular Files folder, or a breadcrumb editor.
+        if (getattr(self, '_workspace_mode', None) == 'files'
+                and getattr(self, '_main_search_active', False)
+                and key == Qt.Key.Key_Backspace
+                and mods == Qt.KeyboardModifier.NoModifier
+                and obj in (self.middle.tree, self.middle.tree.viewport())
+                and self.middle.tree.state() != QAbstractItemView.State.EditingState):
+            if launcher.clear_global_search_from_list():
+                event.accept()
+                return True
         # Insert -> current folder, exactly like a tonton-lane single click.
         # List only: do not hijack an inline Rename, an editor, or a modal.
         if (getattr(self, '_workspace_mode', None) == 'files'
@@ -8503,6 +8601,9 @@ class ExpandedLauncherView(QWidget):
                 row['_launch_virtual_node'],
                 global_pos if global_pos is not None else pane.tree.viewport().mapToGlobal(point),
                 list_context=True)
+            if getattr(self, '_main_search_active', False):
+                self.launcher._search_list_context_popup = getattr(
+                    self.launcher, '_launch_context_menu', None)
             return
         if pane is self.middle:
             tree = pane.tree
@@ -8518,6 +8619,9 @@ class ExpandedLauncherView(QWidget):
                 (global_pos if global_pos is not None else tree.viewport().mapToGlobal(point)), row,
                 context_parent=self.launcher, selected_paths=targets,
                 list_context=True)
+            if shown and getattr(self, '_main_search_active', False):
+                self.launcher._search_list_context_popup = getattr(
+                    self.launcher, '_launch_context_menu', None)
             if (shown and len(targets) == 1 and
                     not getattr(self, '_main_search_active', False)):
                 menu = getattr(self.launcher, '_launch_context_menu', None)
