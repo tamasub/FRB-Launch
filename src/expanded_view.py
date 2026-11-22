@@ -5362,9 +5362,14 @@ class ExpandedLauncherView(QWidget):
             pad = getattr(launcher, '_active_remote_wheel_pad', lambda: None)()
             current = getattr(launcher, '_files_operating_target', None)
             pad_current = (obj is pad and current in ('files_exp', 'directory', 'files'))
-            if keyboard_area in ('exp', 'list') or pad_current:
+            # Avoid importing the PySide6-backed / navigator for ordinary
+            # Tab/Home/arrows. Only slash-shaped events can activate it.
+            slash_text = event.text() if callable(getattr(event, 'text', None)) else ''
+            slash_key = getattr(Qt.Key, 'Key_Slash', None)
+            if ((keyboard_area in ('exp', 'list') or pad_current)
+                    and (slash_text == '/' or key == slash_key)):
                 from slash_exp_navigation import is_slash_shortcut
-                if (is_slash_shortcut(key, event.text(), mods)
+                if (is_slash_shortcut(key, slash_text, mods)
                         and launcher.show_slash_exp_navigation_menu()):
                     event.accept()
                     return True
@@ -5384,8 +5389,11 @@ class ExpandedLauncherView(QWidget):
             area = self._files_keyboard_focus_area(obj)
             if area is None:
                 return False
-            order = ('exp', 'list', 'folder_search', 'breadcrumb',
-                     'main_search') + (('browser',) if self.web_view_active() else ())
+            # Clockwise from the main search: breadcrumb -> folder search ->
+            # Files List -> Files Exp -> (Browser, if present) -> main search.
+            # Shift+Tab / Backtab traverse the same ring in reverse.
+            order = ('main_search', 'breadcrumb', 'folder_search',
+                     'list', 'exp') + (('browser',) if self.web_view_active() else ())
             delta = -1 if key == Qt.Key.Key_Backtab or mods == Qt.KeyboardModifier.ShiftModifier else 1
             target = order[(order.index(area) + delta) % len(order)]
             # Dismiss non-grabbing popup menus rather than leaving keyboard
@@ -5497,43 +5505,43 @@ class ExpandedLauncherView(QWidget):
         return False
 
     def _finger_zero_keyboard(self, obj, event):
-        """Reuse existing native Enter/Tab and / routes without remapping Windows.
+        """Launch-local right-hand keys: 0=Enter, Ctrl+arrows=Tab/Backtab.
 
-        QApplication installs this filter globally, so Launch ownership is a
-        strict prerequisite. All key releases are consumed for mapped keys.
-        Synthetic Enter/Tab reenter the existing event chain exactly once.
+        All modal dialog fields use the same route; keypad 1 is NEVER
+        intercepted (including in dialogs). Normal Tab/Shift+Tab keep working.
+        Do not replay the original shortcut or emit a synthetic key release.
         """
         if event.type() not in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
             return False
         if not self._launch_owns_keyboard_source(obj):
             return False
-        dialog = isinstance(obj.window(), QDialog) if isinstance(obj, QWidget) else False
         action = finger_zero_action(event.key(), event.modifiers(),
-                                    event.nativeVirtualKey(), in_dialog=dialog)
+                                    event.nativeVirtualKey())
         if action is None:
-            # A previous Menu key can have no QContextMenuEvent on some
-            # Windows builds. Drop that pending marker on the next key press.
             if event.type() == QEvent.Type.KeyPress:
                 self._finger_menu_context_pending = False
             return False
         if (action == 'slash' or
                 (action == 'enter' and not self._finger_zero_is_text_entry(obj)) or
-                (action == 'tab' and not getattr(obj, 'ime_composing', False))):
+                (action in ('tab', 'backtab') and
+                 not getattr(obj, 'ime_composing', False))):
             event.accept()
             if event.type() == QEvent.Type.KeyRelease or event.isAutoRepeat():
                 return True
             if action == 'slash':
                 self._finger_menu_context_pending = True
-                # This key used to be consumed as a no-op. New assignment:
-                # exactly the existing / navigation menu, including toggle.
-                # In editors toggle_slash_exp_shortcut safely refuses entry.
                 self.launcher.toggle_slash_exp_shortcut()
             else:
-                key = (Qt.Key.Key_Return if action == 'enter' else Qt.Key.Key_Tab)
-                QApplication.sendEvent(obj, QKeyEvent(QEvent.Type.KeyPress, key,
-                                    Qt.KeyboardModifier.NoModifier))
+                key = {'enter': Qt.Key.Key_Return,
+                       'tab': Qt.Key.Key_Tab,
+                       'backtab': Qt.Key.Key_Backtab}[action]
+                modifiers = (Qt.KeyboardModifier.ShiftModifier if action == 'backtab'
+                             else Qt.KeyboardModifier.NoModifier)
+                QApplication.sendEvent(obj, QKeyEvent(QEvent.Type.KeyPress,
+                                                      key, modifiers))
             return True
-        # Text editors still type the real 0; do not swallow their releases.
+        # Text editors still type real keypad 0 and 1. Ctrl+Left/Right are
+        # reserved for Launch focus navigation, as explicitly requested.
         return False
 
     def _launch_action_menu_keyboard(self, obj, event):

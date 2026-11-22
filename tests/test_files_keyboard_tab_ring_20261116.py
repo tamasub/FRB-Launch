@@ -104,21 +104,39 @@ shortcut = load_method(EXP, 'ExpandedLauncherView', 'keyboard_files_shortcuts', 
 
 def test_six_stop_tab_ring_skips_files_tab_and_shift_tab_reverses():
     view, calls, widgets = scenario()
-    for index, source in enumerate(widgets):
+    # Clockwise: main search -> breadcrumb -> folder search -> List -> Exp
+    # -> Browser -> main search. With the Browser absent it is a 5-stop ring.
+    clockwise = [widgets[4], widgets[3], widgets[2],
+                 widgets[1], widgets[0]]
+    view.web_view_active = lambda: True
+    view.web_view = NS(tabs=Widget('browser-tabs', view.launcher))
+    for index, source in enumerate(clockwise):
         ev = Event(Key.Key_Tab)
         assert view.keyboard_files_shortcuts(source, ev) is True
         assert ev.accepted
-        assert widgets[(index+1)%6].focus_count == 1
+        target = (clockwise[index + 1] if index + 1 < len(clockwise)
+                  else view.web_view.tabs)
+        assert target.focus_count == 1
+    assert view.keyboard_files_shortcuts(widgets[5], Event(Key.Key_Tab))
     assert calls.count('settle') == 1
-    assert widgets[0].focus_count == 1, 'Browser -> Exp loops'
+    assert widgets[4].focus_count == 1, 'Browser -> main search loops'
     assert view._files_keyboard_focus_area(view.files_mode_tab) == 'main_search'
     assert view._files_keyboard_focus_area(view.root_buttons[0]) == 'browser'
     ev = Event(Key.Key_Backtab)
-    assert view.keyboard_files_shortcuts(widgets[0], ev)
-    assert widgets[-1].focus_count == 2
+    assert view.keyboard_files_shortcuts(widgets[4], ev)
+    assert view.web_view.tabs.focus_count == 2
     ev = Event(Key.Key_Tab, Qt.KeyboardModifier.ShiftModifier)
-    assert view.keyboard_files_shortcuts(widgets[1], ev)
-    assert widgets[0].focus_count == 2
+    assert view.keyboard_files_shortcuts(widgets[3], ev)
+    assert widgets[4].focus_count == 2
+
+
+def test_clockwise_ring_without_browser_returns_from_exp_to_main_search():
+    view, _, widgets = scenario()
+    view.web_view_active = lambda: False
+    clockwise = [widgets[4], widgets[3], widgets[2], widgets[1], widgets[0]]
+    for index, source in enumerate(clockwise):
+        assert view.keyboard_files_shortcuts(source, Event(Key.Key_Tab))
+        assert clockwise[(index + 1) % 5].focus_count == 1
 
 
 def test_tab_can_leave_each_open_history_popup():

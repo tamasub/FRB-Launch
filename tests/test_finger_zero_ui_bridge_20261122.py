@@ -50,7 +50,7 @@ def make_bridge():
     from finger_zero_keys import finger_zero_action
     sent = []
     toggles = []
-    qt = NS(Key=NS(Key_Return=1001, Key_Tab=1002), KeyboardModifier=NS(NoModifier=0))
+    qt = NS(Key=NS(Key_Return=1001, Key_Tab=1002, Key_Backtab=1003), KeyboardModifier=NS(NoModifier=0, ShiftModifier=0x02000000))
     qevent = NS(Type=NS(KeyPress=10, KeyRelease=11))
     fake_app = NS(sendEvent=lambda target, event: sent.append((target, event)))
     bridge = extract('_finger_zero_keyboard', {
@@ -80,15 +80,38 @@ def test_numpad_zero_reuses_enter_routing_once():
     assert fn(owner, view, repeat) and len(sent) == 1
 
 
-def test_one_tabs_only_inside_dialog_even_from_editor():
-    fn, owner, sent, _, qt, types = make_bridge()
+def test_one_keeps_digit_in_dialog_and_files_focus_ring():
+    fn, owner, sent, _, _, types = make_bridge()
     editor = QWidget(QDialog(None))
-    assert fn(owner, editor, Event(types.Type.KeyPress, 0x31, vk=0x61))
-    assert sent[0][1].key == qt.Key.Key_Tab
-    outside = QWidget(QWidget(None))
-    assert fn(owner, outside, Event(types.Type.KeyPress, 0x31, vk=0x61)) is False
-    assert len(sent) == 1
+    owner._workspace_mode = 'files'
+    owner._files_keyboard_focus_area = lambda obj: 'main_search'
+    for key, vk in ((0x31, 0x61), (0x01000011, 0x23), (0x31, 0x31)):
+        assert fn(owner, editor, Event(types.Type.KeyPress, key, vk=vk)) is False
+    assert sent == []
 
+
+def test_ctrl_arrows_tab_in_dialog_and_files_and_reverse():
+    fn, owner, sent, _, qt, types = make_bridge()
+    owner._finger_zero_is_text_entry = lambda obj: True
+    for widget in (QWidget(QDialog(None)), QWidget(QWidget(None))):
+        for key, expected, mods in ((0x01000014, qt.Key.Key_Tab, 0),
+                                    (0x01000012, qt.Key.Key_Backtab,
+                                     qt.KeyboardModifier.ShiftModifier)):
+            press = Event(types.Type.KeyPress, key, modifiers=0x04000000)
+            assert fn(owner, widget, press) and press.accepted
+            assert sent[-1][0] is widget
+            assert sent[-1][1].key == expected
+            assert sent[-1][1].mods == mods
+            before = len(sent)
+            release = Event(types.Type.KeyRelease, key, modifiers=0x04000000)
+            repeat = Event(types.Type.KeyPress, key, modifiers=0x04000000, repeat=True)
+            assert fn(owner, widget, release)
+            assert fn(owner, widget, repeat)
+            assert len(sent) == before
+    # Existing numeric 1 and other apps keep native keyboard behavior.
+    owner._launch_owns_keyboard_source = lambda obj: False
+    assert not fn(owner, QWidget(QDialog(None)),
+                  Event(types.Type.KeyPress, 0x01000014, modifiers=0x04000000))
 
 def test_zero_keeps_number_when_editor_is_focused():
     fn, owner, sent, _, _, types = make_bridge()

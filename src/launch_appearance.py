@@ -115,24 +115,24 @@ def context_menu_spacing_qss(theme):
 
 
 def launch_action_menu_qss(theme):
-    """Rounded Launch action menu with symmetric top/bottom breathing room.
+    """Item-only styling over a painted rounded Launch action menu window.
 
-    Keep the existing light/dark color family, but pin the popup to one
-    dedicated object name so only Ctrl+Menu's Launch action menu changes.
-    Equal top/bottom outer padding preserves the first-row breathing room
-    even with rounded corners enabled.
+    The QMenu background must stay transparent: LaunchActionMenu draws its
+    rounded surface on a translucent frameless window. Equal vertical outer
+    padding keeps the first row as generously spaced as the last row.
     """
     light = theme_family(theme) == 'light'
     palette = theme_palette(theme)
-    bg = '#ffffff' if light else '#202b39'
     fg = '#284238' if light else '#e5ebf3'
-    border = '#b6cebe' if light else '#435369'
     selection = '#d6e7f8' if light else '#304d70'
     disabled = '#8da69a' if light else palette['muted_text']
     separator = '#dce8df' if light else '#4b5b56'
     return (
-        f'QMenu#frbLaunchActionMenu {{ menu-scrollable:1; background:{bg}; '
-        f'color:{fg}; border:1px solid {border}; border-radius:10px; '
+        # The parent window is transparent and the round panel is painted
+        # anti-aliased by LaunchActionMenu. An opaque QSS background would
+        # resurrect square native corners on Windows, especially at bottom-right.
+        f'QMenu#frbLaunchActionMenu {{ menu-scrollable:1; '
+        f'background:transparent; color:{fg}; border:0; '
         f'padding:8px 6px 8px 6px; }} '
         f'QMenu#frbLaunchActionMenu::item {{ padding:7px 18px; margin:0; '
         f'border-radius:4px; background:transparent; color:{fg}; }} '

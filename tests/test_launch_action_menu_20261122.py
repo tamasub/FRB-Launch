@@ -133,12 +133,31 @@ def test_actions_call_existing_owners_no_synthetic_key_replay():
     assert not execute(launcher, 'unknown')
 
 
-def test_launch_action_menu_qss_has_round_corners_and_symmetric_vertical_padding():
+def test_launch_action_menu_qss_keeps_transparent_corners_and_symmetric_padding():
     from launch_appearance import launch_action_menu_qss
-    qss = launch_action_menu_qss('light')
-    assert 'QMenu#frbLaunchActionMenu' in qss
-    assert 'border-radius:10px' in qss
-    assert 'padding:8px 6px 8px 6px' in qss
+    for theme in ('light', 'dark'):
+        qss = launch_action_menu_qss(theme)
+        assert 'QMenu#frbLaunchActionMenu' in qss
+        assert 'background:transparent' in qss
+        assert 'border:0' in qss
+        assert 'padding:8px 6px 8px 6px' in qss
+        assert '::item:selected' in qss
+
+
+def test_launch_action_menu_shell_paints_all_four_corners_not_native_square_frame():
+    # Qt-free regression check for the Windows-specific transparent popup.
+    source = (ROOT / 'src' / 'launch_action_menu_window.py').read_text('utf-8')
+    cls = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef)
+               and n.name == 'LaunchActionMenu')
+    methods = {fn.name for fn in cls.body if isinstance(fn, ast.FunctionDef)}
+    assert {'__init__', 'paintEvent', 'set_launch_theme'} <= methods
+    assert 'WA_TranslucentBackground' in source
+    assert 'FramelessWindowHint' in source
+    assert 'NoDropShadowWindowHint' in source
+    assert 'Antialiasing' in source
+    assert 'drawRoundedRect' in source
+    app = (ROOT / 'src' / 'app.py').read_text('utf-8')
+    assert 'menu = LaunchActionMenu(self)' in app
 
 
 def test_files_mode_launch_action_menu_uses_fixed_upper_left_lane_anchor():

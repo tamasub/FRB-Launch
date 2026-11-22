@@ -31,6 +31,7 @@ from slash_exp_navigation import (popup_exp_navigator, slash_source_from_breadcr
 from rod_foreground import foreground_owned_by_process
 from shuriken_model import configured_entries
 from launch_action_menu_model import LAUNCH_ACTIONS, action_is_available
+from launch_action_menu_window import LaunchActionMenu
 from shuriken_scroll_handoff import handoff_current_at_scroll_stop
 from shuriken_trace import trace as shuriken_trace, bar_state as shuriken_bar_state
 from guriguri_shuriken_auto import WheelShurikenGate, AUTO_SHURIKEN_ENABLED
@@ -77,7 +78,7 @@ import file_index
 from frame_geometry import resize_frame
 from page_tab_theme import PAGE_TABS_QSS
 from launch_appearance import (normalize_theme, theme_palette, theme_family, available_themes,
-    context_menu_spacing_qss, history_popup_qss, launch_action_menu_qss,
+    context_menu_spacing_qss, history_popup_qss,
     LIGHT_MAIN_QSS, LIGHT_TABS_QSS, LIGHT_HISTORY_QSS, LIGHT_MENU_QSS,
     LIGHT_CASCADE_TREE_QSS, LIGHT_COLUMN_FILTER_QSS, FRAME_COLORS,
     light_scrollbar_qss, CONTEXT_MENU_SPACING_QSS, SIMPLE_EDIT_FIELD_QSS)
@@ -4022,12 +4023,11 @@ class Launcher(QWidget):
             menu.close()  # Pressing the shortcut again toggles it off.
             return True
         if menu is None:
-            menu = QMenu(self)
-            menu.setObjectName('frbLaunchActionMenu')
+            menu = LaunchActionMenu(self)
             menu.launcher = self  # Owned by the same event-filter policy.
             self._launch_action_menu = menu
         menu.clear()
-        menu.setStyleSheet(launch_action_menu_qss(self.color_theme))
+        menu.set_launch_theme(self.color_theme)
         files = bool(getattr(self, 'expanded_view', None) is not None
                      and self.expanded_view.isVisible()
                      and self.expanded_view._workspace_mode == 'files')

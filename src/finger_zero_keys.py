@@ -1,11 +1,10 @@
-"""Physical-key policy for FRB Launch's 小指Zero shortcuts.
+"""FRB Launch right-hand keys: keypad 0, Menu and Ctrl+arrow navigation.
 
-Only the TEN-KEY pad is eligible.  Ordinary top-row 0/1 and the separate
-Insert/End keys must retain their original meaning.  Keep this module Qt-free
-so that the hardware recognition policy can be regression-tested on Linux.
+Keypad 1 has been retired from Tab duty: both number-row and keypad 1 retain
+native numeric/editing behavior. Keep this policy Qt-free for unit tests.
 """
 
-# Qt::KeypadModifier and Windows VK_NUMPAD0/VK_NUMPAD1.
+# Qt key/modifier values and Windows native virtual-key codes.
 QT_KEYPAD_MODIFIER = 0x20000000
 VK_NUMPAD0 = 0x60
 VK_NUMPAD1 = 0x61
@@ -16,6 +15,9 @@ VK_APPS = 0x5D
 # Values of Qt.Key (numeric so this module has no PySide6 dependency).
 QT_KEY_0 = 0x30
 QT_KEY_1 = 0x31
+QT_KEY_LEFT = 0x01000012
+QT_KEY_RIGHT = 0x01000014
+QT_CONTROL_MODIFIER = 0x04000000
 QT_KEY_INSERT = 0x01000006
 QT_KEY_END = 0x01000011
 QT_KEY_MENU = 0x01000055
@@ -31,21 +33,28 @@ def _qt_enum_int(value):
     return int(getattr(value, 'value', value))
 
 
-def finger_zero_action(key, modifiers, native_vk=0, *, in_dialog=False):
-    """Return 'enter', 'tab', 'slash', or None for the physical key.
+def finger_zero_action(key, modifiers, native_vk=0, *, in_dialog=False, in_files=False):
+    """Map keypad 0, plain Menu, and Ctrl+Left/Right in Launch only.
 
-    The caller is responsible for Launcher ownership and text/IME focus guards.
-    Qt's KeypadModifier is present on the keypad (even though it is not a
-    user-held Ctrl/Alt/Shift shortcut). No other modifier is accepted.
+    'tab' and 'backtab' are reserved for Ctrl+Right and Ctrl+Left, including
+    dialog fields and the Files focus ring. The former keypad-1 Tab shortcut
+    is retired in EVERY context; keypad 1/End keep their native behavior.
 
-    With NumLock OFF, Qt typically reports Insert/End + KeypadModifier.
-    Do not guess from the bare Insert/End key: ordinary navigation keys must
-    remain usable if Windows/Qt does not identify the keypad conclusively.
+    This remains Qt-free. The UI bridge enforces Launch ownership, ensures
+    key-up/auto-repeat cannot cause duplicate focus navigation, and dispatches
+    the returned action through native Qt focus routing.
     """
     key = _qt_enum_int(key)
     mods = _qt_enum_int(modifiers)
     vk = _qt_enum_int(native_vk or 0)
-    if mods & ~QT_KEYPAD_MODIFIER:
+    held = mods & ~QT_KEYPAD_MODIFIER
+    if held == QT_CONTROL_MODIFIER:
+        if key == QT_KEY_RIGHT:
+            return 'tab'
+        if key == QT_KEY_LEFT:
+            return 'backtab'
+        return None
+    if held:
         return None
     keypad = bool(mods & QT_KEYPAD_MODIFIER)
     if key == QT_KEY_MENU or vk == VK_APPS:
@@ -53,8 +62,4 @@ def finger_zero_action(key, modifiers, native_vk=0, *, in_dialog=False):
     if ((key == QT_KEY_0 and (keypad or vk == VK_NUMPAD0))
             or (key == QT_KEY_INSERT and keypad)):
         return 'enter'
-    if in_dialog and (
-            (key == QT_KEY_1 and (keypad or vk == VK_NUMPAD1))
-            or (key == QT_KEY_END and keypad)):
-        return 'tab'
     return None
