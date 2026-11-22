@@ -1,4 +1,4 @@
-"""Qt-free behaviour tests for Insert -> current folder and Menu-key no-op.
+"""Qt-free behaviour tests for Insert -> current folder and Menu-key routing.
 
 Desktop acceptance on Windows is still needed for native ContextMenu delivery.
 """
@@ -132,7 +132,7 @@ def test_launch_owned_and_popup_keyboard_menu_key_are_scoped():
     assert not method(owner,unrelated)
 
 
-def test_app_level_menu_filter_consumes_press_release_without_operations():
+def test_app_level_filter_delegates_finger_zero_before_other_shortcuts():
     # The eventFilter is long, but its first shortcut branch is self-contained
     # and can be exercised with a Qt-free fake owner.
     class FakeSource:
@@ -142,12 +142,16 @@ def test_app_level_menu_filter_consumes_press_release_without_operations():
     qevent=NS(Type=types)
     method=extract_method(VIEW, 'ExpandedLauncherView', 'eventFilter',
                           {'QEvent':qevent,'Qt':qt})
-    owner=NS(_launch_owns_keyboard_source=lambda obj:True)
+    handled=[]
+    owner=NS(_launch_owns_keyboard_source=lambda obj:True,
+             _finger_zero_keyboard=lambda obj, event:(handled.append(event.key()),
+                                                       event.accept(), True)[-1])
     source=FakeSource()
     for kind in (1,2):
         evt=Event(kind,99)
         assert method(owner,source,evt) is True
         assert evt.accepted
+    assert handled == [99, 99]
 
 
 def test_list_insert_and_right_context_routing_is_not_menu_key_alias():
@@ -210,8 +214,16 @@ def test_launch_owned_native_keyboard_context_event_is_consumed(monkeypatch):
     qevent=NS(Type=NS(KeyPress=1,KeyRelease=2,ContextMenu=3))
     method=extract_method(VIEW,'ExpandedLauncherView','eventFilter',
                           {'QEvent':qevent,'Qt':qt})
-    owner=NS(_launch_owns_keyboard_source=lambda obj:True)
+    toggle=Mock()
+    owner=NS(_launch_owns_keyboard_source=lambda obj:True,
+             _finger_zero_keyboard=lambda obj, event:False,
+             launcher=NS(toggle_slash_exp_shortcut=toggle))
     event=Event(3)
     event.reason=lambda:7
     assert method(owner,object(),event) is True
     assert event.accepted
+    toggle.assert_called_once_with()  # Native-only keyboard ContextMenu event.
+    owner._finger_menu_context_pending=True  # Already processed Key_Menu press.
+    toggle.reset_mock()
+    assert method(owner,object(),event) is True
+    toggle.assert_not_called()  # No double toggle for one physical press.

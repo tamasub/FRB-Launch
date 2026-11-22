@@ -4,11 +4,12 @@ This is a QWidget INSIDE the main window (never a second Qt.Tool popup).
 All rows/actions are supplied by Launcher and use its existing menu data.
 """
 from PySide6.QtCore import Qt, QPoint, QPointF, QSize, QTimer, QEvent, QRectF, QFileInfo, QFileSystemWatcher, Signal, QMimeData
-from PySide6.QtGui import QDrag, QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPixmap, QLinearGradient, QPen, QPalette, QCursor
+from PySide6.QtGui import QKeyEvent, QDrag, QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPixmap, QLinearGradient, QPen, QPalette, QCursor
 from PySide6.QtWidgets import (QApplication, QFrame, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QPushButton, QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
-    QScrollArea, QSplitter, QSizePolicy, QLineEdit, QStackedWidget, QToolButton, QMenu, QFileIconProvider, QStyledItemDelegate, QAbstractItemDelegate, QStyleOptionViewItem, QStyle)
+    QScrollArea, QSplitter, QSizePolicy, QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox, QDialog, QStackedWidget, QToolButton, QMenu, QFileIconProvider, QStyledItemDelegate, QAbstractItemDelegate, QStyleOptionViewItem, QStyle)
 
+from finger_zero_keys import finger_zero_action
 from file_drag import ExternalFileDragTree
 
 from visible_directory_watch import (
@@ -5476,19 +5477,77 @@ class ExpandedLauncherView(QWidget):
             widget = widget.parentWidget()
         return False
 
-    def eventFilter(self, obj, event):
-        # The Windows Menu/App key is intentionally disabled in FRB Launch.
-        # Qt/Windows may deliver it as Key_Menu OR a keyboard-originated
-        # QContextMenuEvent. Consume both *only* for Launch-owned surfaces;
-        # real mouse right-click, Right-arrow and text/IME input are unchanged.
-        if self._launch_owns_keyboard_source(obj):
-            if (event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
-                    and event.key() == getattr(Qt.Key, 'Key_Menu', None)):
-                event.accept()
+    def _finger_zero_is_text_entry(self, obj):
+        """Leave text/number input and IME in control of the original keys."""
+        focus = QApplication.focusWidget()
+        for widget in (obj, focus):
+            if isinstance(widget, (QLineEdit, QPlainTextEdit, QTextEdit,
+                                   QAbstractSpinBox)):
                 return True
+            if isinstance(widget, QComboBox) and widget.isEditable():
+                return True
+            if getattr(widget, 'ime_composing', False):
+                return True
+        middle = getattr(self, 'middle', None)
+        tree = getattr(middle, 'tree', None)
+        if (tree is not None and obj in (tree, tree.viewport())
+                and tree.state() == QAbstractItemView.State.EditingState):
+            return True
+        return False
+
+    def _finger_zero_keyboard(self, obj, event):
+        """Reuse existing native Enter/Tab and / routes without remapping Windows.
+
+        QApplication installs this filter globally, so Launch ownership is a
+        strict prerequisite. All key releases are consumed for mapped keys.
+        Synthetic Enter/Tab reenter the existing event chain exactly once.
+        """
+        if event.type() not in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            return False
+        if not self._launch_owns_keyboard_source(obj):
+            return False
+        dialog = isinstance(obj.window(), QDialog) if isinstance(obj, QWidget) else False
+        action = finger_zero_action(event.key(), event.modifiers(),
+                                    event.nativeVirtualKey(), in_dialog=dialog)
+        if action is None:
+            # A previous Menu key can have no QContextMenuEvent on some
+            # Windows builds. Drop that pending marker on the next key press.
+            if event.type() == QEvent.Type.KeyPress:
+                self._finger_menu_context_pending = False
+            return False
+        if (action == 'slash' or
+                (action == 'enter' and not self._finger_zero_is_text_entry(obj)) or
+                (action == 'tab' and not getattr(obj, 'ime_composing', False))):
+            event.accept()
+            if event.type() == QEvent.Type.KeyRelease or event.isAutoRepeat():
+                return True
+            if action == 'slash':
+                self._finger_menu_context_pending = True
+                # This key used to be consumed as a no-op. New assignment:
+                # exactly the existing / navigation menu, including toggle.
+                # In editors toggle_slash_exp_shortcut safely refuses entry.
+                self.launcher.toggle_slash_exp_shortcut()
+            else:
+                key = (Qt.Key.Key_Return if action == 'enter' else Qt.Key.Key_Tab)
+                QApplication.sendEvent(obj, QKeyEvent(QEvent.Type.KeyPress, key,
+                                    Qt.KeyboardModifier.NoModifier))
+            return True
+        # Text editors still type the real 0; do not swallow their releases.
+        return False
+
+    def eventFilter(self, obj, event):
+        if self._finger_zero_keyboard(obj, event):
+            return True
+        # Windows may deliver the Menu key ONLY as QContextMenuEvent, or
+        # deliver it after KeyPress. Support both without toggling / twice.
+        # Real mouse context menus remain entirely native.
+        if self._launch_owns_keyboard_source(obj):
             if event.type() == QEvent.Type.ContextMenu:
                 from PySide6.QtGui import QContextMenuEvent
                 if event.reason() == QContextMenuEvent.Reason.Keyboard:
+                    if not getattr(self, '_finger_menu_context_pending', False):
+                        self.launcher.toggle_slash_exp_shortcut()
+                    self._finger_menu_context_pending = False
                     event.accept()
                     return True
         # Ctrl+G uses a non-activating native popup. Keys still arrive on
