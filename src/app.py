@@ -30,6 +30,7 @@ from slash_exp_navigation import (popup_exp_navigator, slash_source_from_breadcr
                                   slash_popup_row_anchor, _row_text_anchor_local_x)
 from rod_foreground import foreground_owned_by_process
 from shuriken_model import configured_entries
+from launch_action_menu_model import LAUNCH_ACTIONS, action_is_available
 from shuriken_scroll_handoff import handoff_current_at_scroll_stop
 from shuriken_trace import trace as shuriken_trace, bar_state as shuriken_bar_state
 from guriguri_shuriken_auto import WheelShurikenGate, AUTO_SHURIKEN_ENABLED
@@ -76,9 +77,10 @@ import file_index
 from frame_geometry import resize_frame
 from page_tab_theme import PAGE_TABS_QSS
 from launch_appearance import (normalize_theme, theme_palette, theme_family, available_themes,
-    context_menu_spacing_qss, history_popup_qss, LIGHT_MAIN_QSS, LIGHT_TABS_QSS,
-    LIGHT_HISTORY_QSS, LIGHT_MENU_QSS, LIGHT_CASCADE_TREE_QSS,
-    LIGHT_COLUMN_FILTER_QSS, FRAME_COLORS, light_scrollbar_qss, CONTEXT_MENU_SPACING_QSS, SIMPLE_EDIT_FIELD_QSS)
+    context_menu_spacing_qss, history_popup_qss, launch_action_menu_qss,
+    LIGHT_MAIN_QSS, LIGHT_TABS_QSS, LIGHT_HISTORY_QSS, LIGHT_MENU_QSS,
+    LIGHT_CASCADE_TREE_QSS, LIGHT_COLUMN_FILTER_QSS, FRAME_COLORS,
+    light_scrollbar_qss, CONTEXT_MENU_SPACING_QSS, SIMPLE_EDIT_FIELD_QSS)
 from page_tab_focus import FocusPageTabBar
 from page_presentation import page_display_title
 from combo_chevron_icon import combo_chevron_icon
@@ -3978,6 +3980,113 @@ class Launcher(QWidget):
         self.minimize_button.setIcon(toolbar_outline_icon('minimize', theme_family(self.color_theme)))
         self.maximize_button.setIcon(toolbar_outline_icon(icon_name, theme_family(self.color_theme)))
         self.close_button.setIcon(toolbar_outline_icon('close', theme_family(self.color_theme)))
+
+    def _launch_action_menu_point(self, source=None):
+        """Return a stable popup corner, preferring Files List's upper-left lane.
+
+        Right-hand operation works best when Ctrl+Menu always opens in the
+        same place. In Files mode, pin the popup near the upper-left corner
+        of the Files List area (the red-circle location in the design note),
+        independent of the current row/focus. Other modes keep the former
+        source-relative fallback.
+        """
+        view = getattr(self, 'expanded_view', None)
+        if (view is not None and view.isVisible() and
+                getattr(view, '_workspace_mode', None) == 'files'):
+            middle = getattr(view, 'middle', None)
+            tree = getattr(middle, 'tree', None)
+            if tree is not None and tree.isVisible():
+                header = tree.header()
+                header_h = header.height() if header is not None and header.isVisible() else 0
+                return tree.mapToGlobal(QPoint(8, max(6, header_h + 6)))
+        anchor = source if isinstance(source, QWidget) and source.isVisible() else self.theme_button
+        tree = anchor if isinstance(anchor, QAbstractItemView) else anchor.parentWidget()
+        if isinstance(tree, QAbstractItemView) and tree.currentIndex().isValid():
+            rect = tree.visualRect(tree.currentIndex())
+            return tree.viewport().mapToGlobal(QPoint(max(0, rect.left() + 18),
+                                                      max(0, rect.bottom() + 4)))
+        return anchor.mapToGlobal(QPoint(min(25, max(0, anchor.width() - 1)),
+                                         min(30, max(0, anchor.height() - 1))))
+
+    def open_launch_action_menu(self, *, source=None):
+        """Ctrl+Menu: v0.1 keyboard-first, fixed four-item Launch menu.
+
+        A single action ID is the common dispatch point. Never synthesize
+        Ctrl+F/G/H/I keystrokes; their existing owning methods are reused.
+        JSON customization is deliberately out of scope for this first trial.
+        """
+        if not self.isVisible() or QApplication.activeModalWidget() is not None:
+            return False
+        menu = getattr(self, '_launch_action_menu', None)
+        if menu is not None and menu.isVisible():
+            menu.close()  # Pressing the shortcut again toggles it off.
+            return True
+        if menu is None:
+            menu = QMenu(self)
+            menu.setObjectName('frbLaunchActionMenu')
+            menu.launcher = self  # Owned by the same event-filter policy.
+            self._launch_action_menu = menu
+        menu.clear()
+        menu.setStyleSheet(launch_action_menu_qss(self.color_theme))
+        files = bool(getattr(self, 'expanded_view', None) is not None
+                     and self.expanded_view.isVisible()
+                     and self.expanded_view._workspace_mode == 'files')
+        first_enabled = None
+        for action_id, title, shortcut, _files_only in LAUNCH_ACTIONS:
+            action = menu.addAction(title)
+            action.setShortcutVisibleInContextMenu(False)
+            action.setToolTip(shortcut)
+            action.setEnabled(action_is_available(action_id, files))
+            action.triggered.connect(
+                lambda checked=False, identifier=action_id:
+                QTimer.singleShot(0, lambda: self.execute_launch_action(identifier)))
+            if first_enabled is None and action.isEnabled():
+                first_enabled = action
+        point = self._launch_action_menu_point(source)
+        self.close_cascade_for_main_interaction()
+        if self.theme_menu.isVisible():
+            self.theme_menu.close()
+        # Close old popup windows before the new Qt.Popup acquires keyboard.
+        if self.history_popup.isVisible():
+            self.hide_history_popup()
+        if getattr(self.expanded_view, 'favorite_popup', None) is not None:
+            if self.expanded_view.favorite_popup.isVisible():
+                self.expanded_view.hide_favorite_popup()
+        if getattr(self.expanded_view, 'middle_search_history_menu', None) is not None:
+            self.expanded_view.middle_search_history_menu.hide()
+        size = menu.sizeHint()
+        screen = QApplication.screenAt(point) or QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            point.setX(max(area.left(), min(point.x(), area.right() - size.width() + 1)))
+            point.setY(max(area.top(), min(point.y(), area.bottom() - size.height() + 1)))
+        menu.popup(point, first_enabled)
+        # Let the first command run with Enter/ten-key Zero immediately,
+        # without making the right hand travel to the mouse or press Down.
+        if first_enabled is not None:
+            menu.setActiveAction(first_enabled)
+        return True
+
+    def execute_launch_action(self, action_id):
+        """Use existing operation owners, not emulated keyboard shortcuts."""
+        view = getattr(self, 'expanded_view', None)
+        files = bool(view is not None and view.isVisible()
+                     and view._workspace_mode == 'files')
+        if not action_is_available(action_id, files):
+            return False
+        if action_id == 'launch_search_history':
+            # Ctrl+F itself focuses main search; the menu item additionally
+            # opens the *history* named by the user. Ctrl+F is unchanged.
+            self.show_history_popup()
+        elif action_id == 'breadcrumb_history':
+            return bool(view.show_directory_favorites())
+        elif action_id == 'folder_search_history':
+            return bool(view.show_middle_search_history())
+        elif action_id == 'launch_settings':
+            self.open_theme_menu()
+        else:
+            return False
+        return True
 
     def open_theme_menu(self):
         """Launch's original settings button uses its existing anchor."""

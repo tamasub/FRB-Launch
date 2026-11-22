@@ -645,9 +645,10 @@ class SlashExpMenu(QMenu):
             context = {'current_folder': True, 'path': str(path), 'pc': False,
                        'studio_identity': info.get('studio_identity')}
             description = str(path)
-        elif isinstance(node, dict) and node.get('kind') in ('folder', 'linked_directory'):
-            # Authored JSON folder: reuse its registered action menu, never
-            # pretend it is an OS directory with an arbitrary new-folder menu.
+        elif isinstance(node, dict) and node.get('kind') in ('page', 'folder', 'linked_directory'):
+            # The selected JSON Page is also the current logical directory.
+            # It has registration/edit actions just like an authored folder;
+            # reuse the existing Studio context menu, never an OS folder menu.
             context = {'current_folder': True, 'virtual': node, 'pc': False}
             description = str(node.get('title') or '現在のフォルダー')
         else:
@@ -1360,8 +1361,17 @@ class SlashExpMenu(QMenu):
         node = info.get('virtual')
         if node is not None:
             identity = virtual_item_identity(node)
-            return (launcher.show_virtual_launch_context(
+            menu = (launcher.show_virtual_launch_context(
                 identity, None, return_menu=True) if identity else None)
+            if menu is not None and info.get('current_folder'):
+                # The self-context row is in Files List, even for a JSON
+                # Page. Match its existing context menu (including the
+                # Exp-column switch), not just the Studio edit commands.
+                install_navigation = getattr(
+                    launcher, '_install_files_column_navigation', None)
+                if callable(install_navigation):
+                    install_navigation(menu, 'list')
+            return menu
         if info.get('pc'):
             menu = launcher._create_files_context_menu(launcher)
             menu.addAction('List列へ進む', lambda: launcher.navigate_files_exp_pc())

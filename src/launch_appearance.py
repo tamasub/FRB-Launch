@@ -113,6 +113,36 @@ def context_menu_spacing_qss(theme):
     color = '#e1e5e2' if theme_family(theme) == 'light' else '#4b5b56'
     return CONTEXT_MENU_SPACING_QSS.replace('#e1e5e2', color)
 
+
+def launch_action_menu_qss(theme):
+    """Rounded Launch action menu with symmetric top/bottom breathing room.
+
+    Keep the existing light/dark color family, but pin the popup to one
+    dedicated object name so only Ctrl+Menu's Launch action menu changes.
+    Equal top/bottom outer padding preserves the first-row breathing room
+    even with rounded corners enabled.
+    """
+    light = theme_family(theme) == 'light'
+    palette = theme_palette(theme)
+    bg = '#ffffff' if light else '#202b39'
+    fg = '#284238' if light else '#e5ebf3'
+    border = '#b6cebe' if light else '#435369'
+    selection = '#d6e7f8' if light else '#304d70'
+    disabled = '#8da69a' if light else palette['muted_text']
+    separator = '#dce8df' if light else '#4b5b56'
+    return (
+        f'QMenu#frbLaunchActionMenu {{ menu-scrollable:1; background:{bg}; '
+        f'color:{fg}; border:1px solid {border}; border-radius:10px; '
+        f'padding:8px 6px 8px 6px; }} '
+        f'QMenu#frbLaunchActionMenu::item {{ padding:7px 18px; margin:0; '
+        f'border-radius:4px; background:transparent; color:{fg}; }} '
+        f'QMenu#frbLaunchActionMenu::item:selected {{ background:{selection}; '
+        f'color:{fg}; }} '
+        f'QMenu#frbLaunchActionMenu::item:disabled {{ color:{disabled}; }} '
+        f'QMenu#frbLaunchActionMenu::separator {{ background:{separator}; '
+        f'height:1px; margin:4px 6px; }} '
+    )
+
 # Based on the pastel green/white FRB Studio compact-light appearance.
 LIGHT_MAIN_QSS = '''
 QWidget { background:#edf5f0; color:#273d36; font-family:"Yu Gothic UI"; font-size:13px; }

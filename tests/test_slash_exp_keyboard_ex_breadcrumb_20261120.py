@@ -37,13 +37,76 @@ def test_home_mywork_slash_opens_virtual_children_instead_of_roots(nav):
     panel = Panel([Item('Other root', {'virtual': {'kind': 'page'}})])
     source = mod.slash_source_from_breadcrumb(launcher, view, panel)
     menu = mod.SlashExpMenu(launcher, panel, source_item=source)
-    assert [item.text() for item in menu._items()] == ['ZIP', '日付・定型文']
+    assert [item.text() for item in menu._items()] == ['（カレントフォルダー）', 'ZIP', '日付・定型文']
     assert panel.loaded == []  # Exp model must not be reloaded or expanded.
     menu.populate()
     actions = {item.text(): action for action, item in menu._action_items.items()}
     child = menu._submenus[actions['ZIP']]
     assert [item.text() for item in child._items()] == ['（カレントフォルダー）', 'Go!']
     assert calls == []
+
+
+def test_json_page_current_folder_row_opens_existing_page_management_menu(nav):
+    """The Windows Page's authored items still need a current-Page handle.
+
+    Right opens the same Studio context action owner as clicking the Page in
+    Files Exp (create category/register/edit); this is not a filesystem path.
+    """
+    mod, _ = nav
+    node = {'source': 'launch_json', 'kind': 'page', 'page_id': 'windows',
+            'item_id': '', 'node_id': 'page:windows', 'title': 'Windows',
+            'children': [{'source': 'launch_json', 'kind': 'file',
+                          'node_id': 'item:windows:settings',
+                          'page_id': 'windows', 'item_id': 'settings',
+                          'title': '設定', 'row': {}}]}
+    launcher, _ = make_launcher()
+    calls = []
+    sentinel = object()
+    launcher.show_virtual_launch_context = lambda identity, point, **kw: (
+        calls.append((identity, point, kw)) or sentinel)
+    view = make_view(('virtual', 'windows', ''), virtual=node)
+    source = mod.slash_source_from_breadcrumb(launcher, view, Panel([]))
+    menu = mod.SlashExpMenu(launcher, Panel([]), source_item=source)
+    items = menu._items()
+    assert [item.text() for item in items] == ['（カレントフォルダー）', '設定']
+    assert items[0].data(mod._DATA_ROLE)['current_folder'] is True
+    assert items[0].data(mod._DATA_ROLE)['virtual'] is node
+    assert menu._build_existing_context(items[0]) is sentinel
+    assert calls == [({'source': 'launch_json', 'node_id': 'page:windows'},
+                      None, {'return_menu': True})]  # fixture identity stub
+
+
+def test_json_page_current_folder_right_exposes_existing_registration_commands(nav):
+    """Do not synthesize a second action list for an authored Page."""
+    mod, _ = nav
+    from test_slash_exp_navigation_20261118 import FakeQMenu
+    node = {'source':'launch_json', 'kind':'page', 'page_id':'windows',
+            'item_id':'', 'node_id':'page:windows', 'title':'Windows',
+            'children':[{'kind':'file', 'node_id':'file:sound',
+                         'title':'サウンド設定', 'row':{}}]}
+    launcher, _ = make_launcher()
+    def source_menu(identity, point, *, return_menu=False):
+        assert identity['node_id'] == 'page:windows'
+        assert return_menu
+        result = FakeQMenu()
+        result.addAction('カテゴリーフォルダーを作成...')
+        result.addAction('簡易編集...')
+        return result
+    launcher.show_virtual_launch_context = source_menu
+    launcher._install_files_column_navigation = lambda menu, column: (
+        menu.addAction('Exp列へ戻る') if column == 'list' else None)
+    source = mod.slash_source_from_breadcrumb(launcher,
+        make_view(('virtual','windows',''), virtual=node), Panel([]))
+    menu = mod.SlashExpMenu(launcher, Panel([]), source_item=source)
+    menu.populate()
+    current_action = next(a for a, item in menu._action_items.items()
+                          if item.text() == '（カレントフォルダー）')
+    assert current_action in menu._context_hint_actions
+    commands = menu._attach_context(current_action,
+                                    menu._action_items[current_action])
+    assert commands is not None
+    assert [original.text() for original in commands._action_items.values()] == [
+        'カテゴリーフォルダーを作成...', '簡易編集...', 'Exp列へ戻る']
 
 
 def test_physical_breadcrumb_drives_slash_independent_of_exp_list_selection(nav, tmp_path):
@@ -160,7 +223,8 @@ def test_linked_directory_right_then_enter_keeps_logical_mount(nav, tmp_path):
     root_source = mod.slash_source_from_breadcrumb(launcher, view, panel)
     menu = mod.SlashExpMenu(launcher, panel, source_item=root_source)
     root_entries = menu._items()
-    linked = root_entries[0]
+    assert root_entries[0].text() == '（カレントフォルダー）'
+    linked = root_entries[1]
     assert linked.data(mod._DATA_ROLE)['linked_path'] == str(base)
     child_menu = mod.SlashExpMenu(launcher, panel, root=menu,
                                    source_item=linked, parent=menu)

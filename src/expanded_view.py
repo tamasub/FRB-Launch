@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QApplication, QFrame, QWidget, QHBoxLayout, QVBox
     QScrollArea, QSplitter, QSizePolicy, QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox, QDialog, QStackedWidget, QToolButton, QMenu, QFileIconProvider, QStyledItemDelegate, QAbstractItemDelegate, QStyleOptionViewItem, QStyle)
 
 from finger_zero_keys import finger_zero_action
+from launch_action_menu_model import is_ctrl_menu_key
 from file_drag import ExternalFileDragTree
 
 from visible_directory_watch import (
@@ -5535,7 +5536,50 @@ class ExpandedLauncherView(QWidget):
         # Text editors still type the real 0; do not swallow their releases.
         return False
 
+    def _launch_action_menu_keyboard(self, obj, event):
+        """Ctrl+Menu belongs to Launch, never to Windows or the / navigator.
+
+        Windows can send KeyPress, a keyboard ContextMenu event, or both.
+        Suppress the second delivery so one gesture opens only one menu.
+        Do not steal shortcuts from unrelated applications or modal dialogs.
+        """
+        if not self._launch_owns_keyboard_source(obj):
+            return False
+        # The global shortcut must not hijack a modal confirmation/editor.
+        if QApplication.activeModalWidget() is not None:
+            self._launch_action_context_pending = False
+            return False
+        kind = event.type()
+        if kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            matched = is_ctrl_menu_key(event.key(), event.modifiers(),
+                                       event.nativeVirtualKey())
+            if matched:
+                event.accept()
+                if kind == QEvent.Type.KeyPress and not event.isAutoRepeat():
+                    self._launch_action_context_pending = True
+                    self.launcher.open_launch_action_menu(source=obj)
+                return True
+            if kind == QEvent.Type.KeyPress:
+                self._launch_action_context_pending = False
+        elif kind == QEvent.Type.ContextMenu:
+            from PySide6.QtGui import QContextMenuEvent
+            if event.reason() != QContextMenuEvent.Reason.Keyboard:
+                return False
+            pending = getattr(self, '_launch_action_context_pending', False)
+            ctrl = bool(QApplication.keyboardModifiers() &
+                        Qt.KeyboardModifier.ControlModifier)
+            if pending or ctrl:
+                self._launch_action_context_pending = False
+                event.accept()
+                if not pending:
+                    self.launcher.open_launch_action_menu(source=obj)
+                return True
+        return False
+
     def eventFilter(self, obj, event):
+        launch_action_menu_keyboard = getattr(self, '_launch_action_menu_keyboard', None)
+        if callable(launch_action_menu_keyboard) and launch_action_menu_keyboard(obj, event):
+            return True
         if self._finger_zero_keyboard(obj, event):
             return True
         # Windows may deliver the Menu key ONLY as QContextMenuEvent, or
