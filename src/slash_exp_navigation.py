@@ -115,6 +115,41 @@ def slash_menu_page_target(current, visible_count, viewport_height, row_height,
 # QMenu's native item distribution on a small Launch window).
 SLASH_MENU_ROWS = {'compact': 27, 'normal': 37}
 
+def slash_source_from_search_result(launcher, view, panel):
+    """Keyboard EX starts from the *selected search folder*, never a fake path.
+
+    Search Location has no breadcrumb ancestry. Resolve only the selected
+    folder's actual JSON identity or indexed physical path. An invalid match
+    returns None instead of browsing the folder that happened to be open.
+    """
+    tree = getattr(getattr(view, 'middle', None), 'tree', None)
+    if tree is None:
+        return None
+    item = tree.currentItem()
+    row = view.row_data(item) if item is not None else None
+    if (not isinstance(row, dict) or not row.get('_main_search_result') or
+            row.get('item_kind') not in ('category', 'directory')):
+        return None
+    page_id, item_id = row.get('page_id'), row.get('item_id')
+    if (page_id and item_id and not row.get('_file')):
+        from launch_virtual_tree import virtual_lookup_node
+        node = virtual_lookup_node(launcher.pages, launcher.authored_items,
+            page_id, item_id, (launcher.data or {}).get('items', ()))
+        if not isinstance(node, dict) or node.get('kind') == 'file':
+            return None
+        source = QStandardItem(QIcon(), str(node.get('title') or row.get('title', '')))
+        source.setData({'virtual': node, 'pc': False, 'path': None}, _DATA_ROLE)
+        source.setData(True, _LOADED_ROLE)
+        return source
+    path = row.get('_file')
+    if not isinstance(path, str) or not os.path.isdir(path):
+        return None
+    source = QStandardItem(QIcon(), row.get('title') or os.path.basename(path))
+    source.setData({'path': path, 'pc': False, 'slash_transient': True}, _DATA_ROLE)
+    source.setData(False, _LOADED_ROLE)  # Populate its real children lazily.
+    return source
+
+
 def slash_source_from_breadcrumb(launcher, view, panel):
     """Resolve the / starting directory from the *displayed logical crumb*.
 

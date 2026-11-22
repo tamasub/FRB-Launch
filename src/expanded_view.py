@@ -62,6 +62,7 @@ from bookmark_menu import expanded_bookmark_rows
 from launch_virtual_tree import (virtual_list_rows, virtual_lookup_node,
                                  virtual_exp_presentation, virtual_item_identity,
                                  virtual_studio_target)
+from location_model import search_breadcrumb, search_list_rows
 from launch_menu_registration import mime_sources
 from launch_json_move import MOVE_MIME, encode_source, drop_placement
 from launch_appearance import (theme_palette, theme_family, scrollbar_for_theme,
@@ -1057,6 +1058,13 @@ class DirectoryAddressBar(QStackedWidget):
         return self.navigate(target)
 
     def begin_edit(self):
+        # Search is a Location, not a pathname. Clicking the search crumb
+        # refocuses the actual global query instead of opening a blank path.
+        if (self._logical_mode and len(self._segments) == 1 and
+                isinstance(self._segments[0][1], tuple) and
+                self._segments[0][1][0] == 'search'):
+            self._go_to_crumb(self._segments[0][1])
+            return
         self.editor.setText(self.current_path)
         self.setCurrentWidget(self.editor)
         self._position_dropdown()
@@ -1289,13 +1297,17 @@ class ExpandedPanel(QFrame):
                 # cheap caching. Actual file properties stay independently
                 # available in all sort modes.
                 if getattr(self, 'virtual_details_columns', False):
-                    # JSON Menu: source description and *original* item_kind.
-                    # No fake filesystem update time/size/type is displayed.
-                    item = QTreeWidgetItem([row.get('title', ''),
-                                            virtual_description(row),
-                                            virtual_item_kind(row), '', ''])
-                    item.setToolTip(1, virtual_description(row))
-                    item.setToolTip(2, virtual_item_kind(row))
+                    # JSON and global search both use the same Files List
+                    # control; only the VIEW's details projection differs.
+                    search_row = bool(row.get('_main_search_result'))
+                    detail = (row.get('_search_description', '') if search_row
+                              else virtual_description(row))
+                    kind_label = (row.get('_search_item_type', '') if search_row
+                                  else virtual_item_kind(row))
+                    item = QTreeWidgetItem([row.get('title', ''), detail,
+                                            kind_label, '', ''])
+                    item.setToolTip(1, detail)
+                    item.setToolTip(2, kind_label)
                     item.setTextAlignment(1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                     item.setTextAlignment(2, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 else:
@@ -1318,12 +1330,16 @@ class ExpandedPanel(QFrame):
                 for col in (0, 1):
                     item.setSizeHint(col, QSize(0, self.row_height))
             item.setData(0, Qt.ItemDataRole.UserRole, row)
-            if self.kind == 'folder':
-                # Middle panel filenames can be edited by clicking the already
-                # selected row. Directory single click still means navigation.
+            if self.kind == 'folder' and not row.get('_main_search_result'):
+                # Search rows have no single editable parent directory.
                 origin, path = resolve_context_target(row, ())
                 if origin == 'file' and path:
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            if self.kind == 'folder' and row.get('_search_selection_owner'):
+                # Keep the existing Mail choice-entry behavior. Checking a
+                # result enters the legacy recipient picker, which owns F12.
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(0, Qt.CheckState.Unchecked)
             if (self.kind == 'bookmark'
                     and row.get('item_kind') not in ('category', 'directory')):
                 item.setIcon(0, link_icon(self._theme))
@@ -2162,6 +2178,7 @@ class ExpandedLauncherView(QWidget):
         # Double-click/Right-arrow navigation remain unchanged.
         self.middle.tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         self.middle.tree.itemChanged.connect(self.finish_inline_rename)
+        self.middle.tree.itemChanged.connect(self._main_search_choice_changed)
         self._inline_rename_active = False
         self.middle.back.clicked.connect(self.go_up)
         self.left.tree.itemClicked.connect(self.choose_files)
@@ -3209,6 +3226,8 @@ class ExpandedLauncherView(QWidget):
         self.middle.tree.header().setSortIndicator(column, direction)
 
     def _middle_header_clicked(self, logical_column):
+        if getattr(self, '_main_search_active', False):
+            return  # Search result order is managed by the main search header.
         # Launch JSON order is an editable setting, not an alternate view sort.
         # Header sorting must never disguise the persisted sort_order while
         # the user is dragging menu items into a new position.
@@ -3544,12 +3563,13 @@ class ExpandedLauncherView(QWidget):
         if label is None:
             return
         directory = self.current_directory()
-        empty = ((bool(directory) and os.path.isdir(directory)
+        is_search = getattr(self, '_main_search_active', False)
+        empty = ((is_search or bool(directory) and os.path.isdir(directory)
                   or getattr(self, '_virtual_directory_node', None) is not None)
                  and self.middle.tree.topLevelItemCount() == 0)
         if empty:
-            # A filtered-out folder is not actually empty.
-            label.setText('一致する項目はありません。' if self.middle_search.text().strip()
+            label.setText('一致する検索結果がありません。' if is_search else
+                          '一致する項目はありません。' if self.middle_search.text().strip()
                           else 'このフォルダーは空です。')
             self._position_middle_empty_label()
             label.show()
@@ -3558,7 +3578,167 @@ class ExpandedLauncherView(QWidget):
             label.hide()
         self._position_middle_parent_return_hint()
 
+    def _remember_main_search_cursor(self):
+        """Cursor/scroll update the search stop, never add a new stop."""
+        if not getattr(self, '_main_search_active', False):
+            return
+        tree = self.middle.tree
+        item = tree.currentItem()
+        row = self.row_data(item) or {}
+        self.directory_history.record_search(
+            self._main_search_query,
+            current_item_id=row.get('item_id') or row.get('choice_id'),
+            scroll=tree.verticalScrollBar().value())
+
+    def _restore_main_search_cursor(self, entry):
+        if not getattr(self, '_main_search_active', False):
+            return
+        tree = self.middle.tree
+        target = entry.get('current_item_id')
+        if target:
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                row = self.row_data(item) or {}
+                if (row.get('item_id') or row.get('choice_id')) == target:
+                    tree.setCurrentItem(item)
+                    break
+        tree.verticalScrollBar().setValue(max(0, int(entry.get('scroll') or 0)))
+
+    def show_global_search_results(self, pairs, query):
+        """Show global search inside the *existing* Files List, not another grid.
+
+        The underlying physical/JSON folder remains unchanged. Breadcrumb is
+        a Search Location; only an explicit folder open commits navigation.
+        """
+        query = str(query).strip()
+        if not query:
+            return self.leave_global_search_results()
+        previous = getattr(self, '_main_search_query', '')
+        self._main_search_active = True
+        self._main_search_query = query
+        self._main_search_pairs = list(pairs)
+        self._search_data_ref = self.launcher.data
+        if previous != query:
+            blocked = self.middle_search.blockSignals(True)
+            try:
+                self.middle_search.clear()
+            finally:
+                self.middle_search.blockSignals(blocked)
+        self.middle_search.setPlaceholderText('検索結果を絞り込む (AND / OR)')
+        self._set_middle_columns_for_source(True)
+        self.middle.search_details_columns = True
+        self.middle.tree.setHeaderLabels(['タイトル', '説明・場所', '項目の種類', '', ''])
+        self.middle.tree.header().setSortIndicatorShown(False)
+        self.middle.label.setText('検索結果')
+        self.middle.back.setEnabled(False)
+        self.address_bar.set_logical_directory(search_breadcrumb(query))
+        self.favorite_save.setEnabled(False)  # No common parent to bookmark.
+        self._sync_breadcrumb_directory_watch()
+        self._fill_main_search_rows()
+        if not self._restoring_directory_history:
+            self._remember_main_search_cursor()
+        self.launcher._nav_update_buttons()
+        return True
+
+    def _fill_main_search_rows(self):
+        """Reuse ExpandedPanel.fill, its selection and the regular action menu."""
+        from search_matching import matches_search_text
+        rows = search_list_rows(getattr(self, '_main_search_pairs', ()))
+        expression = self.middle_search.text().strip()
+        if expression:
+            rows = [row for row in rows if matches_search_text(
+                ' '.join((str(row.get('title', '')),
+                          str(row.get('_search_description', '')))), expression)]
+        # Projection: display provenance is not authority. Only JSON rows
+        # with a page/item identity get a virtual action reference; paths are
+        # preserved for actual filesystem entries from SQLite search.
+        for row in rows:
+            if row.get('_search_selection_owner'):
+                continue
+            if row.get('_indexed_file') or row.get('_browse_file') or row.get('_file'):
+                continue
+            page_id, item_id = row.get('page_id'), row.get('item_id')
+            if not page_id or not item_id:
+                continue
+            catalog = ('browser_bookmarks' if row.get('_browser_bookmark') else
+                       'installed_apps' if row.get('_installed_app') else None)
+            row['_launch_virtual_node'] = {
+                'source': 'runtime' if catalog else 'launch_json',
+                'node_id': f'item:{page_id}:{item_id}',
+                'page_id': page_id, 'item_id': item_id,
+                'kind': ('category' if row.get('item_kind') in
+                         ('directory', 'category') else 'file'),
+                'runtime_catalog': catalog, 'row': dict(row),
+            }
+        tree = self.middle.tree
+        before = tree.blockSignals(True)
+        try:
+            self.middle.fill(rows, self.launcher.row_icon)
+        finally:
+            tree.blockSignals(before)
+        self._queue_middle_selection_repair()
+        self._update_middle_empty_label()
+        update_count = getattr(self.launcher, 'update_files_item_count', None)
+        if callable(update_count):
+            update_count(tree.topLevelItemCount())
+
+    def leave_global_search_results(self):
+        """Leave search presentation only; keep the last real folder intact."""
+        if not getattr(self, '_main_search_active', False):
+            return False
+        self._main_search_active = False
+        self._main_search_query = ''
+        self._main_search_pairs = []
+        self.middle.search_details_columns = False
+        self.middle.tree.setHeaderLabels(list(LAUNCH_HEADERS))
+        self.middle_search.setPlaceholderText('このフォルダーを検索 (AND / OR)')
+        # refresh_middle will restore physical/JSON columns and breadcrumb.
+        return True
+
+    def open_main_search_folder(self, row):
+        """Search row -> real folder Location; never manufacture a parent.
+
+        Resolve the destination BEFORE clearing search so an invalid result
+        cannot destroy the search/list state. Both normal and search views
+        share show_virtual_launch_directory/go_to_directory afterwards.
+        """
+        if not isinstance(row, dict) or not row.get('_main_search_result'):
+            return False
+        if row.get('item_kind') not in ('directory', 'category'):
+            return False
+        node = None
+        path = row.get('_file') if row.get('item_kind') == 'directory' else None
+        if not path and row.get('page_id') and row.get('item_id'):
+            node = virtual_lookup_node(self.launcher.pages,
+                self.launcher.authored_items, row['page_id'], row['item_id'],
+                (self.launcher.data or {}).get('items', ()))
+            if node is None:
+                return False
+        if not node and not (path and os.path.isdir(str(path))):
+            return False
+        self._remember_main_search_cursor()
+        self._suspend_folder_location_record = True
+        try:
+            self.launcher.search.clear()  # Restore ordinary Files List mode.
+        finally:
+            self._suspend_folder_location_record = False
+        if node is not None:
+            return self.show_virtual_launch_directory(node)
+        return self.go_to_directory(str(path), direct_anchor=True)
+
+    def _main_search_choice_changed(self, item, column):
+        """Checking a Mail result enters the unchanged classic F12 picker."""
+        if column != 0 or not getattr(self, '_main_search_active', False):
+            return
+        row = self.row_data(item) or {}
+        if (row.get('_search_selection_owner') and
+                item.checkState(0) == Qt.CheckState.Checked):
+            QTimer.singleShot(0, lambda r=row: self.launcher.activate(r))
+
     def _fill_middle_from_current(self):
+        if getattr(self, '_main_search_active', False):
+            self._fill_main_search_rows()
+            return
         virtual = getattr(self, '_virtual_directory_node', None)
         self._set_middle_columns_for_source(virtual is not None)
         if virtual is not None:
@@ -3688,6 +3868,9 @@ class ExpandedLauncherView(QWidget):
         """One navigation contract for JSON crumbs and mounted descendants."""
         if not isinstance(target, tuple) or not target:
             return False
+        if target[0] == 'search':
+            self.launcher.focus_search(select=False)
+            return True  # A search Location has no parent directory.
         if target[0] == 'physical' and len(target) == 2:
             return self.go_to_directory(target[1])
         if target[0] == 'virtual' and len(target) == 3:
@@ -3698,7 +3881,10 @@ class ExpandedLauncherView(QWidget):
         return False
 
     def _record_directory_location(self):
-        if self._restoring_directory_history:
+        if (self._restoring_directory_history or
+                getattr(self, '_suspend_folder_location_record', False) or
+                (getattr(self, '_main_search_active', False) and
+                 self.launcher.search.text().strip())):
             return
         root = self.left.tree.currentItem()
         row = self.row_data(root) if root is not None else None
@@ -3885,6 +4071,12 @@ class ExpandedLauncherView(QWidget):
             self._sync_file_list_directory_watch()
 
     def refresh_middle(self):
+        if (getattr(self, '_main_search_active', False) and
+                self.launcher.search.text().strip()):
+            self.show_global_search_results(
+                getattr(self, '_main_search_pairs', ()),
+                self.launcher.search.text().strip())
+            return
         self._sync_file_list_directory_watch()
         self._middle_back_hold.reset()
         self._middle_back_warp_pending = None
@@ -3967,6 +4159,16 @@ class ExpandedLauncherView(QWidget):
             return False
         self._restoring_directory_history = True
         try:
+            if entry.get('kind') == 'search':
+                # A search is a destination in time, never a pseudo-folder.
+                self.launcher.search.setText(entry['query'])
+                self.launcher.render()
+                self._restore_main_search_cursor(entry)
+                self.focus_panel(self.middle)
+                return True
+            editor = getattr(self.launcher, 'search', None)
+            if editor is not None and editor.text().strip():
+                editor.clear()  # Restore folder VIEW first.
             self.path = list(entry['rows'])
             self._virtual_directory_node = entry.get('virtual_node')
             self._filesystem_entry_origin = entry.get('entry_origin')
@@ -3992,9 +4194,13 @@ class ExpandedLauncherView(QWidget):
         return True
 
     def history_back(self):
+        if getattr(self, '_main_search_active', False):
+            self._remember_main_search_cursor()
         return self._restore_directory_history(self.directory_history.back())
 
     def history_forward(self):
+        if getattr(self, '_main_search_active', False):
+            self._remember_main_search_cursor()
         return self._restore_directory_history(self.directory_history.forward())
 
     def update_directory_favorite_button(self):
@@ -4936,8 +5142,9 @@ class ExpandedLauncherView(QWidget):
         as a real filesystem path. Physical directory: preserve its original
         Paste/New actions. Neither context available: navigation stays usable.
         """
-        if self._workspace_mode != 'files':
-            return False
+        if (self._workspace_mode != 'files' or
+                getattr(self, '_main_search_active', False)):
+            return False  # Search Location has no current folder for Paste.
         current = getattr(self, '_virtual_directory_node', None)
         if isinstance(current, dict):
             from launch_virtual_tree import virtual_item_identity
@@ -6965,6 +7172,9 @@ class ExpandedLauncherView(QWidget):
 
     def navigate_middle(self, row):
         """Descend without destroying a Qt row during the current key event."""
+        if row.get('_main_search_result'):
+            QTimer.singleShot(0, lambda r=row: self.open_main_search_folder(r))
+            return
         virtual = row.get('_launch_virtual_node')
         if virtual is not None:
             if virtual['kind'] != 'file':
@@ -6987,6 +7197,8 @@ class ExpandedLauncherView(QWidget):
         A breadcrumb or favorite can set self.path to a *single* row. History
         popping in that case wrongly did nothing; Back means parent directory.
         """
+        if getattr(self, '_main_search_active', False):
+            return self.history_back()  # Search has no hierarchical parent.
         if getattr(self, '_virtual_directory_node', None) is not None:
             if self._virtual_directory_node.get('kind') == 'page':
                 self.launcher.remote_focus_area('files_exp')
@@ -7041,6 +7253,13 @@ class ExpandedLauncherView(QWidget):
         row = self.row_data(item)
         if not row:
             return
+        if pane is self.middle and row.get('_main_search_result'):
+            if row.get('item_kind') in ('category', 'directory'):
+                QTimer.singleShot(0, lambda r=row: self.open_main_search_folder(r))
+                return
+            if row.get('_search_selection_owner') or row.get('item_kind') == 'selection':
+                self.launcher.activate(row)
+                return
         # A keyboard Enter and a mouse double-click must use the SAME
         # third-column resolver, including managed JSON, Obsidian Markdown,
         # physical files, and authored/browser bookmark URLs.  The resolver
@@ -7121,6 +7340,11 @@ class ExpandedLauncherView(QWidget):
         if modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
             return
         row = self.row_data(item)
+        if (row and row.get('_main_search_result') and
+                row.get('item_kind') in ('category', 'directory')):
+            if force or getattr(self.launcher, 'folder_open_mode', 'single') != 'double':
+                QTimer.singleShot(0, lambda r=row: self.open_main_search_folder(r))
+            return
         virtual = (row or {}).get('_launch_virtual_node')
         if virtual is not None:
             if (virtual['kind'] != 'file' and
@@ -8143,6 +8367,13 @@ class ExpandedLauncherView(QWidget):
         row = self.row_data(item)
         if not row:
             return
+        if pane is self.middle and row.get('_main_search_result'):
+            if row.get('item_kind') in ('category', 'directory'):
+                QTimer.singleShot(0, lambda r=row: self.open_main_search_folder(r))
+                return
+            if row.get('_search_selection_owner') or row.get('item_kind') == 'selection':
+                self.launcher.activate(row)
+                return
         # A keyboard Enter and a mouse double-click must use the SAME
         # third-column resolver, including managed JSON, Obsidian Markdown,
         # physical files, and authored/browser bookmark URLs.  The resolver
@@ -8243,6 +8474,9 @@ class ExpandedLauncherView(QWidget):
 
     def context_menu(self, pane, point, *, global_pos=None):
         item = pane.tree.itemAt(point)
+        if (pane is self.middle and getattr(self, '_main_search_active', False)
+                and item is None):
+            return  # Search has no current folder to modify/paste into.
         if not item:
             position = (global_pos if global_pos is not None else
                         pane.tree.viewport().mapToGlobal(point))
@@ -8261,6 +8495,9 @@ class ExpandedLauncherView(QWidget):
         row = self.row_data(item)
         if row is None:  # Non-actionable bookmark section heading.
             return
+        if (pane is self.middle and (row.get('_search_selection_owner') or
+                                     row.get('item_kind') == 'selection')):
+            return  # Mail/JSON selection has no context menu by agreement.
         if pane is self.middle and row.get('_launch_virtual_node') is not None:
             self.launcher.show_virtual_launch_context(
                 row['_launch_virtual_node'],
@@ -8281,7 +8518,8 @@ class ExpandedLauncherView(QWidget):
                 (global_pos if global_pos is not None else tree.viewport().mapToGlobal(point)), row,
                 context_parent=self.launcher, selected_paths=targets,
                 list_context=True)
-            if shown and len(targets) == 1:
+            if (shown and len(targets) == 1 and
+                    not getattr(self, '_main_search_active', False)):
                 menu = getattr(self.launcher, '_launch_context_menu', None)
                 if menu is not None:
                     for action in menu.actions():

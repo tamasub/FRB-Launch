@@ -26,6 +26,7 @@ from frb_update.bootstrap import check_feeds
 from remote_text_dialog import RemoteTextDialog
 from remote_context_wheel import RemoteContextWheel
 from slash_exp_navigation import (popup_exp_navigator, slash_source_from_breadcrumb,
+                                  slash_source_from_search_result,
                                   slash_source_with_filled_list_folder,
                                   slash_popup_row_anchor, _row_text_anchor_local_x)
 from rod_foreground import foreground_owned_by_process
@@ -4667,6 +4668,19 @@ class Launcher(QWidget):
         focused = QApplication.focusWidget()
         if isinstance(focused, (QLineEdit, QPlainTextEdit, QComboBox)):
             return False
+        view = getattr(self, 'expanded_view', None)
+        if view is not None and getattr(view, '_main_search_active', False):
+            item = view.middle.tree.currentItem()
+            row = view.row_data(item) if item is not None else None
+            if row and row.get('item_kind') not in ('category', 'directory'):
+                # Files use the existing Files List menu, not an unrelated
+                # remembered breadcrumb. JSON choices deliberately have none.
+                if row.get('_search_selection_owner'):
+                    return False
+                rect = view.middle.tree.visualItemRect(item)
+                pos = view.middle.tree.viewport().mapToGlobal(rect.center())
+                view.context_menu(view.middle, rect.center(), global_pos=pos)
+                return True
         return self.show_slash_exp_navigation_menu()
 
     def show_slash_exp_navigation_menu(self):
@@ -4695,9 +4709,12 @@ class Launcher(QWidget):
         # The breadcrumb owns the logical path. A green-FILLED Files List
         # folder is the one explicit, direct-child extension of that path.
         # Passive green outline and file selection leave the path unchanged.
-        breadcrumb_source = slash_source_from_breadcrumb(self, view, panel)
-        source_item = slash_source_with_filled_list_folder(
-            self, view, breadcrumb_source)
+        if getattr(view, '_main_search_active', False):
+            source_item = slash_source_from_search_result(self, view, panel)
+        else:
+            breadcrumb_source = slash_source_from_breadcrumb(self, view, panel)
+            source_item = slash_source_with_filled_list_folder(
+                self, view, breadcrumb_source)
         if source_item is None:
             self.footer.setText('Exp Keyboard Ex: パンくずの現在地を解決できません')
             return False
@@ -10086,15 +10103,35 @@ class Launcher(QWidget):
                                query=self.search.text(), stack=self.stack,
                                selection=self.selection, options=self.expanded_options,
                                available=targets is not None)
+        # A global query in Browser/other workspaces still uses the legacy
+        # list; do not silently switch away from an active Browser session.
+        if self.search.text().strip() and self.expanded_view._workspace_mode != 'files':
+            active = False
         if active:
             roots, left, right = targets
-            self.expanded_view.refresh(roots, left, right, self.expanded_options)
+            query = self.search.text().strip()
+            if not query:
+                self.expanded_view.leave_global_search_results()
+            # Search edits update only one List projection. Rebuilding Files
+            # Exp/buttons on *every typed character* is both slow and can
+            # reset the keyboard/mouse target. A new DATA object still forces
+            # a full refresh to pick up reloaded Launch JSON.
+            cached = (query and self.expanded_view.isVisible() and
+                      getattr(self.expanded_view, '_main_search_active', False) and
+                      getattr(self.expanded_view, '_search_data_ref', None) is self.data)
+            if not cached:
+                self.expanded_view.refresh(roots, left, right, self.expanded_options)
+            if query and self.selection is None:
+                self.expanded_view.show_global_search_results(
+                    getattr(self, '_global_search_result_pairs', ()),
+                    self.search.text().strip())
             self.footer.setText(
                 '↑↓ 選択   → 進む   ← 第2列先頭   Enter 実行   Esc 閉じる'
                 if self.files_root_hidden_mode and self.expanded_view._workspace_mode == 'files'
                 else '↑↓ 選択   → 進む   ← 戻る   Enter 実行   Tab エリア切替   Esc 閉じる')
         self.list.setVisible(not active)
         if not active:
+            self.expanded_view.leave_global_search_results()
             self.expanded_view.hide_favorite_popup()
         self.expanded_view.setVisible(active)
         self.update_header_tab_width()
@@ -10235,6 +10272,11 @@ class Launcher(QWidget):
             if query and self.result_sort_column in (0, 1):
                 pairs = sort_search_pairs(pairs, self.result_sort_column,
                                           self.result_sort_desc, selection=bool(self.selection))
+            # The classic QTreeWidget is still the source of truth for the
+            # legacy Mail/JSON-selection flow. Files List consumes this SAME
+            # result set through a display projection, not another search.
+            self._global_search_result_pairs = (list(pairs) if query and
+                                                self.selection is None else [])
             if self.list.order_enabled:self.list.order_rows=[row for row,path in pairs]
             for row,path in pairs:
                 title, desc = display_columns(row, path, selection=bool(self.selection))

@@ -1,7 +1,8 @@
 """Session-only, Explorer-pane navigation history (not Launcher page history).
 
-Only committed folder destinations are stored. A folder selected in Files'
-first column is a destination just like a breadcrumb or a second-column folder.
+Committed folder and search *locations* are stored, never individual
+item activations. The hierarchy breadcrumb and navigation sequence remain
+separate: a search has no parent folder even when it follows a JSON folder.
 Refresh/selection changes never create duplicate stops.
 """
 
@@ -57,7 +58,37 @@ class DirectoryNavigationHistory:
                  'entry_origin': dict(entry_origin) if entry_origin else None,
                  'direct_root': direct_root,
                  'registered_root': dict(registered_root) if registered_root else None}
-        if self.current is not None and self.current['key'] == key:
+        return self._store(entry)
+
+    def record_search(self, query, *, current_item_id=None, scroll=0):
+        """Record a Search Location without inventing a folder/path ancestor.
+
+        Selection and scrolling update the *current* search stop rather than
+        creating navigation history entries. Search keywords remain managed
+        separately by SearchHistory, not by this destination history.
+        """
+        text = str(query).strip()
+        if not text:
+            return False
+        entry = {
+            'key': ('search', text.casefold()),
+            'kind': 'search', 'query': text,
+            'current_item_id': current_item_id, 'scroll': int(scroll),
+        }
+        # A user typing 「佐藤」 must NOT add 「佐」 and 「佐藤」 as separate
+        # Back destinations. Consecutive edits are one Search Location;
+        # only a transition to/from an actual folder adds a new stop.
+        if self.current is not None and self.current.get('kind') == 'search':
+            # Updating the selected row/scroll of a restored Search stop must
+            # keep Forward history intact. Only changing the query branches.
+            if self.current['key'] != entry['key']:
+                del self.entries[self.index + 1:]
+            self.entries[self.index] = entry
+            return False
+        return self._store(entry)
+
+    def _store(self, entry):
+        if self.current is not None and self.current['key'] == entry['key']:
             self.entries[self.index] = entry
             return False
         del self.entries[self.index + 1:]

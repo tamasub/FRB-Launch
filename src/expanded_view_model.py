@@ -74,5 +74,5 @@ def root_wheel_target(index, steps, count):
 
 def should_expand(*, view_mode, page_id, query, stack, selection, options, available):
     return (view_mode == 'expanded' and options['enabled'] and available
-            and page_id == options['page_id'] and not query.strip()
+            and page_id == options['page_id']
             and not stack and selection is None)

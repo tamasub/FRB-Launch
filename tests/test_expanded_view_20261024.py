@@ -39,7 +39,7 @@ def test_page_roots_sorts_and_excludes_subfolders():
     ({}, True),
     ({'view_mode': 'classic'}, False),
     ({'page_id': 'windows'}, False),
-    ({'query': 'abc'}, False),
+    ({'query': 'abc'}, True),
     ({'stack': [{'item_id': 'zip'}]}, False),
     ({'selection': {'item_id': 'x'}}, False),
     ({'available': False}, False),
