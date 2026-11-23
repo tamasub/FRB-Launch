@@ -1,4 +1,4 @@
-"""Route physical Files List .md/.txt/.ini to their requested editors.
+"""Route physical Files List .md/.txt/.ini/.log to their requested editors.
 
 Embedding in Launch is optional; the application selection is independent of
 Vault membership and file associations. Studio JSON routing is separate.
@@ -131,7 +131,7 @@ def external_preview_target(row, *, sakura_lookup=None, vault_lookup=None, studi
         return None
     if path.suffix.casefold() == '.md':
         return ExternalPreviewTarget('obsidian', str(path))
-    if path.suffix.casefold() in ('.txt', '.ini'):
+    if path.suffix.casefold() in ('.txt', '.ini', '.log'):
         executable = (sakura_lookup or find_sakura_executable)()
         if executable:
             return ExternalPreviewTarget('sakura', str(path), executable)

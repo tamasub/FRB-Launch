@@ -89,19 +89,26 @@ def bookmark_section_colors(theme):
 
 
 def history_popup_qss(theme, *, frame_name='historyPopup',
-                      tree_name='historyChoices', height=31, padding=6):
+                      tree_name='historyChoices', height=31, padding=6,
+                      vertical_padding=2, font_size=None):
     """Shared search-history / folder-favorites popup colors.
 
     The widget names and row geometry may differ, but the background and
     selection colors always come from the *same theme tokens*.
     """
     colors = theme_palette(theme)
+    # Only the main-search history explicitly sets Files List typography.
+    # Other history/favorites menus keep their established native sizing.
+    font_qss = (f'font-family:"Yu Gothic UI";font-size:{font_size}px;'
+                if font_size is not None else '')
+    height_property = 'min-height' if font_size is not None else 'height'
     return (
         f'QFrame#{frame_name} {{background:{colors["history_bg"]};'
         f'border:1px solid {colors["history_border"]};border-radius:7px;}} '
         f'QTreeWidget#{tree_name} {{background:{colors["history_bg"]};'
-        f'color:{colors["history_text"]};border:0;outline:0;}} '
-        f'QTreeWidget#{tree_name}::item {{height:{height}px;padding:2px {padding}px;}} '
+        f'color:{colors["history_text"]};border:0;outline:0;{font_qss}}} '
+        f'QTreeWidget#{tree_name}::item {{{height_property}:{height}px;'
+        f'padding:{vertical_padding}px {padding}px;}} '
         f'QTreeWidget#{tree_name}::item:selected {{background:{colors["history_selected"]};'
         f'color:{colors["history_selected_text"]};}} '
         f'QTreeWidget#{tree_name}::item:hover {{background:{colors["history_hover"]};}}'
@@ -193,8 +200,9 @@ QTabBar::scroller { background:#edf5f0; border:none; }
 
 LIGHT_HISTORY_QSS = '''
 QFrame#historyPopup { background:#ffffff; border:1px solid #acc9ba; border-radius:7px; }
-QTreeWidget#historyChoices { background:#ffffff; color:#284338; border:0; outline:0; }
-QTreeWidget#historyChoices::item { height:31px; padding:2px 6px; }
+QTreeWidget#historyChoices { background:#ffffff; color:#284338; border:0; outline:0;
+    font-family:"Yu Gothic UI"; font-size:12px; }
+QTreeWidget#historyChoices::item { min-height:29px; padding:3px 7px; }
 QTreeWidget#historyChoices::item:selected { background:#d6e7f8; color:#1d3b4b; }
 QTreeWidget#historyChoices::item:hover { background:#e4eee8; }
 '''

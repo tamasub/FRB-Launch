@@ -3033,21 +3033,40 @@ class NormalWindowClickActivationFilter(QObject):
         if (not qt_object_is_valid(launcher)
                 or getattr(launcher, '_application_filters_removed', False)):
             return False
+        # Real Launch mouse press is the key reproduction checkpoint, even
+        # when the existing normal-window activation guard would skip repair.
+        if getattr(obj, 'window', lambda: None)() is launcher:
+            from obsidian_popout_activation_trace import active, record as trace_obsidian_popout
+            if active():
+                trace_obsidian_popout('launch_mouse_press_delivered')
+                for delay in (0, 150, 500):
+                    QTimer.singleShot(delay, lambda ms=delay:
+                                      trace_obsidian_popout('launch_click_delayed', delay_ms=ms))
         if (launcher.dismiss_on_outside_click
                 or not launcher.isVisible() or launcher.isMinimized()
                 or obj.window() is not launcher):
             return False
         hwnd = int(launcher.winId())
         before = windows.foreground()
-        if before and before != hwnd:
-            def on_explicit_click(fg=before):
+        from obsidian_popout_activation_trace import launch_click_needs_zorder_repair
+        stale_obsidian = launch_click_needs_zorder_repair(hwnd)
+        if before and (before != hwnd or stale_obsidian):
+            def on_explicit_click(fg=before, stale=stale_obsidian):
                 # The mouse press was physically delivered to this Launcher.
-                # Repair Z-order even if Qt's frameless activation did not.
-                launcher.restore_keyboard_focus(fg, reason='normal_window_click',
-                                                restore_current=False)
+                # Its foreground HWND may ALREADY be Launch after Obsidian ×,
+                # despite Obsidian remaining visually above it. Repair that
+                # specific stale Z-order as well as the existing normal case.
+                if fg != hwnd:
+                    launcher.restore_keyboard_focus(fg, reason='normal_window_click',
+                                                    restore_current=False)
+                if stale and not launch_click_needs_zorder_repair(hwnd):
+                    return  # State changed since press; don't steal focus.
                 raised = windows.raise_normal_window(hwnd)
-                DIAG.info('NORMAL_CLICK_ZORDER raised=%s foreground=%s',
-                          raised, windows.foreground())
+                DIAG.info('NORMAL_CLICK_ZORDER raised=%s foreground=%s obsidian_stale=%s',
+                          raised, windows.foreground(), stale)
+                from obsidian_popout_activation_trace import record as trace_obsidian_popout
+                trace_obsidian_popout('launch_activation_repair_result',
+                                     raised=bool(raised), obsidian_stale=bool(stale))
             QTimer.singleShot(0, on_explicit_click)
         return False
 
@@ -3334,7 +3353,11 @@ class Launcher(QWidget):
         self.minimize_button.clicked.connect(self.minimize_launcher)
         self.minimize_button.setVisible(not self.dismiss_on_outside_click)
         self.maximize_button.clicked.connect(self.toggle_maximize_restore)
-        self.close_button.clicked.connect(self.dismiss)
+        # The title-bar × is an explicit close request, not an outside click.
+        # Route it through closeEvent() so a docked Sakura guest does not make
+        # this button inert. closeEvent() calls dismiss(force=True) while
+        # preserving the editor HWND and all unsaved work.
+        self.close_button.clicked.connect(self.close)
 
         # Reuse the EXISTING header surface as a move handle; do not enlarge
         # the window or intercept the search edit, settings, or frame buttons.
@@ -8371,7 +8394,12 @@ class Launcher(QWidget):
         self.list.set_row_theme(theme_family(self.color_theme))
         self.tabs.setStyleSheet(LIGHT_TABS_QSS if light else PAGE_TABS_QSS)
         self.tabs.set_light_theme(light)
-        self.history_popup.setStyleSheet(LIGHT_HISTORY_QSS if light else self._dark_history_qss)
+        # Search history uses the Files List's font size and current row
+        # density, including when the List is switched to compact mode.
+        compact = getattr(self.expanded_view, 'row_density', 'normal') == 'compact'
+        self.history_popup.setStyleSheet(history_popup_qss(
+            self.color_theme, height=23 if compact else 29,
+            vertical_padding=1 if compact else 3, padding=7, font_size=12))
         if getattr(self, 'remote_window', None) is not None:
             self.remote_window.apply_theme(self.color_theme)
         companion = getattr(self, '_remote_kana_companion', None)
@@ -12022,6 +12050,10 @@ class Launcher(QWidget):
         if not self.isVisible():
             return
         self._history_popup_anchor = anchor
+        compact = getattr(self.expanded_view, 'row_density', 'normal') == 'compact'
+        self.history_popup.setStyleSheet(history_popup_qss(
+            self.color_theme, height=23 if compact else 29,
+            vertical_padding=1 if compact else 3, padding=7, font_size=12))
         if self.menu:
             self.menu.close()
         self.hover_timer.stop(); self.pending_menu_item = None

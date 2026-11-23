@@ -31,6 +31,8 @@ class RecorderWin32(FakeWin32):
 
     def SetWindowPos(self, hwnd, after, x, y, w, h, flags):
         self.calls.append(('place', hwnd, after, x, y, w, h, flags))
+        if not self.fail_pos and flags & 0x0080:  # SWP_HIDEWINDOW
+            self.visible = False
         return not self.fail_pos
 
 
@@ -67,8 +69,11 @@ def test_hidden_parking_does_not_flash_or_immediately_repaint():
     api.calls.clear()
     guest.detach(foreground=False, show_window=False)
     assert not guest.attached
-    assert ('show', 0) in api.calls
-    assert not any(c[0] == 'redraw' for c in api.calls)
+    assert ('show', 0) not in api.calls  # atomic hide via SetWindowPos
+    assert any(c[0] == 'place' and c[-1] & 0x0080 for c in api.calls)
+    # A hidden parked editor must not repaint itself, but Launch must
+    # invalidate the newly exposed backing area (including its header).
+    assert all(c[1] != guest.hwnd for c in api.calls if c[0] == 'redraw')
     assert not any(c[0] == 'style' for c in api.calls)
     assert not api.visible
 

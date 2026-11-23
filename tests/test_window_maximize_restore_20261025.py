@@ -113,7 +113,7 @@ class WindowMaximizePersistenceTests(unittest.TestCase):
         self.assertIn('self.minimize_button.clicked.connect(self.minimize_launcher)', source)
         self.assertIn('self.minimize_button.setVisible(not self.dismiss_on_outside_click)', source)
         self.assertIn('self.maximize_button.clicked.connect(self.toggle_maximize_restore)', source)
-        self.assertIn('self.close_button.clicked.connect(self.dismiss)', source)
+        self.assertIn('self.close_button.clicked.connect(self.close)', source)
 
     def test_maximize_saves_only_normal_size_and_position(self):
         w = Probe()

@@ -70,7 +70,7 @@ def test_studio_ack_then_desktop_release_then_next_app():
                status_label=NS(setText=lambda x: None, show=lambda: None))
     QTimer = NS(singleShot=lambda delay, callback: callback())
     assert fn('_finish_studio_popout',env={'QTimer': QTimer})(panel,'OK')
-    assert steps[0] == ('release', {'foreground': True, 'show_window': True})
+    assert steps[0] == ('release', {'foreground': True, 'show_window': True, 'keep_docked_size': True})
     assert steps[-1] == ('next_app',)
     assert panel._attached is None and panel._process is None and panel._target is None
 

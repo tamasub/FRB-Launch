@@ -81,6 +81,8 @@ class StudioPreviewPanel(QFrame):
         # sessions. They are never killed by Preview's × button.
         self._external_key = None
         self._external_parked = {}
+        # Reverify a popped-out Sakura by HWND *and* PID before redocking.
+        self._sakura_parked_pids = {}
         # Windows made visible by an automatic seat switch stay user-owned.
         # Preview × must not silently close or forget their re-dock identity.
         self._auto_ejected_keys = set()
@@ -240,10 +242,29 @@ class StudioPreviewPanel(QFrame):
         return tuple(result)
 
     def _sync_obsidian_ime_overlay(self):
+        # Read-only 90-second foreground/Z-order trace survives detach because
+        # this timer continues while the guest is back on the desktop.
+        from obsidian_popout_activation_trace import poll as poll_obsidian_desktop
+        poll_obsidian_desktop()
         # Also covers the opt-in VS Code guest: this synchronizes *any*
         # non-parenting overlay and the native history-popup precedence.
         attached = getattr(self, '_attached', None)
         if attached is not None and getattr(attached, 'is_ime_overlay', False):
+            # During a Sakura file handoff its native HWND can become hidden
+            # *before* _poll_sakura_guest() detaches the previous editor.
+            # Repairing that transient hide here re-shows the retiring HWND
+            # and can leave overlapping GDI windows. The existing detach-only
+            # guard cannot protect this earlier interval.
+            key = getattr(self, '_external_key', None)
+            if (key is not None and key[0] == 'sakura'
+                    and getattr(self, '_sakura_guest_switch', None) is not None):
+                now = time.monotonic()
+                if now - getattr(self, '_sakura_switch_hold_trace_at', 0.0) >= 1.0:
+                    self._sakura_switch_hold_trace_at = now
+                    self._sakura_trace('SYNC_HELD_FOR_SAKURA_SWITCH',
+                                       hwnd=int(attached.hwnd))
+                getattr(self, '_trace_sakura_parked_state', lambda *_: None)(attached)
+                return
             try:
                 # Qt may keep its widget visible while the parent has been
                 # minimized; sync() also checks the Win32 root state.
@@ -252,8 +273,47 @@ class StudioPreviewPanel(QFrame):
                     popup_hwnds=self._launcher_popup_hwnds(),
                     qt_host_size=(self.host.width(), self.host.height()),
                 )
+                getattr(self, '_trace_sakura_parked_state', lambda *_: None)(attached)
             except (OSError, RuntimeError, ValueError):
                 pass  # Guest diagnostics must never stop the GUI event loop.
+
+    def _trace_sakura_parked_state(self, attached):
+        """Observe visible/hidden parked Sakura HWNDs; do not modify them.
+
+        A hidden park must stay hidden during file switches. Comparing
+        the parked identity against actual Win32 visibility can help identify
+        a stale editor left behind as the apparent GDI black rectangle.
+        """
+        key = getattr(self, '_external_key', None)
+        if not key or key[0] != 'sakura':
+            return
+        now = time.monotonic()
+        if now - getattr(self, '_sakura_park_trace_at', 0.0) < 3.0:
+            return
+        self._sakura_park_trace_at = now
+        try:
+            parked = []
+            api = attached.u
+            for park_key, hwnd in tuple(self._external_parked.items()):
+                if park_key[0] != 'sakura':
+                    continue
+                hwnd = int(hwnd)
+                alive = bool(api.IsWindow(hwnd))
+                parked.append(dict(hwnd=hwnd, alive=alive,
+                                   auto_ejected_marker=bool(park_key in self._auto_ejected_keys),
+                                   actual_visible=bool(api.IsWindowVisible(hwnd)) if alive else None,
+                                   minimized=bool(api.IsIconic(hwnd)) if alive else None))
+            if parked:
+                self._sakura_trace('PARKED_SAKURA_STATE',
+                                   active_hwnd=int(attached.hwnd), parked=parked)
+            # The old per-HWND log cannot see newly created or duplicated
+            # Sakura windows. Inventory every real top-level Sakura HWND,
+            # including those Launch did not open; read-only Win32 calls.
+            from sakura_window_trace import trace_desktop_inventory
+            trace_desktop_inventory(active_hwnd=int(attached.hwnd),
+                                    parked_hwnds=[item['hwnd'] for item in parked])
+        except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
+            pass  # Diagnostics must never affect the Launch UI.
 
     def _sakura_trace(self, event, **details):
         # This is telemetry only. All errors are swallowed by the tracer.
@@ -736,6 +796,37 @@ class StudioPreviewPanel(QFrame):
         self.popout_requested.emit()
         return True
 
+    def _remember_sakura_parked_pid(self, hwnd):
+        """Only remember a verified editor process; never capture by HWND alone."""
+        try:
+            from external_win32_host import editor_window_pid
+            pid = int(editor_window_pid(int(hwnd)) or 0)
+        except (OSError, ValueError, RuntimeError):
+            pid = 0
+        if pid:
+            getattr(self, '_sakura_parked_pids', {})[int(hwnd)] = pid
+        getattr(self, '_sakura_trace', lambda *a, **k: None)(
+            'PARKED_IDENTITY', hwnd=int(hwnd), pid=pid)
+        return pid
+
+    def _sakura_parked_pid_matches(self, hwnd):
+        expected = getattr(self, '_sakura_parked_pids', {}).get(int(hwnd))
+        if not expected:
+            # Older in-memory sessions (before introducing this guard) still
+            # obey the existing caption and Launch-owned HWND verification.
+            return True
+        try:
+            from external_win32_host import editor_window_pid
+            current = int(editor_window_pid(int(hwnd)) or 0)
+        except (OSError, ValueError, RuntimeError):
+            current = 0
+        if current == expected:
+            return True
+        getattr(self, '_sakura_trace', lambda *a, **k: None)(
+            'PARKED_PID_MISMATCH', hwnd=int(hwnd), expected_pid=expected,
+            actual_pid=current)
+        return False
+
     def _restore_known_sakura_guest(self, target):
         """Restore ONLY an HWND verified and parked by this Launch session.
 
@@ -759,6 +850,7 @@ class StudioPreviewPanel(QFrame):
             return False
         hwnd = int(hwnd)
         if (hwnd == int(attached.hwnd) or not attached.u.IsWindow(hwnd)
+                or not getattr(self, '_sakura_parked_pid_matches', lambda h: True)(hwnd)
                 or not caption_matches_file(editor_window_title(hwnd), target.path)):
             # A stale or retargeted HWND must not be reused as another file.
             return False
@@ -783,7 +875,9 @@ class StudioPreviewPanel(QFrame):
             return False
 
         self._external_parked.pop(key, None)
+        getattr(self, '_sakura_parked_pids', {}).pop(hwnd, None)
         self._external_parked[previous_key] = previous_hwnd
+        getattr(self, '_remember_sakura_parked_pid', lambda h: None)(previous_hwnd)
         self._attached = restored
         self._external_key = key
         self.title_label.setText('サクラエディタ — ' + Path(target.path).name)
@@ -846,26 +940,34 @@ class StudioPreviewPanel(QFrame):
             if key[0] != 'sakura':
                 continue
             hwnd = self._external_parked.pop(key)
+            getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                'AUTO_REDOCK_TRY', hwnd=hwnd, exact_key=(key == target.key))
             try:
                 # Once released to the desktop the user may have closed or
                 # retargeted the editor. Never capture a stale/repurposed HWND.
                 from external_win32_host import editor_window_title
-                if not caption_matches_file(editor_window_title(hwnd), key[1]):
+                if (not getattr(self, '_sakura_parked_pid_matches', lambda h: True)(hwnd)
+                        or not caption_matches_file(editor_window_title(hwnd), key[1])):
                     self._external_parked[key] = hwnd
                     continue
                 from guest_window_overlay import SakuraGuestOverlay
                 self._attached = SakuraGuestOverlay(hwnd, int(self.host.winId()))
                 self._external_key = key
+                getattr(self, '_sakura_parked_pids', {}).pop(int(hwnd), None)
                 getattr(self, '_auto_ejected_keys', set()).discard(key)
                 self._attached.resize(self.host.width(), self.host.height())
                 self.status_label.hide()
                 self._sync_popout_button()
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'AUTO_REDOCK_DONE', hwnd=hwnd, exact_key=(key == target.key))
                 if key != target.key:
                     return self._open_sakura_guest(target)
                 return True
-            except (OSError, ValueError, RuntimeError):
+            except (OSError, ValueError, RuntimeError) as exc:
                 self._external_parked[key] = hwnd
                 self._attached = None
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'AUTO_REDOCK_REFUSED', hwnd=hwnd, reason=type(exc).__name__)
                 return False
         try:
             baseline = snapshot_editor_windows('sakura')
@@ -941,6 +1043,7 @@ class StudioPreviewPanel(QFrame):
                         if attached.attached:
                             return
                         self._external_parked[self._external_key] = attached.hwnd
+                        getattr(self, '_remember_sakura_parked_pid', lambda h: None)(attached.hwnd)
                         self._attached = SakuraGuestOverlay(hwnd, int(self.host.winId()))
                         self._attached.resize(self.host.width(), self.host.height())
                         self._external_key = target.key
@@ -1014,45 +1117,56 @@ class StudioPreviewPanel(QFrame):
         QTimer.singleShot(360, refresh)
 
     def release_sakura_guest_for_browser(self):
-        """Detach Sakura to the desktop while retaining its verified HWND.
+        """Safely auto-eject a verified Sakura overlay before a preview switch.
 
-        Browser handoff MUST NOT close the editor, ask Sakura to save, or
-        discard the handle needed to re-dock the same unsaved document later.
-        In-flight tab switches are not a safe handoff point.
+        Shared by Browser, Studio, other external editors and Options. Never
+        close Sakura, ask to save, or lose its HWND. In-flight tab switches
+        and legacy SetParent Sakura are deliberately not auto-ejected.
         """
         attached = self._attached
         key = self._external_key
+        trace = getattr(self, '_sakura_trace', lambda *a, **k: None)
+        trace('AUTO_EJECT_REQUEST', hwnd=getattr(attached, 'hwnd', None),
+              key_known=bool(key), pending=self._external_pending is not None,
+              switching=self._sakura_guest_switch is not None)
         if (key is None or key[0] != 'sakura'
                 or attached is None or not getattr(attached, 'is_ime_overlay', False)
                 or not attached.attached or self._external_pending is not None
                 or self._sakura_guest_switch is not None
                 or self._sakura_guest_queued is not None):
+            trace('AUTO_EJECT_REFUSED', reason='busy_or_unverified_overlay')
             return False
         try:
             hwnd = int(attached.hwnd)
             if not attached.u.IsWindow(hwnd):
+                trace('AUTO_EJECT_REFUSED', reason='invalid_hwnd', hwnd=hwnd)
                 return False
             # This is not the explicit "外に出す" action: keep the HWND
             # registered for the next TXT double click. No WM_CLOSE/SAVE.
             attached.detach(foreground=False, show_window=True)
             if attached.attached or not attached.u.IsWindow(hwnd):
+                trace('AUTO_EJECT_REFUSED', reason='detach_not_complete', hwnd=hwnd)
                 return False
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError) as exc:
+            trace('AUTO_EJECT_REFUSED', reason=type(exc).__name__)
             return False
         self._external_parked[key] = hwnd
+        getattr(self, '_remember_sakura_parked_pid', lambda h: None)(hwnd)
         getattr(self, '_auto_ejected_keys', set()).add(key)
         self._attached = None
         self._external_key = None
         self._external_timer.stop()
         self._sync_popout_button()
-        # Browser's Qt reflow runs after this handoff. Give the standalone
-        # editor another native child repaint after that reflow completes.
+        # A Qt reflow can follow any preview switch. Keep GDI child panes
+        # repainted after the native editor becomes an ordinary desktop app.
         getattr(self, '_schedule_sakura_desktop_repaint',
                 lambda *_: None)(attached, key, hwnd)
+        trace('AUTO_EJECT_DONE', hwnd=hwnd, parked_count=len(self._external_parked))
         return True
 
     def pop_out_sakura_guest(self):
         attached = self._attached
+        key = self._external_key
         if (self._external_key is None or self._external_key[0] != 'sakura'
                 or attached is None or not getattr(attached, 'is_ime_overlay', False)
                 or not attached.attached or self._external_pending is not None
@@ -1064,6 +1178,15 @@ class StudioPreviewPanel(QFrame):
                 return False
         except (OSError, ValueError, RuntimeError):
             return False
+        # The explicit ↗ / third-column × must be re-dockable too. Otherwise
+        # a following TXT double click starts a new Sakura while the original
+        # editor (possibly with unsaved changes) is still alive on desktop.
+        hwnd = int(attached.hwnd)
+        self._external_parked[key] = hwnd
+        getattr(self, '_remember_sakura_parked_pid', lambda h: None)(hwnd)
+        getattr(self, '_auto_ejected_keys', set()).add(key)
+        getattr(self, '_sakura_trace', lambda *a, **kw: None)(
+            'EXPLICIT_POPOUT_PARKED', hwnd=hwnd, parked_count=len(self._external_parked))
         self._attached = None
         self._external_key = None
         self._sync_popout_button()
@@ -1658,6 +1781,42 @@ class StudioPreviewPanel(QFrame):
             return self.pop_out_sakura()
         return self.pop_out_studio()
 
+    def _begin_obsidian_desktop_trace(self, attached, route):
+        """Snapshot the real desktop HWNDs without changing guest or Launch."""
+        try:
+            from obsidian_popout_activation_trace import begin
+            begin(attached.hwnd, self.window().winId(), route=route)
+        except Exception:
+            pass  # Never block the native detach on diagnostics.
+
+    def _obsidian_desktop_trace(self, stage, **fields):
+        from obsidian_popout_activation_trace import record
+        record(stage, **fields)
+
+    def _schedule_obsidian_desktop_trace(self):
+        # Non-interfering samples after Qt has finished hiding the third pane.
+        for delay in (0, 150, 500, 1200):
+            QTimer.singleShot(delay, lambda ms=delay:
+                              self._obsidian_desktop_trace('popout_delayed', delay_ms=ms))
+
+    def _schedule_obsidian_desktop_activation(self, hwnd, user32):
+        """Transfer focus only after Qt's third-column close has completed.
+
+        The delayed callback rechecks the actual foreground HWND; a click on
+        another app in the meantime takes precedence. It never re-docks or
+        changes the editor's position/size or normal/topmost tier.
+        """
+        launch_hwnd = int(self.window().winId())
+
+        def complete_release():
+            from studio_win32_host import activate_obsidian_desktop_after_release
+            ok = activate_obsidian_desktop_after_release(
+                hwnd, launch_hwnd, user32=user32)
+            getattr(self, '_obsidian_desktop_trace', lambda *args, **kw: None)(
+                'activation_handoff_result', success=bool(ok))
+
+        QTimer.singleShot(0, complete_release)
+
     def pop_out_obsidian(self):
         """Return the borrowed MAIN window to desktop, including IME overlay.
 
@@ -1670,11 +1829,23 @@ class StudioPreviewPanel(QFrame):
                 or self._external_pending is not None
                 or self._obsidian_cli_busy is not None):
             return False
+        getattr(self, '_begin_obsidian_desktop_trace', lambda *args: None)(attached, 'pop_out_button')
         try:
             attached.detach(foreground=True, show_window=True)
+            getattr(self, '_obsidian_desktop_trace', lambda *args, **kw: None)(
+                'detach_after', attached=bool(attached.attached))
             if attached.attached:
                 return False
+            # Explicit desktop release: never retain the temporary TOPMOST
+            # tier used to keep a docked Obsidian above Launch's third pane.
+            if hasattr(attached, 'u'):
+                from studio_win32_host import release_obsidian_desktop_z_order
+                released = release_obsidian_desktop_z_order(attached.hwnd, user32=attached.u)
+                getattr(self, '_obsidian_desktop_trace', lambda *args, **kw: None)(
+                    'notopmost_release', success=bool(released))
         except (OSError, RuntimeError, ValueError) as exc:
+            getattr(self, '_obsidian_desktop_trace', lambda *args, **kw: None)(
+                'detach_error', error_type=type(exc).__name__)
             self.status_label.setText('Obsidianを外に出せませんでした: ' + str(exc))
             self.status_label.show()
             return False
@@ -1687,6 +1858,10 @@ class StudioPreviewPanel(QFrame):
         self._external_key = None
         self._sync_popout_button()
         self.popout_requested.emit()  # Caller hides the now-empty third column.
+        getattr(self, '_obsidian_desktop_trace', lambda *args, **kw: None)('popout_completed')
+        getattr(self, '_schedule_obsidian_desktop_trace', lambda: None)()
+        if hasattr(attached, 'u'):
+            self._schedule_obsidian_desktop_activation(attached.hwnd, attached.u)
         return True
 
     def pop_out_studio(self):
@@ -1737,7 +1912,7 @@ class StudioPreviewPanel(QFrame):
             return
         attached = self._attached
         try:
-            attached.detach(foreground=True, show_window=True)
+            attached.detach(foreground=True, show_window=True, keep_docked_size=True)
         except (OSError, RuntimeError, ValueError) as exc:
             # Studio has already acknowledged owner release. Never kill it.
             self.status_label.setText('Studioのウィンドウ復元に失敗しました: ' + str(exc))
@@ -2029,11 +2204,13 @@ class StudioPreviewPanel(QFrame):
         return True
 
     def close_external_editors(self):
-        """Handle explicit ×. Sakura stays docked while WM_CLOSE is pending.
+        """Close the third column without stranding an editor on the desktop.
 
-        Sakura itself decides whether unsaved tabs can close. Never detach it
-        or hide the Launch pane before the native window actually closes.
-        Other external editors retain the earlier safe close path.
+        The Sakura guest overlay's × must use the SAME visible desktop
+        release as the working ↗ button. The older hidden-park path left the
+        Sakura HWND alive but invisible and unusable as a standalone window.
+        Legacy SetParent Sakura retains its explicit WM_CLOSE contract.
+        Other external editors keep their existing close behavior.
         """
         if self._external_pending is not None:
             # An editor has been launched but the HWND has not yet been
@@ -2046,22 +2223,48 @@ class StudioPreviewPanel(QFrame):
         if getattr(self, 'sakura_attached', lambda: False)() and not getattr(
                 self._attached, 'is_ime_overlay', False):
             return self._request_sakura_normal_close()
-        if self._external_key is not None and (
-                self._external_key[0] == 'vscode' or
-                (self._external_key[0] == 'sakura' and
-                 getattr(self._attached, 'is_ime_overlay', False))):
-            # × hides the guest but NEVER terminates VS Code or unsaved files.
+        if (self._external_key is not None
+                and self._external_key[0] == 'sakura'
+                and getattr(self._attached, 'is_ime_overlay', False)):
+            # Important: hidden parking (show_window=False) is NOT a visible
+            # standalone Sakura. Reuse the proven ↗ route, including the
+            # popout_requested signal, native frame restoration and repaint.
+            trace = getattr(self, '_sakura_trace', lambda *a, **kw: None)
+            trace('TITLEBAR_X_POPOUT_REQUEST', hwnd=getattr(self._attached, 'hwnd', None))
+            released = bool(self.pop_out_sakura_guest())
+            trace('TITLEBAR_X_POPOUT_RESULT', success=released)
+            return released
+        if self._external_key is not None and self._external_key[0] == 'vscode':
+            # Keep VS Code's original park-on-× behavior unchanged.
             return self._park_external()
         self._external_timer.stop()
         self._sakura_switch_from = None
         if self._external_key is not None and self._external_key[0] == 'obsidian':
             getattr(self, '_reset_obsidian_cli', lambda: None)()
         windows = []
+        detached_obsidian = None
         if self._external_key is not None:
             attached = self._attached
             if attached is not None:
                 try:
+                    obsidian_closing = self._external_key[0] == 'obsidian'
+                    if obsidian_closing:
+                        getattr(self, '_begin_obsidian_desktop_trace', lambda *args: None)(attached, 'third_column_x')
                     attached.detach(foreground=False, show_window=True)
+                    if obsidian_closing:
+                        getattr(self, '_obsidian_desktop_trace', lambda *args, **kw: None)(
+                            'detach_after', attached=bool(attached.attached))
+                    if obsidian_closing and hasattr(attached, 'u'):
+                        # × also releases Obsidian to desktop. Do not keep it
+                        # in the temporary always-on-top tier above Launch.
+                        from studio_win32_host import release_obsidian_desktop_z_order
+                        released = release_obsidian_desktop_z_order(attached.hwnd, user32=attached.u)
+                        getattr(self, '_obsidian_desktop_trace', lambda *args, **kw: None)(
+                            'notopmost_release', success=bool(released))
+                    if obsidian_closing:
+                        getattr(self, '_schedule_obsidian_desktop_trace', lambda: None)()
+                        if hasattr(attached, 'u'):
+                            detached_obsidian = (attached.hwnd, attached.u)
                     windows.append((attached.hwnd, self._external_key[0]))
                     self._attached = None
                 except (OSError, RuntimeError):
@@ -2094,6 +2297,8 @@ class StudioPreviewPanel(QFrame):
                     # Sakura likewise follows its own explicit close protocol.
                 except (OSError, RuntimeError, ValueError):
                     return False
+        if detached_obsidian is not None:
+            self._schedule_obsidian_desktop_activation(*detached_obsidian)
         return True
 
     def external_embedding_pending(self):
@@ -2289,6 +2494,8 @@ class StudioPreviewPanel(QFrame):
                 if desktop and getattr(attached, 'attached', False):
                     return False
                 self._external_parked[self._external_key] = hwnd
+                if self._external_key[0] == 'sakura':
+                    getattr(self, '_remember_sakura_parked_pid', lambda h: None)(hwnd)
                 if desktop:
                     getattr(self, '_auto_ejected_keys', set()).add(self._external_key)
                 if old_obsidian_vault:

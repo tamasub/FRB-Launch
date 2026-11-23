@@ -8068,8 +8068,11 @@ class ExpandedLauncherView(QWidget):
             return False
         keep_list_focus = self.middle.tree.hasFocus()
         if getattr(self.studio_preview, 'sakura_attached', lambda: False)():
-            self.studio_preview._explain_sakura_switch_blocked()
-            return False
+            # Sakura's verified top-level overlay may leave quietly, while
+            # its unsaved tabs/HWND remain available for the next TXT open.
+            if not self.studio_preview.release_sakura_guest_for_browser():
+                self.studio_preview._explain_sakura_switch_blocked()
+                return False
         if not self.studio_preview.open_document(target):
             if not was_open:
                 self.close_studio_preview()
@@ -8110,11 +8113,15 @@ class ExpandedLauncherView(QWidget):
                   target=Path(target.path).name, workspace_mode=self._workspace_mode)
         if not prepared:
             return False
-        if (getattr(self.studio_preview, 'sakura_attached', lambda: False)()
-                and not getattr(self.studio_preview._attached, 'is_ime_overlay', False)
-                and target.app != 'sakura'):
-            self.studio_preview._explain_sakura_switch_blocked()
-            return False
+        if (target.app != 'sakura' and
+                getattr(self.studio_preview, 'sakura_attached', lambda: False)()):
+            # The same guarded Sakura handoff already used by Browser. The
+            # documented file's HWND is parked rather than closed/destroyed.
+            if not self.studio_preview.release_sakura_guest_for_browser():
+                self.studio_preview._explain_sakura_switch_blocked()
+                # This request was handled/refused. Do NOT fall back to an
+                # unexpected standalone app in preview_bookmark_from_list.
+                return True
         if not self.studio_preview.open_external(target):
             if not was_open:
                 self.close_studio_preview()
@@ -8137,6 +8144,10 @@ class ExpandedLauncherView(QWidget):
         was_open = bool(self.studio_preview and not self.studio_preview.isHidden())
         if not self._ensure_studio_preview(owner='options'):
             return False
+        if getattr(self.studio_preview, 'sakura_attached', lambda: False)():
+            if not self.studio_preview.release_sakura_guest_for_browser():
+                self.studio_preview._explain_sakura_switch_blocked()
+                return False
         try:
             if not self.studio_preview.open_options(launch_home, state_dir, studio_root):
                 return False

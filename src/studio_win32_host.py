@@ -190,12 +190,21 @@ class AttachedStudioWindow:
             self.u.SetWindowPos(self.hwnd, 0, 0, 0, w, h,
                                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
 
-    def detach(self, *, foreground=False, show_window=True):
+    def detach(self, *, foreground=False, show_window=True, keep_docked_size=False):
         """Restore native parent/style; optionally park the window hidden.
 
         show_window=False keeps an unsaved session alive without a desktop
         pop-out when the user switches documents in Launch's third column.
+        An explicit Studio pop-out keeps the last third-column on-screen
+        rectangle instead of returning to the much larger pre-docking window.
         """
+        docked_rect = None
+        if keep_docked_size and show_window and self.attached:
+            rect = wintypes.RECT()
+            if self.u.GetWindowRect(self.hwnd, ctypes.byref(rect)):
+                width, height = int(rect.right - rect.left), int(rect.bottom - rect.top)
+                if width > 0 and height > 0:
+                    docked_rect = (int(rect.left), int(rect.top), width, height)
         if not self.u.IsWindow(self.hwnd):
             self.attached = False
             return
@@ -204,7 +213,7 @@ class AttachedStudioWindow:
             self.u.SetParent(self.hwnd, self.original_parent)
             self.u.SetWindowLongPtrW(self.hwnd, GWL_STYLE, self.original_style)
             self.u.SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, self.original_exstyle)
-            x, y, w, h = self.original_rect
+            x, y, w, h = docked_rect or self.original_rect
             self.u.SetWindowPos(self.hwnd, 0, x, y, w, h,
                                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
         self.attached = False
@@ -214,7 +223,7 @@ class AttachedStudioWindow:
             # Sakura's tab bar/client can retain the clipped size of the Qt
             # host. Re-establish the desktop frame and force a native repaint.
             self.u.ShowWindow(self.hwnd, SW_RESTORE)
-            x, y, w, h = self.original_rect
+            x, y, w, h = docked_rect or self.original_rect
             self.u.SetWindowPos(self.hwnd, 0, x, y, w, h,
                                 SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
             self.u.RedrawWindow(self.hwnd, 0, 0,
@@ -224,6 +233,56 @@ class AttachedStudioWindow:
         else:
             self.u.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
 
+
+
+def release_obsidian_desktop_z_order(hwnd, *, user32=None):
+    """Return a detached Obsidian window to the normal desktop Z-order tier.
+
+    During third-column docking Electron may temporarily follow Launch's
+    TOPMOST tier.  An explicit user pop-out must not leave Obsidian pinned
+    over Launch: clicking Launch should bring it forward normally.  This
+    acts only on the verified HWND returned by the docking session.
+    """
+    u = user32 if user32 is not None else _user32()
+    hwnd = int(hwnd)
+    if not u.IsWindow(hwnd):
+        return False
+    SWP_NOMOVE = 0x0002
+    SWP_NOSIZE = 0x0001
+    SWP_NOACTIVATE = 0x0010
+    HWND_NOTOPMOST = -2
+    return bool(u.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE))
+
+
+def activate_obsidian_desktop_after_release(hwnd, launch_hwnd, *, user32=None):
+    """Complete a deliberate Obsidian desktop release with native activation.
+
+    Third-column × detaches with ``foreground=False`` and reorders the
+    standalone Obsidian above Launch with ``SWP_NOACTIVATE``.  That can leave
+    Launch as GetForegroundWindow even while Obsidian obscures it.  An initial
+    click on already-active Launch then does not promote Launch in Z-order.
+
+    Run *after* Qt hides the preview. Only transfer focus while Launch itself
+    is still foreground; never steal it from another application or a user
+    who has already chosen a different window. No synthetic mouse input.
+    """
+    u = user32 if user32 is not None else _user32()
+    hwnd, launch_hwnd = int(hwnd or 0), int(launch_hwnd or 0)
+    if (not hwnd or not launch_hwnd or hwnd == launch_hwnd
+            or not u.IsWindow(hwnd) or not u.IsWindow(launch_hwnd)):
+        return False
+    get_parent = getattr(u, 'GetParent', None)
+    if get_parent is not None and int(get_parent(hwnd) or 0):
+        return False  # A fast re-dock won the race; never activate a child.
+    foreground = int(u.GetForegroundWindow() or 0)
+    if foreground == hwnd:
+        return True  # Already coherent; leave Windows alone.
+    if foreground != launch_hwnd:
+        return False  # User switched away during the deferred callback.
+    if not bool(u.SetForegroundWindow(hwnd)):
+        return False
+    return int(u.GetForegroundWindow() or 0) == hwnd
 
 
 def focus_embedded_editor_from_click(editor_hwnd, host_hwnd, x, y, *, user32=None,
