@@ -112,6 +112,11 @@ def test_builder_omits_personal_files_and_preserves_defaults(tmp_path):
     (studio/'NativeShell'/'_publish'/'FRBStudio.NativeShell.exe').write_bytes(b'studio')
     (studio/'tools'/'option_settings').mkdir(parents=True)
     (studio/'tools'/'option_settings'/'cli.mjs').write_text('')
+    (studio/'tools/change_core').mkdir(parents=True)
+    (studio/'tools/change_core/cli.mjs').write_text('')
+    enum = studio / 'data/json/config/launch_enums_v0_1.json'
+    enum.parent.mkdir(parents=True)
+    enum.write_text('{}', encoding='utf-8')
     (studio/'runtime'/'node').mkdir(parents=True)
     (studio/'runtime'/'node'/'node.exe').write_bytes(b'node')
     source=tmp_path/'src';(source/'defaults').mkdir(parents=True)

@@ -7,17 +7,18 @@ from __future__ import annotations
 
 import configparser
 import hashlib
+import logging
 import json
 import os
 import ntpath
 from pathlib import Path
 from urllib.parse import urlparse, unquote
-import shutil
 import subprocess
 import tempfile
 import uuid
 from html.parser import HTMLParser
 from html import unescape
+from runtime_paths import resolve_studio_cli, resolve_node, portable_runtime
 from shell_link_stream import make_link_data, ShellLinkError
 
 
@@ -460,37 +461,35 @@ def mime_sources(mime):
 def studio_core_root(launch_home, configured_root=''):
     """Find actual Studio source, never fabricate a CLI nor silently direct-write."""
     home = Path(launch_home).resolve()
-    # Installed FRB_Apps layout takes precedence over a stale saved variable
-    # still pointing to F:/FRB/tools/FRBStudio_App. Never change the JSON here.
-    candidates = [home / 'Studio', home.parent / 'FRB_Studio',
-                  configured_root, home.parent / 'FRBStudio_App',
-                  home.parent / 'Studio', home.parent.parent / 'FRBStudio_App']
-    for candidate in candidates:
-        if not candidate:
-            continue
-        root = Path(candidate)
-        if ((root / 'tools/change_core/cli.mjs').is_file() and
-                launch_view_def_path(home / 'config' / 'frb_launch_data.json').is_file()):
-            return root.resolve()
-    raise RegistrationError('Studio Change Coreが見つかりません。Studioの配置先を確認してください。')
+    root = resolve_studio_cli(home, 'change_core', configured_root)
+    if root is not None and launch_view_def_path(home / 'config' / 'frb_launch_data.json').is_file():
+        return root
+    raise RegistrationError('Studio Change Coreが見つかりません。Studioの配置先とLaunch ViewDefを確認してください。')
 
 
-def _node_binary(root):
-    override = os.environ.get('FRB_LAUNCH_NODE', '').strip()
-    candidates = [override, root / 'portable/node.exe', root / 'node.exe',
-                  root / 'tools/change_core/portable/node.exe', shutil.which('node')]
-    for candidate in candidates:
-        if candidate and (Path(candidate).is_file() or
-                          (not Path(candidate).is_absolute() and shutil.which(str(candidate)))):
-            return str(candidate)
-    raise RegistrationError('Node.jsの実行ファイルが見つかりません。Studio CLIのNode配布またはPATHを確認してください。')
+def _node_binary(root, launch_home):
+    if portable_runtime(launch_home) and Path(root).resolve() != (Path(launch_home) / 'Studio').resolve():
+        raise RegistrationError('配布版は同梱Studioのみ使用できます。Studioの配置先を確認してください。')
+    node = resolve_node(launch_home, root)
+    if node:
+        return node
+    raise RegistrationError('Node.jsの実行ファイルが見つかりません。同梱runtime/node/node.exeを確認してください（開発版のみPATH利用可）。')
+
+
+def _log_cli_result(completed, mode):
+    # Do not log request/stdout: they can contain user data. stderr may also
+    # contain private paths or data; keep it bounded in the local diagnostic log.
+    logger = logging.getLogger('frb.launch.diagnostics')
+    logger.info('Change Core mode=%s exit=%s', mode, completed.returncode)
+    if completed.returncode or not completed.stdout.strip():
+        logger.warning('Change Core stderr: %s', completed.stderr.strip()[:2000])
 
 
 def commit_add(config_path, studio_root, page_id, parent_id, records, *, timeout=40):
     """One SHA-based Add ChangeSet; PREVIEW then COMMIT, no direct JSON writes."""
     filename = Path(config_path).resolve()
     root = Path(studio_root).resolve()
-    node = _node_binary(root)
+    node = _node_binary(root, launch_view_def_path(filename).parents[2])
     if not isinstance(records, list) or not records:
         raise RegistrationError('新規登録レコードがありません。')
     raw = filename.read_bytes()
@@ -521,6 +520,7 @@ def commit_add(config_path, studio_root, page_id, parent_id, records, *, timeout
                     [node, str(root / 'tools/change_core/cli.mjs'), '--config', str(trusted_path)],
                     input=json.dumps(request, ensure_ascii=False), text=True, encoding='utf-8',
                     capture_output=True, timeout=timeout, check=False)
+                _log_cli_result(completed, mode)
                 reply = json.loads(completed.stdout)
             except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
                 raise RegistrationError('Studio CLIの起動または応答に失敗: ' + str(exc)) from exc
@@ -576,7 +576,8 @@ def _delete_trusted_config(filename):
 
 
 def _invoke_delete_cli(root, trusted_config, request, mode, timeout):
-    node = _node_binary(root)
+    view_path = trusted_config['documents'][DOCUMENT_REF]['view_def_path']
+    node = _node_binary(root, Path(view_path).parents[2])
     payload = dict(request, mode=mode)
     with tempfile.TemporaryDirectory(prefix='frb_launch_delete_') as directory:
         config_file = Path(directory) / 'trusted.json'
@@ -586,6 +587,7 @@ def _invoke_delete_cli(root, trusted_config, request, mode, timeout):
                 [node, str(root / 'tools/change_core/cli.mjs'), '--config', str(config_file)],
                 input=json.dumps(payload, ensure_ascii=False), text=True, encoding='utf-8',
                 capture_output=True, timeout=timeout, check=False)
+            _log_cli_result(completed, mode)
             reply = json.loads(completed.stdout)
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
             raise RegistrationError('Studio CLIの削除処理に失敗: ' + str(exc)) from exc

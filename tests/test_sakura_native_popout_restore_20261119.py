@@ -63,7 +63,8 @@ def test_desktop_release_restores_geometry_without_hiding_or_rewriting_native_fr
     assert api.visible
 
 
-def test_hidden_parking_does_not_flash_or_immediately_repaint():
+def test_hidden_parking_does_not_flash_or_immediately_repaint(monkeypatch):
+    monkeypatch.setenv('FRB_SAKURA_PARK_MODE', 'hide')
     api = RecorderWin32()
     guest = SakuraGuestOverlay(100, 200, user32=api)
     api.calls.clear()

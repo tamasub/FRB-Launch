@@ -8849,7 +8849,13 @@ class Launcher(QWidget):
         key = ('file_type', target) if source == 'type' else (source, target)
         if key not in self.icon_cache:
             if source == 'type':
-                type_icon = self.file_icons.icon(QFileInfo('FRBLaunchTypeSample' + target))
+                # The nonexistent QFileInfo sample can produce a generic glyph
+                # for .md, even though Explorer uses the Obsidian association.
+                # Ask Windows Shell first; retain Qt fallback on other OSes.
+                from windows_file_association_icon import file_type_icon
+                type_icon = file_type_icon(target, size=16)
+                if type_icon is None or type_icon.isNull():
+                    type_icon = self.file_icons.icon(QFileInfo('FRBLaunchTypeSample' + target))
                 self.icon_cache[key] = (type_icon if not type_icon.isNull()
                                         else icon('file'))
             elif source == 'path' and (row.get('_icon_file') or row.get('_system_drive')
@@ -13424,6 +13430,7 @@ class Launcher(QWidget):
                        + '\n新Studioフォルダーで cmd_compile_NativeShell.bat を実行してください。')
             return
         args = ['--open-json=' + str(CONFIG),
+                '--studio-theme=light',
                 '--launch-home=' + str(Path(LAUNCH_HOME).resolve()),
                 '--launch-view-def=' + str((Path(LAUNCH_HOME) / 'defs' / 'launch' /
                                           'frb_launch_maintenance_view_def_v0_1.json').resolve())]
@@ -14077,8 +14084,11 @@ class Launcher(QWidget):
                 # Match the compact 218-225px Remote / Files Exp menu.
                 menu.setMinimumWidth(218)
                 menu.setMaximumWidth(225)
+            from commander.viewdef import companion_viewdef
             allowed = {d['action_id'] for d in actions if d.get('action_id')
                        and not (d['action_id'] == 'run_with_pause' and Path(path).suffix.casefold() not in ('.ps1', '.py'))
+                       and not (d['action_id'] == 'commander_run' and
+                                companion_viewdef(path) is None)
                        and not (d['action_id'] == 'extract_all' and Path(path).suffix.casefold() != '.zip')}
             if search_result:
                 # Search is a navigation/lookup surface, not a file editor.
@@ -14651,6 +14661,13 @@ class Launcher(QWidget):
                 open_parent_folder(path)
             elif action_id == 'open_parent_terminal' and kind == 'file':
                 open_parent_powershell(path)
+            elif action_id == 'commander_run' and kind == 'file':
+                from commander.launch_adapter import launch_workspace_root, guarded_open
+                # Let the native context QMenu finish closing BEFORE the
+                # new top-level dialog claims keyboard focus on Windows.
+                workspace = launch_workspace_root(self, path)
+                QTimer.singleShot(75, lambda p=path, root=workspace:
+                    guarded_open(self, p, root))
             elif action_id == 'run_with_pause' and kind == 'file':
                 run_script_with_pause(path)
             elif action_id == 'open_explorer':

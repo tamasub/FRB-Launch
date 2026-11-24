@@ -24,11 +24,14 @@ def _release_fixture(tmp_path):
 
     studio = tmp_path / 'studio'
     for name in ('NativeShell/_publish/FRBStudio.NativeShell.exe',
-                 'tools/option_settings/cli.mjs', 'runtime/node/node.exe'):
+                 'tools/option_settings/cli.mjs', 'tools/change_core/cli.mjs', 'runtime/node/node.exe'):
         path = studio / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b'fixture')
 
+    enum = studio / 'data/json/config/launch_enums_v0_1.json'
+    enum.parent.mkdir(parents=True)
+    enum.write_text('{}', encoding='utf-8')
     source = tmp_path / 'FRB_Launch'
     source.mkdir()
     (source / 'README.md').write_text('# Launch README\n', encoding='utf-8')

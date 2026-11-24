@@ -888,7 +888,7 @@ class StudioPreviewPanel(QFrame):
         return True
 
     def _open_sakura_guest(self, target):
-        """Opt-in Sakura top-level overlay; never reparent or adopt desktop HWNDs."""
+        """Sakura top-level overlay; never reparent or adopt desktop HWNDs."""
         from sakura_guest_bridge import enabled, new_hwnd_for_file, caption_matches_file
         from external_win32_host import snapshot_editor_windows, editor_windows
         from external_preview_route import external_start_command
@@ -914,8 +914,26 @@ class StudioPreviewPanel(QFrame):
             if self._restore_known_sakura_guest(target):
                 return True
             try:
+                from sakura_guest_bridge import (active_group_trial_enabled,
+                    active_group_trial_safe)
                 baseline = snapshot_editor_windows('sakura')
-                subprocess.Popen(external_start_command(target),
+                # Standard preference: let Sakura open the next tab in its
+                # active group, but only when native HWND ownership is safe.
+                # Never replace the existing HWND fallback/parking logic.
+                # Never choose GROUP=0 when an unrelated/explicitly popped-out
+                # Sakura is visible: GROUP=0 cannot address an exact window.
+                group_trial = False
+                if active_group_trial_enabled():
+                    group_trial = active_group_trial_safe(
+                        attached.hwnd,
+                        editor_windows('sakura', include_hidden=False),
+                        self._external_parked,
+                        getattr(self, '_auto_ejected_keys', set()))
+                    getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                        'ACTIVE_GROUP_TRIAL_REQUEST', enabled=group_trial,
+                        hwnd=int(attached.hwnd),
+                        refused_reason='' if group_trial else 'other_group_or_unverified')
+                subprocess.Popen(external_start_command(target, active_group=group_trial),
                                  cwd=str(Path(target.executable).parent))
             except (OSError, ValueError) as exc:
                 self.status_label.setText('サクラエディタの切替に失敗: ' + str(exc))
@@ -1024,6 +1042,8 @@ class StudioPreviewPanel(QFrame):
                 self._sakura_guest_switch = None
                 self._external_timer.stop()
                 self.status_label.hide()
+                getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                    'NATIVE_TAB_SWITCH_SAME_HWND', hwnd=int(attached.hwnd))
                 self._schedule_sakura_guest_repaint(attached.hwnd, target.key)
             else:
                 # Sakura can bring an older tab/HWND forward, not just create
@@ -1052,6 +1072,9 @@ class StudioPreviewPanel(QFrame):
                         self._sakura_guest_switch = None
                         self._external_timer.stop()
                         self.status_label.hide()
+                        getattr(self, '_sakura_trace', lambda *a, **k: None)(
+                            'NATIVE_TAB_SWITCH_NEW_HWND',
+                            previous_hwnd=int(attached.hwnd), new_hwnd=int(hwnd))
                         self._schedule_sakura_guest_repaint(hwnd, target.key)
                     except (OSError, ValueError, RuntimeError):
                         return

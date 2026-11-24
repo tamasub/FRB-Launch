@@ -26,10 +26,14 @@ class SakuraGuestOverlay(GuestWindowOverlay):
 
     @staticmethod
     def _sakura_park_mode():
-        """Opt-in A/B test; ordinary Launch keeps atomic SW_HIDE behavior."""
+        """Minimize parked Sakura by default; explicit 'hide' is a rollback.
+
+        The native top-level Sakura window remains alive with its unsaved
+        document contents intact.  Only Sakura is affected by this setting.
+        """
         import os
-        return ('minimize' if os.environ.get('FRB_SAKURA_PARK_MODE', '').strip().lower()
-                == 'minimize' else 'hide')
+        configured = os.environ.get('FRB_SAKURA_PARK_MODE', '').strip().lower()
+        return 'hide' if configured == 'hide' else 'minimize'
 
     def __init__(self, hwnd, host_hwnd, *, user32=None):
         # An intentionally minimized parked Sakura must be returned to its
@@ -338,8 +342,8 @@ class SakuraGuestOverlay(GuestWindowOverlay):
         # genuine external style deviation had to be repaired.
         flags = (SWP_NOACTIVATE | SWP_FRAMECHANGED
                  if style_drifted or exstyle_drifted else SWP_NOACTIVATE)
-        trial_minimize = not show_window and self._sakura_park_mode() == 'minimize'
-        if not show_window and not trial_minimize:
+        minimize_park = not show_window and self._sakura_park_mode() == 'minimize'
+        if not show_window and not minimize_park:
             # This HWND is intentionally retired while the next document is
             # docked. On some Windows GDI/DWM combinations the old client
             # surface remains in Launch's backing area even though
@@ -354,9 +358,10 @@ class SakuraGuestOverlay(GuestWindowOverlay):
         if show_window:
             self.u.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
             self.refresh_native_frame()
-        elif trial_minimize:
-            # A/B ONLY: ask DWM to withdraw the retired window via the normal
-            # minimize lifecycle rather than hiding a live GDI top-level HWND.
+        elif minimize_park:
+            # Standard parking: use the native minimize lifecycle rather than
+            # hiding a live GDI top-level HWND (which left dead visual surfaces
+            # on the observed Windows 11 setup).
             # Windows taskbar may show minimized editors. HWNDs/document data
             # are preserved; failure keeps this overlay attached for recovery.
             from third_column_window_state import park_native_window

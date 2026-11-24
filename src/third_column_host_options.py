@@ -1,4 +1,4 @@
-"""Hidden experimental third-column native host switches in state.ini.
+"""Per-user third-column native host switches in state.ini.
 
 The user-owned state file is shared with the rest of Launch's INI options.
 An absent, invalid or non-boolean setting always means disabled. Whether

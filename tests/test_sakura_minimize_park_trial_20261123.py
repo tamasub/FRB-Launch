@@ -1,4 +1,4 @@
-"""A/B Sakura minimize parking is opt-in and keeps known HWNDs alive.
+"""Default Sakura minimize parking keeps known HWNDs alive.
 
 These are fake-Win32 lifecycle tests, not actual DWM pixel tests.
 """
@@ -61,8 +61,19 @@ def test_minimized_guest_is_restored_before_capturing_rect(monkeypatch):
     assert ('show', 4) in api.calls
 
 
-def test_default_remains_existing_atomic_hide(monkeypatch):
+def test_default_minimizes_without_environment_flag(monkeypatch):
     monkeypatch.delenv('FRB_SAKURA_PARK_MODE', raising=False)
+    api = FakeMinimizable()
+    guest = SakuraGuestOverlay(100, 200, user32=api)
+    api.calls.clear()
+    guest.detach(foreground=False, show_window=False)
+    assert ('show', 7) in api.calls
+    assert not any(c[0] == 'place' and c[-1] & 0x80 for c in api.calls)
+    assert api.iconic
+
+
+def test_explicit_hide_retains_legacy_atomic_hide_as_rollback(monkeypatch):
+    monkeypatch.setenv('FRB_SAKURA_PARK_MODE', 'hide')
     api = FakeMinimizable()
     guest = SakuraGuestOverlay(100, 200, user32=api)
     api.calls.clear()

@@ -15,10 +15,9 @@ def test_first_install_seeds_desired_invitation_flags(tmp_path, monkeypatch):
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
     current = tmp_path / 'FRBLaunch' / 'state.ini'
     ensure_initial_state_ini(ROOT / 'defaults' / 'state.ini', current)
-    for editor in ('studio', 'obsidian', 'vscode'):
+    for editor in ('studio', 'obsidian', 'vscode', 'sakura'):
         assert embedded_editor_enabled(None, editor)
-    assert not embedded_editor_enabled(None, 'sakura')
-    assert vs.enabled() and not sa.enabled()
+    assert vs.enabled() and sa.enabled()
     monkeypatch.delenv('FRB_OBSIDIAN_IME_OVERLAY', raising=False)
     assert overlay_enabled()
 

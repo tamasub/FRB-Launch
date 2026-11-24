@@ -8,7 +8,8 @@ from test_sakura_overlay_transient_recovery_20261122 import VisibilityWin32, Fn
 from studio_win32_host import SW_HIDE, SWP_SHOWWINDOW
 
 
-def test_sync_reentry_cannot_undo_intentional_hidden_park():
+def test_sync_reentry_cannot_undo_intentional_hidden_park(monkeypatch):
+    monkeypatch.setenv('FRB_SAKURA_PARK_MODE', 'hide')
     api = VisibilityWin32()
     overlay = SakuraGuestOverlay(100, 200, user32=api)
     unguarded_observed = []

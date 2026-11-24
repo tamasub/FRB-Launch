@@ -30,7 +30,7 @@ class OptionSettingsWindow(QDialog):
             raise RuntimeError('FRB Studio FamilyのOption Settingsが見つかりません。Studioを配置してください。')
         self._node = find_node(launch_home, self._root)
         if self._node is None:
-            raise RuntimeError('Node.js実行環境がありません。runtime/node/node.exe またはPATHのNodeが必要です。')
+            raise RuntimeError('Node.js実行環境がありません。同梱runtime/node/node.exeを確認してください（開発版のみPATH利用可）。')
         # A dedicated off-the-record browser profile prevents the short-lived
         # localhost token from being persisted in normal Launch browser history.
         self._profile=QWebEngineProfile(self)

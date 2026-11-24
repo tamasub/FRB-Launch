@@ -147,3 +147,10 @@ def test_parking_old_editor_is_hidden_and_retains_process():
     assert attached.called == [{'foreground': False, 'show_window': False}]
     assert obj._parked[target] == (process, 98765)
     assert obj._attached is None and obj._target is None
+
+
+def test_launch_maintenance_requests_light_for_both_routes():
+    source = method_source('app.py', 'Launcher', 'launch_configuration_studio')
+    assert "'--studio-theme=light'" in source
+    assert source.index("'--studio-theme=light'") < source.index('tuple(args[1:])')
+    assert "'launch_arguments': args" in source

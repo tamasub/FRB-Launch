@@ -708,6 +708,8 @@ class SlashExpMenu(QMenu):
         top-level namespace. The source of a child column is the only safe
         authority; the unrelated currently highlighted List row is not.
         """
+        if getattr(self.root_menu, '_file_selection_callback', None) is not None:
+            return None  # Picker has no (カレントフォルダー) execution command.
         if self.source_item is None or self._context_source is not None:
             return None  # No current directory on the unrooted Exp main list.
         # The FIRST / column is also an opened logical directory. Its source
@@ -1629,6 +1631,13 @@ class SlashExpMenu(QMenu):
         """Enter commits a folder to Files List; Right is navigation only."""
         info = item.data(_DATA_ROLE) or {}
         node = info.get('virtual')
+        selector = getattr(self.root_menu, '_file_selection_callback', None)
+        if selector is not None:
+            path = info.get('path')
+            if info.get('file') and path and os.path.isfile(path):
+                selector(str(path))  # Return the path; NEVER open/execute it.
+                return True
+            return False  # Folder selection is not supported in file mode.
         if info.get('current_folder'):
             path = info.get('linked_path') or info.get('path')
             if path and os.path.isdir(path):
@@ -1818,6 +1827,12 @@ class SlashExpMenu(QMenu):
         if item is None:
             event.accept()
             return
+        if getattr(self.root_menu, '_file_selection_callback', None) is not None:
+            data = item.data(_DATA_ROLE) or {}
+            if data.get('file') and key in (Qt.Key.Key_Right, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._close_then(lambda target=item: self._commit_terminal(target))
+                event.accept()
+                return
         if (self._context_source is None and
                 (item.data(_DATA_ROLE) or {}).get('current_folder')):
             if key == Qt.Key.Key_Right:
@@ -1841,8 +1856,15 @@ class SlashExpMenu(QMenu):
         # Determine the terminal boundary ONLY when this row is activated.
         submenu = self._submenus.get(action)
         if submenu is not None:
-            if key == Qt.Key.Key_Right:
-                self._open_explicit_submenu(action, submenu, event)
+            if (key == Qt.Key.Key_Right or
+                    getattr(self.root_menu, '_file_selection_callback', None) is not None):
+                # Qt's native QMenu only opens a submenu on RIGHT, not Enter.
+                # Turn picker Enter into the same native RIGHT event while
+                # ordinary Launch Enter still commits into Files List.
+                nav_event = (event if key == Qt.Key.Key_Right else
+                    QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
+                              Qt.KeyboardModifier.NoModifier))
+                self._open_explicit_submenu(action, submenu, nav_event)
             elif self._context_source is None:
                 # Folder Enter opens it in Files List; Right explores children.
                 # Context submenus still require a final command: a QAction is
@@ -1858,9 +1880,10 @@ class SlashExpMenu(QMenu):
             event.accept()
             return
         if key == Qt.Key.Key_Right:
-            submenu = self._attach_context(action, item)
-            if submenu is not None:
-                self._open_explicit_submenu(action, submenu, event)
+            if getattr(self.root_menu, '_file_selection_callback', None) is None:
+                submenu = self._attach_context(action, item)
+                if submenu is not None:
+                    self._open_explicit_submenu(action, submenu, event)
         else:
             self._close_then(lambda target=item: self._commit_terminal(target))
         event.accept()
@@ -1962,10 +1985,20 @@ def _close_visible_slash_children(menu):
             child.close()
 
 
+def physical_folder_source(launcher, directory):
+    """Transient physical root for a one-shot file-picking Keyboard Ex."""
+    if not os.path.isdir(directory):
+        return None
+    source = QStandardItem(QIcon(), os.path.basename(directory.rstrip('\\/')) or directory)
+    source.setData({'path': directory, 'pc': False, 'slash_transient': True}, _DATA_ROLE)
+    source.setData(True, _LOADED_ROLE)
+    return source
+
+
 def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
                         extra_name_gutter=0,
                         list_bottom_y=None, source_item=None, list_height=None,
-                        parent_left=None):
+                        parent_left=None, on_file_selected=None):
     """Create one breadcrumb-rooted session; never register a new Exp root."""
     previous = getattr(launcher, '_slash_exp_navigation_menu', None)
     if previous is not None:
@@ -1976,6 +2009,7 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
     # Parent to Launch's topmost window. Qt.Tool becomes an active native
     # window for Japanese IME and our guard provides outside-click closing.
     menu = SlashExpMenu(launcher, panel, source_item=source_item, parent=launcher)
+    menu._file_selection_callback = on_file_selected
     if list_height is not None:
         # New floating mode: Launch window may be shorter than this popup.
         # Files List *height* is the hard cap; the monitor's work area keeps

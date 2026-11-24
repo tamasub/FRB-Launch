@@ -1,7 +1,7 @@
 """Seed user-owned FRB Launch state.ini once from a system-managed template.
 
-Only an explicit allowlist of settings is seeded (including safe, hidden
-experimental switches).  Window geometry, history, session state, etc. remain
+Only an explicit allowlist of settings is seeded (including hidden
+editor-invitation switches).  Window geometry, history, session state, etc. remain
 user/runtime-owned.  If the
 sample omits a key, app.py / pointer_warp_policy.py keep their existing
 QSettings fallback values; do NOT duplicate those defaults here.

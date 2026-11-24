@@ -38,6 +38,12 @@ def _dummy_app_parts(tmp_path):
     cli = studio/'tools'/'option_settings'/'cli.mjs'
     cli.parent.mkdir(parents=True)
     cli.write_text('', 'utf-8')
+    change = studio / 'tools/change_core/cli.mjs'
+    change.parent.mkdir(parents=True)
+    change.write_text('', 'utf-8')
+    enum = studio / 'data/json/config/launch_enums_v0_1.json'
+    enum.parent.mkdir(parents=True)
+    enum.write_text('{}', encoding='utf-8')
     node = studio/'runtime'/'node'/'node.exe'
     node.parent.mkdir(parents=True)
     node.write_bytes(b'node')

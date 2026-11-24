@@ -35,7 +35,9 @@ def safe_relative(value: str) -> Path:
         raise UpdateError(f'ユーザーデータは更新禁止: {value}')
     # Studio's source distribution contains actual user documents. Those
     # trees must never be touched by a product updater, even if the feed says so.
-    if value.casefold().startswith('studio/data/') and not value.casefold().startswith('studio/data/json/00_rules/'):
+    if (value.casefold().startswith('studio/data/')
+            and not value.casefold().startswith('studio/data/json/00_rules/')
+            and value.casefold() != 'studio/data/json/config/launch_enums_v0_1.json'):
         raise UpdateError(f'Studioユーザーデータは更新禁止: {value}')
     return Path(*p.parts)
 

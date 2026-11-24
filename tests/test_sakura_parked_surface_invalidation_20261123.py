@@ -12,7 +12,8 @@ SWP_NOCOPYBITS = 0x0100
 SWP_SHOWWINDOW = 0x0040
 
 
-def test_hidden_retired_hwnd_drops_client_pixels_and_redraws_launch():
+def test_hidden_retired_hwnd_drops_client_pixels_and_redraws_launch(monkeypatch):
+    monkeypatch.setenv('FRB_SAKURA_PARK_MODE', 'hide')
     api = RecorderWin32()
     guest = SakuraGuestOverlay(100, 200, user32=api)
     api.calls.clear()

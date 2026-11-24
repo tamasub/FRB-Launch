@@ -1,4 +1,4 @@
-﻿FRB Launch v0.9.11 — ご利用にあたって
+﻿FRB Launch  — ご利用にあたって
 ==========================================
 
 「パソコン作業の入り口を、一つに。」
@@ -28,7 +28,7 @@ Windows 10以前、Windows on ARMなどは動作保証の対象外です。
 
 ■ 3. インストールと初回起動
 
-(1) FRBLaunch_0.9.11_portable.zip をダウンロードします。
+(1) FRBLaunch_X.X.XX_portable.zip をダウンロードします。
 (2) ZIPを任意のフォルダーへ「すべて展開」してください。
     ZIPの中から直接EXEを起動せず、先に展開してください。
 (3) 展開先のFRBLaunchフォルダーにある FRBLaunch.exe を起動します。
@@ -131,6 +131,6 @@ Copyright (c) 2026 tamasub
 ※再配布条件も、作者の意向に合っていることを確認してください。
 
 ------------------------------------------
-FRB Launch v0.9.11 / Preview
+FRB Launch  / Preview
 Fishing Rod Benchmark (FRB) — By tamasub
 ------------------------------------------

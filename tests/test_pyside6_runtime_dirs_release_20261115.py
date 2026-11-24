@@ -43,6 +43,11 @@ class QtDirectoryReleaseRegression(unittest.TestCase):
         (self.studio / 'NativeShell/_publish/FRBStudio.NativeShell.exe').write_bytes(b'studio')
         (self.studio / 'tools/option_settings').mkdir(parents=True)
         (self.studio / 'tools/option_settings/cli.mjs').write_text('// test', 'utf-8')
+        (self.studio / 'tools/change_core').mkdir(parents=True)
+        (self.studio / 'tools/change_core/cli.mjs').write_text('// test', 'utf-8')
+        enum = self.studio / 'data/json/config/launch_enums_v0_1.json'
+        enum.parent.mkdir(parents=True)
+        enum.write_text('{}', encoding='utf-8')
         (self.studio / 'runtime/node').mkdir(parents=True)
         (self.studio / 'runtime/node/node.exe').write_bytes(b'node')
         self.source.mkdir()

@@ -88,6 +88,10 @@ def context_action_icon(action_id):
     elif action_id in ('open_terminal', 'open_parent_terminal'):
         painter.drawRoundedRect(QRectF(3, 4, 18, 16), 2, 2)
         line(7, 9, 10, 12); line(10, 12, 7, 15); line(12, 16, 17, 16)
+    elif action_id == 'commander_run':
+        painter.drawRoundedRect(QRectF(3, 4, 18, 16), 2, 2)
+        line(7, 9, 11, 12); line(11, 12, 7, 15)
+        line(13, 16, 19, 16)
     elif action_id == 'run_with_pause':
         painter.drawRoundedRect(QRectF(3, 4, 18, 16), 2, 2)
         # Play + pause: script runs first, then waits for Enter.

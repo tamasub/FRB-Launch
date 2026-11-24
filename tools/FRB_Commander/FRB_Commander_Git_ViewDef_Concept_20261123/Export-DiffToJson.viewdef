@@ -1,0 +1,103 @@
+{
+  "schema_version": "frb_commander_viewdef_v0.1-draft",
+  "status": "concept_only_not_executable",
+  "view_type": "frb_commander",
+  "id": "export_diff_to_json",
+  "title": "Git差分をJSONに出力",
+  "description": "Export-DiffToJson.ps1 の実行条件を連続選択する",
+  "script": {
+    "file": "Export-DiffToJson.ps1",
+    "runner": "powershell.exe",
+    "fixed_arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"],
+    "working_directory_policy": "script_directory_or_studio_app_root",
+    "argument_transport": "argv_array_no_shell_interpolation"
+  },
+  "experience": {
+    "primary_action": "slash_candidate_selection",
+    "advance_after_selection": true,
+    "breadcrumb_role": "selected_parameters_edit_points_not_folder_hierarchy",
+    "search_candidates": true,
+    "keyboard": {
+      "arrow_keys": "move_candidate",
+      "enter": "accept_and_advance",
+      "escape": "close_candidates",
+      "slash": "open_candidates"
+    },
+    "show_command_preview": true,
+    "require_explicit_run_confirmation": true
+  },
+  "steps": [
+    {
+      "id": "source",
+      "label": "差分の種類",
+      "input": "single_choice",
+      "required": true,
+      "default": "working_tree",
+      "choices": [
+        {"value": "working_tree", "label": "未ステージ差分", "hint": "-Mode WorkingTree（省略可）"},
+        {"value": "staged", "label": "ステージ済み差分", "hint": "-Mode Staged"},
+        {"value": "head", "label": "HEADとの差分", "hint": "-Mode Head"},
+        {"value": "commit_range", "label": "コミット範囲", "hint": "-Range を指定"},
+        {"value": "file_pair", "label": "2ファイル比較", "hint": "-Mode FilePair"}
+      ]
+    },
+    {
+      "id": "range",
+      "label": "コミット範囲",
+      "input": "text_with_history",
+      "required": true,
+      "visible_when": {"source": "commit_range"},
+      "placeholder": "main..HEAD または <commit>..HEAD",
+      "candidate_source": "history_and_free_text"
+    },
+    {
+      "id": "from_file",
+      "label": "比較元ファイル",
+      "input": "file_path",
+      "required": true,
+      "visible_when": {"source": "file_pair"}
+    },
+    {
+      "id": "to_file",
+      "label": "比較先ファイル",
+      "input": "file_path",
+      "required": true,
+      "visible_when": {"source": "file_pair"}
+    },
+    {
+      "id": "advanced",
+      "label": "詳細設定",
+      "input": "optional_group",
+      "collapsed_by_default": true,
+      "fields": [
+        {"id": "unified", "label": "前後の文脈行数", "input": "integer", "default": 3, "min": 0},
+        {"id": "max_patch_chars", "label": "パッチ本文の最大文字数（ファイルごと）", "input": "integer", "default": 60000, "min": 1},
+        {"id": "no_patch", "label": "パッチ本文を含めない", "input": "boolean", "default": false},
+        {"id": "output_path", "label": "出力先（FRBStudio_App 内）", "input": "file_path", "default": "", "hint": "空欄時は wwwroot/diff/DiffToJson_current.json を上書き"}
+      ]
+    }
+  ],
+  "command_bindings": [
+    {"when": {"source": "working_tree"}, "args": []},
+    {"when": {"source": "staged"}, "args": ["-Mode", "Staged"]},
+    {"when": {"source": "head"}, "args": ["-Mode", "Head"]},
+    {"when": {"source": "commit_range"}, "args": ["-Range", "${range}"]},
+    {"when": {"source": "file_pair"}, "args": ["-Mode", "FilePair", "-FromFile", "${from_file}", "-ToFile", "${to_file}"]},
+    {"when": {"unified_non_default": true}, "args": ["-Unified", "${unified}"]},
+    {"when": {"max_patch_chars_non_default": true}, "args": ["-MaxPatchChars", "${max_patch_chars}"]},
+    {"when": {"no_patch": true}, "args": ["-NoPatch"]},
+    {"when": {"output_path_nonempty": true}, "args": ["-OutputPath", "${output_path}"]}
+  ],
+  "run_confirmation": {
+    "title": "Git差分をJSON出力しますか？",
+    "show": ["script_path", "selected_path_breadcrumb", "resolved_argv", "output_path"],
+    "warning": "既定出力 wwwroot/diff/DiffToJson_current.json は実行ごとに上書きされます。未追跡ファイルのパッチ本文は含まれません。",
+    "execute_only_on_explicit_confirmation": true
+  },
+  "notes": [
+    "これはFRB Commander仕様検討用の草案であり、現時点では実行できません。",
+    "commit_range はUI上の選択肢で、スクリプトの -Mode の有効値ではありません。-Range にマッピングします。",
+    "このスクリプトはFRBStudio_Appのルートおよびtools/common/StudioLog.ps1を要求します。",
+    "既存スクリプトは変更していません。"
+  ]
+}

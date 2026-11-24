@@ -183,11 +183,15 @@ def obsidian_open_uri(file, *, require_registered=False):
     return 'obsidian://open?path=' + quote(str(file), safe='')
 
 
-def external_start_command(target):
+def external_start_command(target, *, active_group=False):
     if target.app != 'sakura' or not target.executable:
         raise ValueError('Sakura editor executable was not resolved')
+    # Sakura's -GROUP=0 asks its own tab manager to use the *active* group.
+    # This does NOT target a particular HWND. Only the already-docked Sakura
+    # handoff may opt in; first open/redock/external editors stay unchanged.
+    options = ['-GROUP=0'] if active_group else []
     # -- ensures files whose names start with '-' aren't mistaken for flags.
-    return [target.executable, '--', target.path]
+    return [target.executable, *options, '--', target.path]
 
 
 def find_obsidian_executable():

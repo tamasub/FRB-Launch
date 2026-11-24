@@ -1,0 +1,36 @@
+{
+  "schema_version": "frb_commander_viewdef_v0.1",
+  "view_type": "frb_commander",
+  "title": "AppDataのLaunch設定JSONをExpanded対応に移行",
+  "script": {
+    "file": "Migrate-LaunchConfig.ps1"
+  },
+  "steps": [
+    {
+      "id": "source",
+      "label": "移行方法",
+      "input": "single_choice",
+      "required": true,
+      "choices": [
+        {
+          "value": "preview",
+          "label": "診断・変更予定のみ",
+          "hint": "AppDataの現行設定を自動参照。原本も出力も変更しない",
+          "args": [
+            "-Mode",
+            "Preview"
+          ]
+        },
+        {
+          "value": "convert",
+          "label": "移行JSONを別名保存",
+          "hint": "AppDataの現行設定を自動参照。原本を保持して同じフォルダーに出力",
+          "args": [
+            "-Mode",
+            "Convert"
+          ]
+        }
+      ]
+    }
+  ]
+}

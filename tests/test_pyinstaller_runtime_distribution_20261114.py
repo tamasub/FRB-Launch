@@ -42,6 +42,11 @@ class PyInstallerRuntimeDistributionTests(unittest.TestCase):
         (self.studio / 'NativeShell/_publish/FRBStudio.NativeShell.exe').write_bytes(b'studio exe')
         (self.studio / 'tools/option_settings').mkdir(parents=True)
         (self.studio / 'tools/option_settings/cli.mjs').write_text('console.log("test");', 'utf-8')
+        (self.studio / 'tools/change_core').mkdir(parents=True)
+        (self.studio / 'tools/change_core/cli.mjs').write_text('// test', 'utf-8')
+        enum = self.studio / 'data/json/config/launch_enums_v0_1.json'
+        enum.parent.mkdir(parents=True)
+        enum.write_text('{}', encoding='utf-8')
         (self.source / 'config').mkdir(parents=True)
         (self.source / 'config/frb_launch_data.json').write_text('{"test":true}', 'utf-8')
         self.node.write_bytes(b'node fixture')
@@ -64,6 +69,36 @@ class PyInstallerRuntimeDistributionTests(unittest.TestCase):
         self.assertFalse(selectable(f, 'random.zip'))
         self.assertFalse(selectable(f, 'Studio/_internal/base_library.zip'))
 
+    def test_missing_change_core_fails_before_release(self):
+        (self.studio / 'tools/change_core/cli.mjs').unlink()
+        with self.assertRaisesRegex(ValueError, 'Change Core'):
+            self.collect()
+
+    def test_enum_is_included_without_other_config_data(self):
+        private = self.studio / 'data/json/config/private.json'
+        private.write_text('{}', encoding='utf-8')
+        files = self.collect()
+        self.assertIn('Studio/data/json/config/launch_enums_v0_1.json', files)
+        self.assertNotIn('Studio/data/json/config/private.json', files)
+
+    def test_updater_allows_only_the_system_enum_exception(self):
+        from frb_update.contracts import safe_relative, UpdateError
+        safe_relative('Studio/data/json/config/launch_enums_v0_1.json')
+        with self.assertRaises(UpdateError):
+            safe_relative('Studio/data/json/config/private.json')
+
+    def test_missing_enum_blocks_release(self):
+        (self.studio / 'data/json/config/launch_enums_v0_1.json').unlink()
+        with self.assertRaisesRegex(ValueError, 'Launch Enum JSON missing'):
+            self.collect()
+
+    def test_viewdef_reference_missing_blocks_release(self):
+        view = self.source / 'defs/launch/menu.json'
+        view.parent.mkdir(parents=True)
+        view.write_text(json.dumps({'valueVocabularySources': ['config/other.json']}))
+        with self.assertRaisesRegex(ValueError, 'vocabulary missing'):
+            self.collect()
+
     def test_missing_library_fails_before_release(self):
         (self.launch_dist / '_internal/base_library.zip').unlink()
         with self.assertRaisesRegex(ValueError, 'base_library.zip'):
@@ -85,6 +120,7 @@ class PyInstallerRuntimeDistributionTests(unittest.TestCase):
         build(args)
         manifest = validate_zip(path)
         self.assertIn('_internal/base_library.zip', manifest['files'])
+        self.assertIn('Studio/data/json/config/launch_enums_v0_1.json', manifest['files'])
         with zipfile.ZipFile(path) as z:
             self.assertIn('system/_internal/base_library.zip', z.namelist())
         portable = Path(self.temp.name) / 'integrated_portable.zip'
@@ -93,6 +129,7 @@ class PyInstallerRuntimeDistributionTests(unittest.TestCase):
         write_portable(path, portable, updater_exe, '0.9.1', approved=False)
         with zipfile.ZipFile(portable) as z:
             self.assertIn('FRBLaunch/_internal/base_library.zip', z.namelist())
+            self.assertIn('FRBLaunch/Studio/data/json/config/launch_enums_v0_1.json', z.namelist())
             self.assertNotIn('FRBLaunch/_internal/old_backup.zip', z.namelist())
             self.assertIn('FRBLaunch/FRBLaunch.exe', z.namelist())
 

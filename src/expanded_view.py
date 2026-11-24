@@ -1236,7 +1236,9 @@ class ExpandedPanel(QFrame):
         self.tree.verticalScrollBar().setSingleStep(35)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.tree.setMouseTracking(True)
-        self.tree.setIconSize(QSize(19, 19))
+        # Explorer Details view uses 16px Shell icons. 19px cropped the
+        # outlines of narrow .txt/.md glyphs in Files Exp and Files List.
+        self.tree.setIconSize(QSize(16, 16))
         self.layout_box.addWidget(self.tree, 1)
 
     def style_bookmark_heading(self, item):

@@ -12,7 +12,7 @@
     <img alt="Preview" src="https://img.shields.io/badge/v0.9.11-Preview-E2A100?style=flat-square" />
   </p>
   <p>
-    <a href="https://github.com/tamasub/FRB-Launch/releases/tag/v0.9.11"><strong>ダウンロード（GitHub Releases）</strong></a> ・
+    <a href="https://github.com/tamasub/FRB-Launch/releases/"><strong>ダウンロード（GitHub Releases）</strong></a> ・
     <a href="https://qiita.com/tamasub/items/659b0b74c5cacbba701f"><strong>独自UI機能14選（Qiita）</strong></a> ・
     <a href="https://github.com/tamasub/FRB-Launch/issues"><strong>不具合・ご意見（Issues）</strong></a>
   </p>
@@ -112,7 +112,7 @@ FRB Launchは、**普通に使える「正統派」**と、少し変わった操
 この方式はFRB Launch内のFiles画面向けです。**Windows標準のエクスプローラーや他のアプリを丸ボタンから一律に操作できる、という意味ではありません。**
 
 **[▶開発の舞台裏：14選の種明かし（Qiita）](https://qiita.com/tamasub/items/488553d484f10e005dcc)**  
-**[▶v0.9.11 の配布ページ（GitHub）](https://github.com/tamasub/FRB-Launch/releases/tag/v0.9.11)**  
+**[▶FRB Launch ダウンロードページ（GitHub）](https://github.com/tamasub/FRB-Launch/releases/)**  
 **[▶【重要資料】主な機能一覧 14選＋おまけ3つ](https://tamasub.github.io/FRB-Launch/docs/FRB_Launch.htm)**
 
 
@@ -126,15 +126,15 @@ FRB Launchは、**普通に使える「正統派」**と、少し変わった操
 
 - **Windows 11（64-bit / x64）** を対象に公開しています。
 - 利用料金は**無料**です。
-- **v0.9.11はPreview（プレリリース）**です。一般環境での動作や品質が十分に検証済みという意味ではありません。
+- 一般環境での動作や品質が十分に検証済みという意味ではありません。
 - ポータブル配布版には実行に必要な環境が含まれ、通常利用でPythonやNode.jsの個別インストールは不要です。
 - Windows 10以前やWindows on ARMは動作保証対象外です。
 
 ### ダウンロードして起動する
 
-**[FRB Launch v0.9.11 — GitHub Releases](https://github.com/tamasub/FRB-Launch/releases/tag/v0.9.11)**
+**[FRB Launch vX.X.XX — GitHub Releases](https://github.com/tamasub/FRB-Launch/releases/)**
 
-1. `FRBLaunch_0.9.11_portable.zip` をダウンロードします。
+1. `FRBLaunch_X.X.XX_portable.zip` をダウンロードします。
 2. ZIPを任意のフォルダーへ**すべて展開**します。ZIP内から直接EXEを起動しないでください。
 3. 展開先にある `FRBLaunch.exe` を起動します。
 4. **デスクトップの空き領域をダブルクリック**するとLaunchを呼び出せます。`Ctrl + Shift + ;` でも呼び出せます。
@@ -156,28 +156,28 @@ FRB Launchは、**普通に使える「正統派」**と、少し変わった操
 
 画面や設定によって使える操作は異なります。通常のマウス・キーボード操作を基本とし、独自操作は必要に応じて使えます。
 
-### キーボード操作まとめ（2026年11月16日・開発版）
+### キーボード操作まとめ（2026年11月24日・開発版）
 
-> ここに記載した新しい操作は**2026年11月16日時点の開発版**を基準としています。公開中のv0.9.11への反映を保証するものではありません。操作対象が「Files画面」などに限定される項目もあります。
+> ここに記載した新しい操作は**2026年11月24日時点の開発版**を基準としています。最新版への反映を保証するものではありません。操作対象が「Files画面」などに限定される項目もあります。
 
-| キー | 対象 | 動作 |
-| :-- | :-- | :-- |
-| `Ctrl + Shift + ;` | Launch全体 | Launchを呼び出す（初期設定。変更可能） |
-| `Home` | Files画面 | 画面上のHOMEボタンと同じ処理。Exp先頭行にフォーカスし、`↓`で選択開始 |
-| `Ctrl + F` | Files画面 | メイン検索にフォーカス。`↓`で検索履歴を表示 |
-| `Ctrl + G` | Files画面 | パンくずの保存フォルダー履歴へフォーカス。`↓`で履歴を表示 |
-| `Ctrl + H` | Files画面 | Files List側のフォルダー検索にフォーカス。`↓`で検索履歴を表示 |
-| `Ctrl + I` | Files画面 | 歯車ボタンと同じ設定コンテキストメニューを表示 |
-| `Tab` / `Shift + Tab` | Files画面 | 下記6地点を正順／逆順に巡回。Filesタブ自体は巡回しない |
-| `↓` | Exp／List | フォーカス後にフォルダー／ファイル行の選択を開始 |
-| `↓` | 各検索・パンくず | 履歴を表示。その後の`↑↓`で履歴項目を移動、`Enter`で適用 |
-| `→` | Files List | 選択行の右クリックと同じコンテキストメニューを開く（即実行はしない） |
-| `↑↓ / → / ← / Enter / Esc` | コンテキストメニュー（設定メニューを含む） | 項目移動／子メニューへ／親へ／実行／閉じる |
-| `PageDown` 4連打 / `PageUp` 4連打 | Files List | 同方向の4連打で**キーボード手裏剣スクロール**（慣性滑走）を開始 |
-| `↑` / `↓` | 滑走中のFiles List | 滑走方向と同じ矢印で加速、逆方向で減速（連打が累積） |
-| `Space` / `Esc` | 滑走中のFiles List | 滑走を停止して着地。通常時のSpace操作はそのまま |
-| `PageUp`（単独） | Files List先頭 | 従来どおり親フォルダーへ（連打の滑走判定中は誤移動を抑制） |
-| `Enter` | Browserタブにフォーカス | Browserへ切り替える |
+| キー                            | 対象                    | 動作                                      |
+| :---------------------------- | :-------------------- | :-------------------------------------- |
+| `Ctrl + Shift + ;`            | Launch全体              | Launchを呼び出す（初期設定。変更可能）                  |
+| `Home`                        | Files画面               | 画面上のHOMEボタンと同じ処理。Exp先頭行にフォーカスし、`↓`で選択開始 |
+| `Ctrl + F`                    | Files画面               | メイン検索にフォーカス。`↓`で検索履歴を表示                 |
+| `Ctrl + G`                    | Files画面               | パンくずの保存フォルダー履歴へフォーカス。`↓`で履歴を表示          |
+| `Ctrl + H`                    | Files画面               | Files List側のフォルダー検索にフォーカス。`↓`で検索履歴を表示   |
+| `Ctrl + I`                    | Files画面               | 歯車ボタンと同じ設定コンテキストメニューを表示                 |
+| `Tab` / `Shift + Tab`         | Files画面               | 下記6地点を正順／逆順に巡回。Filesタブ自体は巡回しない          |
+| `↓`                           | Exp／List              | フォーカス後にフォルダー／ファイル行の選択を開始                |
+| `↓`                           | 各検索・パンくず              | 履歴を表示。その後の`↑↓`で履歴項目を移動、`Enter`で適用       |
+| `→`                           | Files List            | 選択行の右クリックと同じコンテキストメニューを開く（即実行はしない）      |
+| `↑↓ / → / ← / Enter / Esc`    | コンテキストメニュー（設定メニューを含む） | 項目移動／子メニューへ／親へ／実行／閉じる                   |
+| `PageDown` 4連打 / `PageUp` 4連打 | Files List            | 同方向の4連打で**キーボード手裏剣スクロール**（慣性滑走）を開始      |
+| `↑` / `↓`                     | 滑走中のFiles List        | 滑走方向と同じ矢印で加速、逆方向で減速（連打が累積）              |
+| `Space` / `Esc`               | 滑走中のFiles List        | 滑走を停止して着地。通常時のSpace操作はそのまま              |
+| `PageUp`（単独）                  | Files List先頭          | 従来どおり親フォルダーへ（連打の滑走判定中は誤移動を抑制）           |
+| `Enter`                       | Browserタブにフォーカス       | Browserへ切り替える                           |
 
 **Tabの巡回順：** `Exp → List → フォルダー検索 → パンくず履歴 → メイン検索 → Browserタブ → Exp…`。各地点へTabで移動した直後に`↓`を押すと、Exp/Listでは行選択、検索系では履歴表示を始められます。Browserタブでは`Enter`で開きます。
 

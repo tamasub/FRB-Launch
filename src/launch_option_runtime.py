@@ -7,9 +7,10 @@ produce a temporary, full effective settings JSON for the existing Launch reader
 from __future__ import annotations
 
 import os
-import shutil
+import logging
 import subprocess
 from pathlib import Path
+from runtime_paths import resolve_studio_cli, resolve_node
 
 
 EXPOSED_DATA_FILES = {
@@ -19,30 +20,11 @@ EXPOSED_DATA_FILES = {
 
 
 def find_studio_root(launch_home, configured=None):
-    candidates = [Path(configured)] if configured else []
-    base = Path(launch_home)
-    candidates.extend([base.parent / 'FRB_Studio', base / 'Studio', base])
-    for directory in candidates:
-        if (directory / 'tools' / 'option_settings' / 'cli.mjs').is_file():
-            return directory
-    return None
+    return resolve_studio_cli(launch_home, 'option_settings', configured)
 
 
 def find_node(launch_home, studio_root=None):
-    base = Path(launch_home)
-    candidates = [
-        base / 'runtime' / 'node' / 'node.exe',
-        base / 'runtime' / 'node.exe',
-    ]
-    if studio_root:
-        candidates.extend([
-            Path(studio_root) / 'runtime' / 'node' / 'node.exe',
-            Path(studio_root) / 'tools' / 'change_core' / 'runtime' / 'node.exe',
-        ])
-    for exe in candidates:
-        if exe.is_file():
-            return str(exe)
-    return shutil.which('node') or shutil.which('node.exe')
+    return resolve_node(launch_home, studio_root)
 
 
 def effective_options_path(launch_home, state, id, *, configured_studio=None):
@@ -70,7 +52,10 @@ def effective_options_path(launch_home, state, id, *, configured_studio=None):
            '--system-root',str(launch_home/'config'),
            '--user-root',str(user_root)]
     proc = subprocess.run(cmd,capture_output=True,text=True,encoding='utf-8',timeout=15)
+    logger = logging.getLogger('frb.launch.diagnostics')
+    logger.info('Option Composer exit=%s id=%s', proc.returncode, id)
     if proc.returncode:
+        logger.warning('Option Composer stderr: %s', proc.stderr.strip()[:2000])
         raise RuntimeError(f'Option Composer失敗: {proc.stderr.strip()}')
     runtime_dir = state / 'EffectiveOptions'
     runtime_dir.mkdir(parents=True,exist_ok=True)

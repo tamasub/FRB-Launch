@@ -73,6 +73,10 @@
         "title": "Pause付きで実行"
       },
       {
+        "action_id": "commander_run",
+        "title": "FRB Commanderで実行"
+      },
+      {
         "action_id": "git_commit_from_zip",
         "title": "ファイル名を使ってGitコミット"
       },

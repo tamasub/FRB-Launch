@@ -22,6 +22,25 @@ BLOCKED_SUFFIXES={'.pyc','.pyo','.zip','.log','.bak'}
 # encodings) in this archive. It is an executable runtime dependency, NOT a
 # user-created .zip to exclude from the System release.
 PYINSTALLER_BASE_LIBRARY = '_internal/base_library.zip'
+LAUNCH_ENUM_SOURCE = 'data/json/config/launch_enums_v0_1.json'
+
+def verify_launch_vocabularies(files):
+    # Only explicitly approved system vocabularies may be distributed.
+    for name, path in files.items():
+        if not name.startswith('defs/launch/') or not name.endswith('.json'):
+            continue
+        doc = json.loads(path.read_text(encoding='utf-8-sig'))
+        if not isinstance(doc, dict):
+            continue
+        for source in doc.get('valueVocabularySources', []):
+            target = 'Studio/data/json/' + source
+            if target not in files:
+                raise ValueError('Launch ViewDef vocabulary missing from release: ' + target)
+    target = 'Studio/' + LAUNCH_ENUM_SOURCE
+    if target not in files:
+        raise ValueError('Launch Enum JSON missing from release: ' + target)
+    json.loads(files[target].read_text(encoding='utf-8-sig'))
+
 
 def verify_pyinstaller_runtime(launch_dist: Path):
     runtime = launch_dist / PYINSTALLER_BASE_LIBRARY
@@ -81,7 +100,8 @@ def collect_files(launch_dist: Path, studio_runtime: Path, launch_source: Path, 
                 # system-managed payload, even when given a full source tree.
                 approved = (rel.startswith(('NativeShell/_publish/', 'wwwroot/',
                                             'defs/', 'tools/', 'runtime/'))
-                            or rel.startswith('data/json/00_rules/'))
+                            or rel.startswith('data/json/00_rules/')
+                            or rel == LAUNCH_ENUM_SOURCE)
                 if not approved:
                     continue
             if selectable(f,key):result[key]=f
@@ -127,8 +147,11 @@ def collect_files(launch_dist: Path, studio_runtime: Path, launch_source: Path, 
         raise ValueError('Studio/NativeShell/_publish/FRBStudio.NativeShell.exeが見つかりません')
     if 'Studio/tools/option_settings/cli.mjs' not in result:
         raise ValueError('Studioの合成CLI (tools/option_settings/cli.mjs) が不足しています')
+    if 'Studio/tools/change_core/cli.mjs' not in result:
+        raise ValueError('Studio Change Core (tools/change_core/cli.mjs) が不足しています')
     if 'runtime/node/node.exe' not in result and 'Studio/runtime/node/node.exe' not in result:
         raise ValueError('配布用Node.js実行環境(runtime/node/node.exe)が不足しています')
+    verify_launch_vocabularies(result)
     return dict(sorted(result.items()))
 
 def build(args):

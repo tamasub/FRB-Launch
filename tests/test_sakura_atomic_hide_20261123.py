@@ -3,6 +3,7 @@
 Fake API checks one native operation, fallback behavior and ownership safety.
 DWM residual pixels must be checked on the user's real Windows desktop.
 """
+import pytest
 from guest_window_overlay import SakuraGuestOverlay
 from test_sakura_native_popout_restore_20261119 import RecorderWin32, Fn
 
@@ -10,6 +11,12 @@ SW_HIDE = 0
 SWP_HIDEWINDOW = 0x0080
 SWP_NOCOPYBITS = 0x0100
 SWP_SHOWWINDOW = 0x0040
+
+
+@pytest.fixture(autouse=True)
+def test_legacy_atomic_hide_only(monkeypatch):
+    """These tests specifically exercise the explicit hide rollback path."""
+    monkeypatch.setenv('FRB_SAKURA_PARK_MODE', 'hide')
 
 
 def test_park_hides_in_one_native_position_transaction(monkeypatch):
