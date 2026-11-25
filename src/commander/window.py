@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
     QPlainTextEdit, QVBoxLayout, QWidget)
 
-from commander.viewdef import (build_argv, read_viewdef,
+from commander.viewdef import (build_command, read_viewdef,
     resolve_initial_directory, visible_steps)
 
 
@@ -37,7 +37,7 @@ def launch_commander(launcher, script, *, workspace_root=None):
 
 
 class CommanderWindow(QDialog):
-    """Keyboard: ←→ crumb move, ↓ edit, ↑↓ browse, →/Enter choose, Ctrl+Enter run."""
+    """Keyboard: ←→ steps/actions, ↓ edit, ↑↓ browse, Enter activate, Ctrl+Enter run."""
 
     def __init__(self, launcher, script, definition, workspace_root):
         super().__init__(launcher)
@@ -51,9 +51,11 @@ class CommanderWindow(QDialog):
         self.process = None
         self._file_picker_pending = False
         self._picker_session = 0
+        self._confirming = False
         self.setWindowTitle('FRB Commander — ' + definition['title'])
-        # Launch itself may be always-on-top: child needs its own foreground.
-        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
+        # Owned by Launch, but do not independently force global topmost.
+        # The common dialog owns confirmation z-order relative to this window.
+        self.setWindowFlags(Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setMinimumWidth(620)
         self.resize(740, 180)
@@ -92,15 +94,14 @@ class CommanderWindow(QDialog):
         self.breadcrumb_layout.setSpacing(6)
         root.addWidget(self.breadcrumb_frame)
 
-        self.hint = QLabel('← → 項目移動  /  ↓・クリック 候補表示  /  Ctrl+Enter 実行', self)
+        self.hint = QLabel('← → 項目・ボタン移動  /  ↓・クリック 候補表示  /  Enter 決定  /  Ctrl+Enter 実行', self)
         self.hint.setObjectName('commanderHint')
         root.addWidget(self.hint)
 
         # Match Keyboard Ex: an activatable native Tool owns the real edit
         # (including Windows IME) and the candidate list. The main layout
         # contains neither, so expanding/filtering never reflows Commander.
-        flags = (Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
-                 Qt.WindowType.WindowStaysOnTopHint)
+        flags = Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
         self.candidate_popup = QFrame(self, flags)
         self.candidate_popup.setObjectName('commanderCandidatesWindow')
         candidate_layout = QVBoxLayout(self.candidate_popup)
@@ -131,9 +132,22 @@ class CommanderWindow(QDialog):
         self.status = QLabel('選択を始めてください', self)
         self.status.setObjectName('commanderHint')
         bar.addWidget(self.status, stretch=1)
+        self.copy_button = QPushButton('コマンドコピー', self)
+        self.copy_button.setAutoDefault(False)
+        self.copy_button.setToolTip('PowerShellで再実行できるコマンドをコピーします（実行しません）')
+        self.copy_button.clicked.connect(self.copy_command)
+        bar.addWidget(self.copy_button)
         self.run_button = QPushButton('実行  Ctrl+Enter', self)
+        self.run_button.setAutoDefault(False)
         self.run_button.clicked.connect(self.run_command)
         bar.addWidget(self.run_button)
+        for button in (self.copy_button, self.run_button):
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            button.setStyleSheet('QPushButton:focus { background: #d5e7ff; '
+                                 'color: #192a3a; border: 2px solid #4b85cb; '
+                                 'border-radius: 5px; padding: 6px 10px; }')
+        QWidget.setTabOrder(self.breadcrumb_frame, self.copy_button)
+        QWidget.setTabOrder(self.copy_button, self.run_button)
         root.addLayout(bar)
 
         self.output = QPlainTextEdit(self)
@@ -150,6 +164,8 @@ class CommanderWindow(QDialog):
         # Install only once all event-filter dependencies exist. Qt delivers
         # synchronous ChildAdded/Move/Resize events during widget construction.
         self.breadcrumb_frame.installEventFilter(self)
+        self.copy_button.installEventFilter(self)
+        self.run_button.installEventFilter(self)
         self.search.installEventFilter(self)
         self.listbox.installEventFilter(self)
         self._event_filter_ready = True
@@ -161,7 +177,7 @@ class CommanderWindow(QDialog):
         if not self.isVisible():
             return
         self.breadcrumb_frame.setFocus(Qt.FocusReason.OtherFocusReason)
-        self.breadcrumb_frame.update()
+        self._paint_breadcrumb_focus(True)
 
     def refresh_breadcrumbs(self):
         steps = self.active_steps()
@@ -192,20 +208,52 @@ class CommanderWindow(QDialog):
             label.setToolTip(str(value) if value else 'クリック / ↓ で選択')
             label.clicked.connect(lambda checked=False, i=index: self._click_breadcrumb(i))
             self.crumb_buttons.append(label)
-            active = index == self.focus_index
-            label.setStyleSheet('background: #d5e7ff; border: 2px solid #4b85cb; '
-                                'border-radius: 5px; padding: 7px;' if active else
-                                'background: #edf1f5; border: 2px solid transparent; '
-                                'border-radius: 5px; padding: 7px;')
             self.breadcrumb_layout.addWidget(label)
             if index < len(steps)-1:
                 sep = QLabel('›', self.breadcrumb_frame)
                 sep.setStyleSheet('color: #6b7b8b;')
                 self.breadcrumb_layout.addWidget(sep)
         self.breadcrumb_layout.addStretch(1)
-        self.run_button.setEnabled(self.ready() and not self._running())
+        self._update_command_buttons()
+        self._paint_breadcrumb_focus(not (self.copy_button.hasFocus() or self.run_button.hasFocus()))
         if self.ready():
-            self.status.setText('選択完了：Ctrl+Enter で実行確認')
+            self.status.setText('選択完了：コピーまたは Ctrl+Enter で実行確認')
+
+    def _paint_breadcrumb_focus(self, show):
+        # The anchor index stays valid for the candidate popup, even while an
+        # action has keyboard focus. Only one target should look selected.
+        for index, label in enumerate(self.crumb_buttons):
+            active = show and index == self.focus_index
+            label.setStyleSheet('background: #d5e7ff; border: 2px solid #4b85cb; '
+                                'border-radius: 5px; padding: 7px;' if active else
+                                'background: #edf1f5; border: 2px solid transparent; '
+                                'border-radius: 5px; padding: 7px;')
+
+    def _move_horizontal_focus(self, origin, direction):
+        """One bounded navigation lane; disabled actions are not tab stops."""
+        if (self.candidate_popup.isVisible() or self.picking_step is not None
+                or self._file_picker_pending or self._confirming):
+            return
+        targets = [(self.breadcrumb_frame, i) for i in range(len(self.active_steps()))]
+        targets.extend((button, None) for button in (self.copy_button, self.run_button)
+                       if button.isEnabled())
+        current = (origin, self.focus_index if origin is self.breadcrumb_frame else None)
+        if current not in targets:
+            return
+        position = targets.index(current)
+        widget, index = targets[max(0, min(len(targets) - 1, position + direction))]
+        if widget is self.breadcrumb_frame:
+            self.focus_index = index
+            self.focus_breadcrumb()
+        else:
+            widget.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._paint_breadcrumb_focus(False)
+
+    def _update_command_buttons(self):
+        enabled = (self.ready() and not self._running() and not self._confirming
+                   and self.picking_step is None and not self._file_picker_pending)
+        self.copy_button.setEnabled(enabled)
+        self.run_button.setEnabled(enabled)
 
     def ready(self):
         return all(isinstance(self.values.get(s['id']), str)
@@ -226,15 +274,28 @@ class CommanderWindow(QDialog):
         if (obj is self.breadcrumb_frame and event.type() in
                 (QEvent.Type.Move, QEvent.Type.Resize) and self.candidate_popup.isVisible()):
             QTimer.singleShot(0, self._place_candidate_popup)
+        main_targets = (self.breadcrumb_frame, self.copy_button, self.run_button)
+        if event.type() == QEvent.Type.FocusIn and obj in main_targets:
+            self._paint_breadcrumb_focus(obj is self.breadcrumb_frame)
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(obj, event)
         key = event.key()
-        if obj is self.breadcrumb_frame:
+        if obj in main_targets:
             if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
-                self.focus_index = max(0, min(len(self.active_steps())-1,
-                                         self.focus_index + (-1 if key == Qt.Key.Key_Left else 1)))
-                self.refresh_breadcrumbs()
+                self._move_horizontal_focus(obj, -1 if key == Qt.Key.Key_Left else 1)
                 return True
+            if obj in (self.copy_button, self.run_button):
+                if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                        self.run_command()
+                    elif obj.isEnabled():
+                        obj.click()
+                    return True
+                # Space retains QPushButton's native activation; Esc closes.
+                if key == Qt.Key.Key_Escape:
+                    self.close()
+                    return True
+        if obj is self.breadcrumb_frame:
             if key in (Qt.Key.Key_Down, Qt.Key.Key_Slash, Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self.open_selection()
                 return True
@@ -270,6 +331,7 @@ class CommanderWindow(QDialog):
             return
         self.focus_index = index
         self.refresh_breadcrumbs()
+        self.focus_breadcrumb()
         self.open_selection()
 
     def _active_crumb(self):
@@ -293,6 +355,7 @@ class CommanderWindow(QDialog):
             self._file_picker_pending = False
             self._picker_session += 1
         self.picking_step = step
+        self._update_command_buttons()
         is_choice = step['input'] == 'single_choice'
         self.popup_hint.setText('↑ ↓ 候補移動 / Enter・→ 確定 / Esc・← 閉じる' if is_choice
                                 else 'Enter 確定 / Esc 閉じる')
@@ -393,6 +456,7 @@ class CommanderWindow(QDialog):
             self._popup_mouse_guard = False
         self.candidate_popup.hide()
         self.search.clear()
+        self._update_command_buttons()
         if restore_focus and self.isVisible():
             self.activateWindow()
             self.focus_breadcrumb()
@@ -443,6 +507,7 @@ class CommanderWindow(QDialog):
         self._picker_session += 1
         session_id = self._picker_session
         self._file_picker_pending = True
+        self._update_command_buttons()
         self.status.setText(f'Keyboard Ex: {step["label"]}を選択 ({directory})')
         crumb = self._active_crumb()
         anchor = crumb.mapToGlobal(QPoint(0, crumb.height() + 4))
@@ -455,6 +520,7 @@ class CommanderWindow(QDialog):
                     self._file_chosen(item_id, chosen))
             if not opened:
                 self._file_picker_pending = False
+                self._update_command_buttons()
                 self.status.setText('このフォルダーに選択できるファイル・フォルダーがありません')
                 return
             menu = getattr(self.launcher, '_slash_exp_navigation_menu', None)
@@ -462,6 +528,7 @@ class CommanderWindow(QDialog):
                 menu.aboutToHide.connect(lambda token=session_id: self._file_picker_closed(token))
         except (OSError, ValueError, RuntimeError) as exc:
             self._file_picker_pending = False
+            self._update_command_buttons()
             self.status.setText('Keyboard Ex起動エラー: ' + str(exc))
 
     def _file_chosen(self, step_id, filename):
@@ -479,31 +546,52 @@ class CommanderWindow(QDialog):
         if (session_id == self._picker_session and
                 self.isVisible() and self._file_picker_pending):
             self._file_picker_pending = False
+            self._update_command_buttons()
             self.status.setText('ファイル選択をキャンセルしました。↓で再選択')
             self.activateWindow()
             self.focus_breadcrumb()
 
-    def run_command(self):
-        if self._running():
+    def _selected_command(self):
+        if self._running() or self._confirming:
+            raise ValueError('実行中または確認応答中です')
+        if self.picking_step is not None or self._file_picker_pending:
+            raise ValueError('候補または入力を確定してください')
+        return build_command(self.definition, self.values, self.script)
+
+    def copy_command(self):
+        try:
+            command = self._selected_command()
+            QApplication.clipboard().setText(command.powershell_text())
+        except (ValueError, StopIteration, KeyError) as exc:
+            self.status.setText('コピーできません: ' + str(exc))
             return
-        if self.picking_step is not None:
-            self.status.setText('候補または入力を確定してから実行してください')
+        self.status.setText('コマンドをクリップボードにコピーしました')
+        # Keep focus on Copy so one Right key moves directly to Run.
+
+    def run_command(self):
+        if self._running() or self._confirming:
             return
         try:
-            argv = build_argv(self.definition, self.values, self.script)
-        except (ValueError, StopIteration) as exc:
+            command = self._selected_command()
+        except (ValueError, StopIteration, KeyError) as exc:
             self.status.setText('実行できません: ' + str(exc))
             return
         labels = []
         for step in self.active_steps():
-            value = self.values[step['id']]
-            if step['input'] == 'single_choice':
+            value = self.values.get(step['id'], '')
+            if step['input'] == 'single_choice' and value:
                 value = next(c['label'] for c in step['choices'] if c['value'] == value)
             labels.append(f'{step["label"]}: {value}')
         detail = ('\n'.join(labels) + '\n\n出力先の既存データは上書きされる可能性があります。'
                   '\n実行しますか？')
-        answer = self.launcher.ask_remote_confirmation(
-            'FRB Commander — 実行確認', detail)
+        self._confirming = True
+        self._update_command_buttons()
+        try:
+            answer = self.launcher.ask_remote_confirmation(
+                'FRB Commander — 実行確認', detail, owner=self)
+        finally:
+            self._confirming = False
+            self._update_command_buttons()
         if answer != QMessageBox.StandardButton.Yes:
             self.focus_breadcrumb()
             return
@@ -511,15 +599,15 @@ class CommanderWindow(QDialog):
         self.output.appendPlainText('実行開始: ' + self.script.name)
         self.status.setText('処理実行中...')
         self.process = QProcess(self)
-        self.process.setProgram('powershell.exe')
-        self.process.setArguments(argv)
-        self.process.setWorkingDirectory(str(self.script.parent))
+        self.process.setProgram(command.program)
+        self.process.setArguments(list(command.argv))
+        self.process.setWorkingDirectory(command.working_directory)
         self.process.readyReadStandardOutput.connect(lambda: self._read_output(False))
         self.process.readyReadStandardError.connect(lambda: self._read_output(True))
         self.process.errorOccurred.connect(lambda error: self._process_error())
         self.process.finished.connect(self._process_finished)
         self.process.start()
-        self.run_button.setEnabled(False)
+        self._update_command_buttons()
 
     def _read_output(self, error):
         if self.process is None:
@@ -534,6 +622,7 @@ class CommanderWindow(QDialog):
         if self.process:
             self.status.setText('実行エラー: ' + self.process.errorString())
             self.output.appendPlainText(self.process.errorString())
+            self._update_command_buttons()
 
     def _process_finished(self, exit_code, exit_status):
         self._read_output(False)
@@ -542,7 +631,7 @@ class CommanderWindow(QDialog):
         self.status.setText('実行完了 (終了コード 0)' if ok else
                             f'処理終了 (終了コード {exit_code}) — ログを確認してください')
         self.output.appendPlainText(self.status.text())
-        self.run_button.setEnabled(self.ready())
+        self._update_command_buttons()
         self.focus_breadcrumb()
 
     def moveEvent(self, event):
@@ -561,6 +650,9 @@ class CommanderWindow(QDialog):
         super().hideEvent(event)
 
     def closeEvent(self, event):
+        if self._confirming:
+            event.ignore()
+            return
         menu = getattr(self.launcher, '_slash_exp_navigation_menu', None)
         if (menu is not None and
                 getattr(menu, '_file_selection_callback', None) is not None):
@@ -569,9 +661,14 @@ class CommanderWindow(QDialog):
             except RuntimeError:
                 pass
         if self._running():
-            answer = self.launcher.ask_remote_confirmation(
-                '処理実行中',
-                '実行中のPowerShellを終了してCommanderを閉じますか？')
+            self._confirming = True
+            try:
+                answer = self.launcher.ask_remote_confirmation(
+                    '処理実行中',
+                    '実行中のPowerShellを終了してCommanderを閉じますか？', owner=self)
+            finally:
+                self._confirming = False
+                self._update_command_buttons()
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return

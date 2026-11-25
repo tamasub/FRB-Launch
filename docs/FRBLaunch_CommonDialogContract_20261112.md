@@ -12,6 +12,8 @@
 6. 起動直後のクリックを誤認識しない保護、押下・離しの一致／ドラッグ／右クリック除外、ボタン直接操作による二重実行防止を共通Guardで保証する。
 7. `QFileDialog` はOSのファイル選択ダイアログなので、ネイティブ操作を妨げない例外。アプリ起動不能時の緊急 `QMessageBox.critical` は、まだLauncherが存在しないため例外。
 
+8. 共通ダイアログは実際の呼び出し元ウィンドウを所有者として表示する。別ウィンドウから呼ぶ場合は `ask_remote_confirmation(..., owner=self)`、`ask_launch_text` / `ask_launch_choice` / `show_launch_notice` の `owner` を指定する。自作フォームは `QDialog(呼び出し元)` として既存の共通Runnerを使う。所有者の前面帯を継承してから表示し、独立した常時最前面化で競争しない。共通GuardとNonModalは維持する。応答終了時にダイアログがアクティブなら所有者へフォーカスを戻す（他アプリのフォーカスを奪わない）。
+
 ## 新規ダイアログの実装方法
 
 `QDialog(self)` でフォームを構成し、`QDialogButtonBox` を配置して通常の `accepted` / `rejected` を接続する。開くときは `self.run_launch_button_dialog(dialog)` を1回呼ぶ。ボタン名・個数は共通Adapterが列挙するので、Remoteの有無を判断するコードは不要。

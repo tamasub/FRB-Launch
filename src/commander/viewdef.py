@@ -1,6 +1,8 @@
 """Pure ViewDef validation and command argument generation (no Qt needed)."""
 import json
 import re
+from dataclasses import dataclass
+from subprocess import list2cmdline
 from pathlib import Path, PureWindowsPath
 
 SCHEMA_VERSION = "frb_commander_viewdef_v0.1"
@@ -137,6 +139,33 @@ def build_argv(definition, values, script):
         match = _PLACEHOLDER.fullmatch(token)
         extra.append(values[match.group(1)] if match else token)
     return ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script), *extra]
+
+
+@dataclass(frozen=True)
+class CommanderCommand:
+    """One command specification for QProcess and PowerShell clipboard text."""
+    program: str
+    argv: tuple[str, ...]
+    working_directory: str
+
+    def powershell_text(self):
+        # Start-Process receives one already Windows-quoted argument string.
+        # Unlike a native & invocation in Windows PowerShell 5.1, it does not
+        # strip embedded double quotes or drop empty argv tokens. A single
+        # quoted PowerShell literal protects $, &, spaces, and apostrophes.
+        def literal(value):
+            return "'" + str(value).replace("'", "''").replace("‘", "‘‘").replace("’", "’’") + "'"
+        return (f"Start-Process -FilePath {literal(self.program)} "
+                f"-ArgumentList {literal(list2cmdline(self.argv))} "
+                f"-WorkingDirectory {literal(self.working_directory)} "
+                "-NoNewWindow -Wait")
+
+
+def build_command(definition, values, script):
+    script = Path(script).resolve()
+    return CommanderCommand('powershell.exe',
+                            tuple(build_argv(definition, values, script)),
+                            str(script.parent))
 
 
 def resolve_initial_directory(step, values, *, script, workspace_root=None):

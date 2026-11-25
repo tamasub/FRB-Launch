@@ -9263,8 +9263,8 @@ class Launcher(QWidget):
             self._filesystem_dialog_depth = max(
                 0, getattr(self, '_filesystem_dialog_depth', 0) - 1)
 
-    def ask_launch_text(self, title, label, *, text=''):
-        dialog = QDialog(self)
+    def ask_launch_text(self, title, label, *, text='', owner=None):
+        dialog = QDialog(self if owner is None else owner.window())
         dialog.setWindowTitle(str(title))
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel(str(label), dialog))
@@ -9283,8 +9283,8 @@ class Launcher(QWidget):
         accepted = self.run_launch_button_dialog(dialog, editor=editor)
         return state['text'], accepted
 
-    def ask_launch_choice(self, title, label, choices, current=0):
-        dialog = QDialog(self)
+    def ask_launch_choice(self, title, label, choices, current=0, *, owner=None):
+        dialog = QDialog(self if owner is None else owner.window())
         dialog.setWindowTitle(str(title))
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel(str(label), dialog))
@@ -9304,9 +9304,9 @@ class Launcher(QWidget):
         accepted = self.run_launch_button_dialog(dialog, editor=chooser)
         return state['selection'], accepted
 
-    def show_launch_notice(self, icon_type, title, message):
+    def show_launch_notice(self, icon_type, title, message, *, owner=None):
         """Single-button QMessageBox also uses common Launch click/wheel gate."""
-        dialog = QMessageBox(self)
+        dialog = QMessageBox(self if owner is None else owner.window())
         dialog.setIcon(icon_type)
         dialog.setWindowTitle(str(title))
         dialog.setText(str(message))
@@ -9315,13 +9315,14 @@ class Launcher(QWidget):
 
     def ask_remote_confirmation(self, title, message, *, informative='',
                                 yes_text=None, no_text=None, rich_text=False,
-                                warning=False, information=False):
+                                warning=False, information=False, owner=None):
         """Safety-first Yes/No used by all Launch-owned simple confirmations.
 
         The question stays mouse/keyboard accessible, while Remote wheel and
         ● work even though Remote is a separate non-activating Tool window.
         """
-        if getattr(self, '_remote_confirmation', None) is not None:
+        if (getattr(self, '_remote_confirmation', None) is not None or
+                getattr(self, '_remote_text_dialog', None) is not None):
             return QMessageBox.StandardButton.No  # Never nest approvals.
         # Native and hybrid context menus must yield their wheel ownership
         # before a potentially destructive confirmation opens.
@@ -9331,7 +9332,7 @@ class Launcher(QWidget):
         confirmation = RemoteConfirmation(
             self, title, message, informative, yes_text=yes_text,
             no_text=no_text, rich_text=rich_text, warning=warning,
-            information=information)
+            information=information, owner=owner)
         self._remote_confirmation = confirmation
         self._filesystem_dialog_depth = getattr(self, '_filesystem_dialog_depth', 0) + 1
         try:

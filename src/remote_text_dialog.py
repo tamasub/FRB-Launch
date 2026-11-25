@@ -8,7 +8,7 @@ blocked, while text entry/ordinary mouse operation remains native.
 
 from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
-from remote_confirmation import ConfirmationInputGuard
+from remote_confirmation import ConfirmationInputGuard, prepare_owned_dialog, hide_owned_dialog
 from dialog_button_selection import DialogButtonSelection
 
 
@@ -195,6 +195,7 @@ class RemoteTextDialog:
         try:
             self.dialog.setWindowModality(Qt.WindowModality.NonModal)
             self.dialog.setModal(False)
+            prepare_owned_dialog(self.dialog)
             self.dialog.show()
             self.dialog.raise_()
             self.dialog.activateWindow()
@@ -213,5 +214,5 @@ class RemoteTextDialog:
                     label.setText(previous_text)
                 except RuntimeError:
                     pass
-            self.dialog.hide()
+            hide_owned_dialog(self.dialog)
             self.dialog.deleteLater()

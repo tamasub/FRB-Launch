@@ -1,0 +1,349 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FRB Commander ViewDef v0.1 — AI作成用スキーマ",
+  "description": "2026-11-25時点の実装に基づく安全な作成用部分集合。実行時の寛容なvalidatorとは異なり、未知項目や未対応の任意入力を禁止する。ID一意性、参照、PS1との一致は別途確認する。",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "frb_commander_viewdef_v0.1"
+    },
+    "view_type": {
+      "const": "frb_commander"
+    },
+    "title": {
+      "$ref": "#/$defs/nonBlankString"
+    },
+    "description": {
+      "type": "string"
+    },
+    "script": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^[^<>:\"/\\\\|?*\\x00-\\x1f]+\\.[pP][sS]1$",
+          "description": "同じフォルダーに置く実在のPS1のファイル名のみ。"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/sourceStep"
+        }
+      ],
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/choiceStep"
+          },
+          {
+            "$ref": "#/$defs/textStep"
+          },
+          {
+            "$ref": "#/$defs/fileStep"
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "view_type",
+    "title",
+    "script",
+    "steps"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "nonBlankString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "argToken": {
+      "type": "string",
+      "anyOf": [
+        {
+          "not": {
+            "pattern": "\\$\\{"
+          }
+        },
+        {
+          "pattern": "^\\$\\{[a-z][a-z0-9_]*\\}$"
+        }
+      ],
+      "description": "1要素=1 argv。固定文字列または値全体が ${step_id}。部分置換は禁止。"
+    },
+    "visibleWhen": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "description": "先行stepの選択値との完全一致。sourceによる分岐を推奨。"
+    },
+    "sourceChoice": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "label": {
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "hint": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/argToken"
+          }
+        }
+      },
+      "required": [
+        "value",
+        "label",
+        "args"
+      ],
+      "additionalProperties": false
+    },
+    "choice": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "label": {
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "hint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "sourceStep": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "const": "source"
+        },
+        "label": {
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "input": {
+          "const": "single_choice"
+        },
+        "required": {
+          "const": true,
+          "default": true,
+          "description": "現行GUIでは表示中の全項目が必須。省略時も必須。"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceChoice"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "input",
+        "choices"
+      ],
+      "additionalProperties": false
+    },
+    "choiceStep": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "not": {
+                "const": "source"
+              }
+            }
+          ]
+        },
+        "label": {
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "input": {
+          "const": "single_choice"
+        },
+        "required": {
+          "const": true,
+          "default": true,
+          "description": "現行GUIでは表示中の全項目が必須。省略時も必須。"
+        },
+        "visible_when": {
+          "$ref": "#/$defs/visibleWhen"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/choice"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "input",
+        "choices"
+      ],
+      "additionalProperties": false
+    },
+    "textStep": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "not": {
+                "const": "source"
+              }
+            }
+          ]
+        },
+        "label": {
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "input": {
+          "const": "text"
+        },
+        "required": {
+          "const": true,
+          "default": true,
+          "description": "現行GUIでは表示中の全項目が必須。省略時も必須。"
+        },
+        "visible_when": {
+          "$ref": "#/$defs/visibleWhen"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "input"
+      ],
+      "additionalProperties": false
+    },
+    "fileStep": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "not": {
+                "const": "source"
+              }
+            }
+          ]
+        },
+        "label": {
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "input": {
+          "const": "file_path"
+        },
+        "required": {
+          "const": true,
+          "default": true,
+          "description": "現行GUIでは表示中の全項目が必須。省略時も必須。"
+        },
+        "visible_when": {
+          "$ref": "#/$defs/visibleWhen"
+        },
+        "selector": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "keyboard_ex.file"
+            },
+            "initial_location": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "workspace_root",
+                        "script_dir"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "parent_of"
+                    },
+                    "selection": {
+                      "$ref": "#/$defs/identifier"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "selection"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "initial_location"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "input",
+        "selector"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

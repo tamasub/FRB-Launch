@@ -12,6 +12,29 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 from dialog_button_selection import DialogButtonSelection
 
 
+def prepare_owned_dialog(dialog):
+    """Match the owner's z-order band before showing the owned window.
+
+    Qt/Windows ownership keeps the dialog above its actual owner. If that
+    owner is explicitly topmost, match its band for this dialog's lifetime;
+    never promote an ordinary owner or change the Launcher/Remote flags.
+    """
+    owner = dialog.parentWidget()
+    if owner is not None:
+        flag = Qt.WindowType.WindowStaysOnTopHint
+        if owner.window().windowFlags() & flag:
+            dialog.setWindowFlag(flag, True)
+
+
+def hide_owned_dialog(dialog):
+    """Restore owner focus only when the dialog still owns app activation."""
+    owner = dialog.parentWidget()
+    was_active = QApplication.activeWindow() is dialog
+    dialog.hide()
+    if was_active and owner is not None and owner.isVisible():
+        owner.window().activateWindow()
+
+
 class ConfirmationInputGuard(QObject):
     """Give active confirmation exclusive input, including real mouse clicks.
 
@@ -303,9 +326,9 @@ class RemoteConfirmation:
 
     def __init__(self, launcher, title, message, informative='', *,
                  yes_text=None, no_text=None, rich_text=False,
-                 warning=False, information=False):
-        self.launcher = launcher
-        self.dialog = QMessageBox(launcher)
+                 warning=False, information=False, owner=None):
+        self.launcher = launcher  # Input routing is independent of dialog ownership.
+        self.dialog = QMessageBox(launcher if owner is None else owner.window())
         icon = (QMessageBox.Icon.Warning if warning else
                 QMessageBox.Icon.Information if information else
                 QMessageBox.Icon.Question)
@@ -407,6 +430,7 @@ class RemoteConfirmation:
         application = QApplication.instance()
         application.installEventFilter(guard)
         try:
+            prepare_owned_dialog(self.dialog)
             self.dialog.show()
             self.dialog.raise_()
             self.dialog.activateWindow()  # Give the question real keyboard focus.
@@ -429,5 +453,5 @@ class RemoteConfirmation:
                     label.setText(previous_area_text)
                 except RuntimeError:
                     pass  # Remote was destroyed while the question was open.
-            self.dialog.hide()
+            hide_owned_dialog(self.dialog)
             self.dialog.deleteLater()
