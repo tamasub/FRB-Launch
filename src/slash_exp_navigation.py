@@ -9,6 +9,7 @@ Launch action. No secondary store or filesystem mutation is introduced.
 import os
 import unicodedata
 import logging
+from time import perf_counter
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QKeyEvent, QPainter, QPainterPath, QPixmap, QStandardItem
@@ -526,7 +527,8 @@ class SlashExpMenu(QMenu):
         self._iconless_actions = set()
         self._context_hint_actions = set()  # The current-folder row has a Right action.
         self._action_items = {}
-        self._submenus = {}
+        self._submenus = {}  # Only menus explicitly opened by the user.
+        self._branch_actions = set()
         self._populated = False
         self._row_cache = None
         self._search_action = None
@@ -662,7 +664,7 @@ class SlashExpMenu(QMenu):
         leaf.setData(True, _LOADED_ROLE)
         return leaf
 
-    def _transient_physical_folders(self, parent, path):
+    def _transient_physical_folders(self, parent, path, *, children=None):
         """Read child folders without touching the Exp model or mount alias."""
         info = parent.data(_DATA_ROLE) or {}
         mount = info.get('slash_mount_origin')
@@ -671,15 +673,11 @@ class SlashExpMenu(QMenu):
         if (mount is None and isinstance(node, dict)
                 and node.get('kind') == 'linked_directory'):
             mount = {'node': node, 'entry_path': str(path)}
-        try:
-            with os.scandir(path) as entries:
-                children = sorted(((entry.name, entry.path) for entry in entries
-                                   if entry.is_dir(follow_symlinks=False)),
-                                  key=lambda pair: pair[0].casefold())
-        except (OSError, ValueError):
-            return
+        if children is None:
+            children, _ = self._scan_physical_entries(path)
+        folder_icon = self.launcher.row_icon({'icon_key': 'folder.yellow'}) if children else None
         for name, child_path in children:
-            item = QStandardItem(self.launcher.row_icon({'icon_key': 'folder.yellow'}), name)
+            item = QStandardItem(folder_icon, name)
             item.setEditable(False)
             item.setToolTip(child_path)
             item.setData({'path': child_path, 'pc': False,
@@ -740,6 +738,7 @@ class SlashExpMenu(QMenu):
         return item
 
     def _items(self):
+        file_paths = None
         if self.source_item is None:
             parent = self.panel.model.invisibleRootItem()
         else:
@@ -751,7 +750,8 @@ class SlashExpMenu(QMenu):
             if node is not None:
                 if node.get('kind') == 'file':
                     return []
-                if not parent.data(_LOADED_ROLE):
+                children = node.get('children')
+                if not parent.data(_LOADED_ROLE) and not isinstance(children, (list, tuple)):
                     self.panel._expand_index(parent.index())
                 existing = {}
                 for n in range(parent.rowCount()):
@@ -760,7 +760,6 @@ class SlashExpMenu(QMenu):
                     child_node = (child_info or {}).get('virtual')
                     if child_node is not None:
                         existing[child_node.get('node_id')] = child
-                children = node.get('children')
                 if isinstance(children, (list, tuple)):
                     result = [existing.get(child.get('node_id')) or
                               self._virtual_leaf_item(child)
@@ -782,10 +781,14 @@ class SlashExpMenu(QMenu):
                         else:
                             # A detached JSON node has no loaded Exp children.
                             # Materialize only the ephemeral menu rows.
-                            self._transient_physical_folders(parent, path)
-                            result.extend(parent.child(i) for i in range(parent.rowCount())
-                                          if (parent.child(i).data(_DATA_ROLE) or {}).get('slash_transient'))
-                        result.extend(self._file_entries(path))
+                            folders, file_paths = self._scan_physical_entries(path)
+                            holder = QStandardItem(QIcon(), '')
+                            holder.setData(info, _DATA_ROLE)
+                            self._transient_physical_folders(holder, path, children=folders)
+                            # Keep the detached owner alive for Qt item ownership.
+                            self._linked_folder_holder = holder
+                            result.extend(holder.child(i) for i in range(holder.rowCount()))
+                        result.extend(self._file_entries(path, paths=file_paths))
                 rows = [item for item in result if item is not None and item.isEnabled()]
                 current = self._current_folder_item()
                 return ([current] if current is not None else []) + rows
@@ -798,7 +801,8 @@ class SlashExpMenu(QMenu):
             if info.get('slash_transient') and not parent.rowCount():
                 path = info.get('path')
                 if path and os.path.isdir(path):
-                    self._transient_physical_folders(parent, path)
+                    folders, file_paths = self._scan_physical_entries(path)
+                    self._transient_physical_folders(parent, path, children=folders)
         result = []
         for row in range(parent.rowCount()):
             item = parent.child(row)
@@ -819,7 +823,7 @@ class SlashExpMenu(QMenu):
             info = self.source_item.data(_DATA_ROLE) or {}
             path = info.get('path')
             if path and os.path.isdir(path) and not info.get('file'):
-                result.extend(self._file_entries(path))
+                result.extend(self._file_entries(path, paths=file_paths))
                 return self._sort_physical_items_for_list(result, path)
         return result
 
@@ -849,16 +853,30 @@ class SlashExpMenu(QMenu):
         return (pinned + remaining +
                 sort_physical_popup_records(physical, mode))
 
-    def _file_entries(self, folder):
+    @staticmethod
+    def _scan_physical_entries(folder):
+        """One directory only; never inspect descendants or follow symlinks."""
+        folders, files = [], []
         try:
             with os.scandir(folder) as entries:
-                paths = sorted((entry.path for entry in entries
-                                if entry.is_file(follow_symlinks=False)),
-                               key=lambda name: os.path.basename(name).casefold())
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            folders.append((entry.name, entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            files.append(entry.path)
+                    except (OSError, ValueError):
+                        continue
         except (OSError, ValueError):
-            return []
-        # Include every file, even when the directory is much larger than the
-        # on-screen viewport. Display height never limits filesystem results.
+            return [], []
+        folders.sort(key=lambda pair: pair[0].casefold())
+        files.sort(key=lambda name: os.path.basename(name).casefold())
+        return folders, files
+
+    def _file_entries(self, folder, *, paths=None):
+        if paths is None:
+            _, paths = self._scan_physical_entries(folder)
+        # Include all files, regardless of viewport height.
         return [self._physical_file_item(path) for path in paths]
 
     def _visible_rows(self):
@@ -919,7 +937,7 @@ class SlashExpMenu(QMenu):
         for action in list(self._action_items):
             self.removeAction(action)
             title = self._display_text.get(action, action.text())
-            row = QTreeWidgetItem([title, '›' if action in self._submenus or action in self._context_hint_actions else ''])
+            row = QTreeWidgetItem([title, '›' if action in self._branch_actions or action in self._context_hint_actions else ''])
             row.setSizeHint(0, QSize(0, self._item_height))
             row.setTextAlignment(1, Qt.AlignmentFlag.AlignRight |
                                     Qt.AlignmentFlag.AlignVCenter)
@@ -982,10 +1000,10 @@ class SlashExpMenu(QMenu):
         if action is None:
             return
         self._set_scroll_current_action(action)
-        if action in self._submenus:
+        if action in self._branch_actions:
             event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
                               Qt.KeyboardModifier.NoModifier)
-            self._open_explicit_submenu(action, self._submenus[action], event)
+            self._open_explicit_submenu(action, self._ensure_branch_submenu(action), event)
         else:
             self.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
                                          Qt.KeyboardModifier.NoModifier))
@@ -1069,38 +1087,44 @@ class SlashExpMenu(QMenu):
             self.setActiveAction(rows[0] if rows else None)
 
     def _may_have_children(self, item):
+        """Metadata only: a physical folder may be empty or inaccessible.
+
+        Right/click resolves that uncertainty; do not probe child paths here.
+        Known empty logical folders keep their original context behavior.
+        """
         info = item.data(_DATA_ROLE) or {}
-        if info.get('current_folder'):
-            return False  # Right = context commands, NEVER folder navigation.
+        if info.get('current_folder') or info.get('file'):
+            return False
         node = info.get('virtual')
         if node is not None:
             if node.get('kind') == 'file':
                 return False
             children = node.get('children')
+            if node.get('kind') == 'linked_directory':
+                return True
             if isinstance(children, (list, tuple)):
-                if children:
-                    return True
-                # A linked directory is also a physical directory.
-                if node.get('kind') != 'linked_directory':
-                    return False
-        if info.get('file'):
-            return False
-        if item.rowCount():
-            return True
-        path = info.get('linked_path') or info.get('path')
-        if path and os.path.isdir(path):
-            try:
-                with os.scandir(path) as entries:
-                    return any(entry.is_file(follow_symlinks=False)
-                               or entry.is_dir(follow_symlinks=False) for entry in entries)
-            except OSError:
-                return False
-        # PC / lazy virtual-tree roots are resolved by the existing Exp model.
-        if info.get('pc') or node is not None:
-            return bool(SlashExpMenu(self.launcher, self.panel,
-                                    root=self.root_menu, source_item=item,
-                                    parent=self)._items())
-        return False
+                return bool(children)
+            return bool(item.rowCount())  # Older projections expose a placeholder.
+        return bool(info.get('pc') or info.get('linked_path') or
+                    info.get('path') or item.rowCount())
+
+    def _ensure_branch_submenu(self, action):
+        """Create the child only for an explicit navigation operation."""
+        if action not in self._branch_actions:
+            return None
+        sub = self._submenus.get(action)
+        if sub is None:
+            item = self._action_items[action]
+            if self._context_source is not None:
+                sub = SlashExpMenu(self.launcher, self.panel,
+                                   root=self.root_menu, parent=self,
+                                   context_source=item.menu())
+            else:
+                sub = SlashExpMenu(self.launcher, self.panel,
+                                   root=self.root_menu, source_item=item, parent=self)
+            sub._inherit_list_vertical_bounds()
+            self._submenus[action] = sub
+        return sub
 
     def _pick_column_width(self, titles):
         """Determine the column's two-state width once from ORIGINAL names.
@@ -1109,11 +1133,15 @@ class SlashExpMenu(QMenu):
         switching widths for short Japanese labels or for a scrollbar alone.
         Search and tooltip retain their full, unchanged strings.
         """
-        metrics = self.fontMetrics()
-        width = max((metrics.horizontalAdvance(leading_page_emoji(name)[1])
-                     for name in titles), default=0)
-        desired = (SLASH_LONG_WIDTH if width > SLASH_LONG_TEXT_THRESHOLD
-                   else SLASH_STANDARD_WIDTH)
+        # Both navigation widths are currently 300px. Avoid measuring every
+        # name unless a future policy actually differentiates the two widths.
+        desired = SLASH_STANDARD_WIDTH
+        if (SLASH_STANDARD_WIDTH != SLASH_LONG_WIDTH and
+                self._context_source is None and self._exact_first_column_width is None):
+            metrics = self.fontMetrics()
+            if any(metrics.horizontalAdvance(leading_page_emoji(name)[1]) >
+                   SLASH_LONG_TEXT_THRESHOLD for name in titles):
+                desired = SLASH_LONG_WIDTH
         if self._context_source is not None:
             # Native Files operation menus use 218–225px, not the 300px
             # explorer column width. Elision preserves full action tooltip.
@@ -1143,8 +1171,10 @@ class SlashExpMenu(QMenu):
             self._ensure_search()
             self._populate_context_actions()
             return
+        started = perf_counter()
         if self._row_cache is None:
             self._row_cache = self._items()
+        rows_ready = perf_counter()
         self._pick_column_width([item.text() for item in self._row_cache])
         self._ensure_search()
         for item in self._row_cache:
@@ -1189,15 +1219,19 @@ class SlashExpMenu(QMenu):
                     lambda checked=False, target=item:
                     self._close_then(lambda: self._commit_terminal(target)))
             if has_children:
-                sub = SlashExpMenu(self.launcher, self.panel,
-                                   root=self.root_menu, source_item=item, parent=self)
-                sub._inherit_list_vertical_bounds()
-                self._submenus[action] = sub
+                self._branch_actions.add(action)
+        actions_ready = perf_counter()
         if not self._action_items:
             empty = self.addAction('（項目なし）')
             empty.setEnabled(False)
         else:
             self._enable_fixed_scroll()
+        logging.getLogger('frb.launch.diagnostics').info(
+            'KEYBOARD_EX_PERF phase=populate rows=%d branches=%d created=%d '
+            'rows_ms=%.1f actions_ms=%.1f viewport_ms=%.1f total_ms=%.1f',
+            len(self._action_items), len(self._branch_actions), len(self._submenus),
+            (rows_ready-started)*1000, (actions_ready-rows_ready)*1000,
+            (perf_counter()-actions_ready)*1000, (perf_counter()-started)*1000)
 
     def _populate_context_actions(self):
         """Project the *real* context QAction commands as a connected column.
@@ -1230,11 +1264,7 @@ class SlashExpMenu(QMenu):
             self._action_items[action] = command
             self._full_text[action] = command.text()
             if command.menu() is not None:
-                sub = SlashExpMenu(self.launcher, self.panel,
-                                   root=self.root_menu, parent=self,
-                                   context_source=command.menu())
-                sub._inherit_list_vertical_bounds()
-                self._submenus[action] = sub
+                self._branch_actions.add(action)
             else:
                 # A mouse click on the new column must still invoke the real
                 # List/Exp QAction; presentation actions never duplicate code.
@@ -1286,7 +1316,7 @@ class SlashExpMenu(QMenu):
                 painter.drawText(rect.adjusted(8, 0, -17, 0),
                                  Qt.AlignmentFlag.AlignVCenter |
                                  Qt.AlignmentFlag.AlignLeft, caption)
-        for action in (*self._submenus, *self._context_hint_actions):
+        for action in (*self._branch_actions, *self._context_hint_actions):
             if not action.isVisible():
                 continue
             # Native arrows on iconless rows are covered by the text-alignment
@@ -1594,6 +1624,7 @@ class SlashExpMenu(QMenu):
 
     def _open_explicit_submenu(self, action, submenu, event):
         """Open on Right only, never on Up/Down/hover."""
+        started = perf_counter()
         submenu.populate()
         if self._scroll_tree is not None:
             # The single scroll-widget action is the submenu owner. Its
@@ -1626,6 +1657,9 @@ class SlashExpMenu(QMenu):
             else:
                 submenu.setActiveAction(rows[0])
         submenu._focus_search_for_ime()
+        logging.getLogger('frb.launch.diagnostics').info(
+            'KEYBOARD_EX_PERF phase=child_open rows=%d total_ms=%.1f',
+            len(submenu._action_items), (perf_counter()-started)*1000)
 
     def _commit_terminal(self, item, *, foreground_handoff=None):
         """Enter commits a folder to Files List; Right is navigation only."""
@@ -1707,8 +1741,8 @@ class SlashExpMenu(QMenu):
         # dismiss the complete / cascade with no action performed.
         if event.button() == Qt.MouseButton.LeftButton:
             action = self.actionAt(event.position().toPoint())
-            submenu = self._submenus.get(action)
-            if submenu is not None:
+            if action in self._branch_actions:
+                submenu = self._ensure_branch_submenu(action)
                 self.setActiveAction(action)
                 right = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
                                   Qt.KeyboardModifier.NoModifier)
@@ -1854,8 +1888,7 @@ class SlashExpMenu(QMenu):
             event.accept()
             return
         # Determine the terminal boundary ONLY when this row is activated.
-        submenu = self._submenus.get(action)
-        if submenu is not None:
+        if action in self._branch_actions:
             if (key == Qt.Key.Key_Right or
                     getattr(self.root_menu, '_file_selection_callback', None) is not None):
                 # Qt's native QMenu only opens a submenu on RIGHT, not Enter.
@@ -1864,7 +1897,7 @@ class SlashExpMenu(QMenu):
                 nav_event = (event if key == Qt.Key.Key_Right else
                     QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right,
                               Qt.KeyboardModifier.NoModifier))
-                self._open_explicit_submenu(action, submenu, nav_event)
+                self._open_explicit_submenu(action, self._ensure_branch_submenu(action), nav_event)
             elif self._context_source is None:
                 # Folder Enter opens it in Files List; Right explores children.
                 # Context submenus still require a final command: a QAction is
@@ -2000,6 +2033,7 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
                         list_bottom_y=None, source_item=None, list_height=None,
                         parent_left=None, on_file_selected=None):
     """Create one breadcrumb-rooted session; never register a new Exp root."""
+    started = perf_counter()
     previous = getattr(launcher, '_slash_exp_navigation_menu', None)
     if previous is not None:
         try:
@@ -2118,4 +2152,7 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
     # Native activation may reassign focus once the first show event settles; restore
     # the actual input widget after that, never through a synthetic key event.
     QTimer.singleShot(0, lambda m=menu: m._focus_search_for_ime())
+    logging.getLogger('frb.launch.diagnostics').info(
+        'KEYBOARD_EX_PERF phase=root_open rows=%d total_ms=%.1f',
+        len(menu._action_items), (perf_counter()-started)*1000)
     return True

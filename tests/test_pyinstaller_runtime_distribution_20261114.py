@@ -48,6 +48,10 @@ class PyInstallerRuntimeDistributionTests(unittest.TestCase):
         enum.parent.mkdir(parents=True)
         enum.write_text('{}', encoding='utf-8')
         (self.source / 'config').mkdir(parents=True)
+        import shutil
+        (self.source / 'defaults').mkdir(parents=True, exist_ok=True)
+        for name in ('git_commit_options.json', 'file_index_options.json'):
+            shutil.copy2(ROOT / 'defaults' / name, self.source / 'defaults' / name)
         (self.source / 'config/frb_launch_data.json').write_text('{"test":true}', 'utf-8')
         self.node.write_bytes(b'node fixture')
         self.license.write_text('Node.js license fixture', 'utf-8')

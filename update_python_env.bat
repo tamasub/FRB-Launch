@@ -6,11 +6,11 @@ echo =======================================================
 echo   FRB Launch - Python environment update / rebuild
 echo =======================================================
 echo.
-echo [INFO] Checking installed Python 3.14 ...
-py -3.14 -c "import struct,sys; print('Python:',sys.version.split()[0]); print('Path:',sys.executable); print('Bits:',struct.calcsize('P')*8); sys.exit(0 if sys.version_info[:2]==(3,14) and sys.version_info[:3]>=(3,14,8) and struct.calcsize('P')==8 else 1)"
+echo [INFO] Checking installed standard x64 Python 3.15.2 or newer 3.15.x ...
+py -3.15 "%~dp0src\python_build_environment.py" --migration
 if errorlevel 1 goto error
 
-py -3.14 "%~dp0src\refresh_python_environment.py" %*
+py -3.15 "%~dp0src\refresh_python_environment.py" %*
 if errorlevel 1 goto error
 
 echo.
@@ -21,6 +21,6 @@ exit /b 0
 :error
 echo.
 echo [ERROR] Update failed. Check the error above.
-echo Check that Python 3.14.8 or newer 64-bit is available via py -3.14.
+echo Check that standard x64 Python 3.15.2 or newer 3.15.x is available via py -3.15.
 pause
 exit /b 1

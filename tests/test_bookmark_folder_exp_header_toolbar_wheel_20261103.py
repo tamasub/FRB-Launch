@@ -148,8 +148,8 @@ def test_wheel_moves_across_all_five_without_executing_buttons():
     assert 'selected.click()' not in EXPANDED
 
 
-def test_wheel_filter_installed_for_two_workspaces_and_three_pages():
+def test_wheel_filter_installed_for_two_workspaces_without_retired_pages():
     assert "button.installEventFilter(self)\n                self.root_layout.addWidget" in EXPANDED
-    assert "button.installEventFilter(self)\n                button.clicked.connect" in EXPANDED
+    assert "self.workspace_page_buttons.append(" not in EXPANDED
     assert 'self.wheel_workspace_page_buttons(obj, event)' in EXPANDED
     assert 'self._toolbar_wheel_current = None' in EXPANDED

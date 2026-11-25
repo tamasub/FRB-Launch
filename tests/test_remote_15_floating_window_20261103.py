@@ -185,11 +185,12 @@ def test_remote_resize_reanchors_the_low_origin_without_changing_rod_controls():
     assert 'rod.refresh_position' in body
 
 
-def test_cross_mode_state_and_saved_manual_position_are_protected():
+def test_retired_mode_cannot_be_enabled_and_saved_manual_position_is_protected():
     assert "'experiment_remote_15_column'" in APP
     assert "'workspace_files_remote_15_splitter_sizes'" in VIEW
     assert 'not self._remote_15_placement' in REMOTE
-    assert 'if self.remote_15_mode:' in APP
+    assert 'self.remote_15_mode = False' in APP
+    assert "self.remote_15_mode = mode == 'column15'" not in APP
 
 
 def test_remote_close_and_reopen_are_explicit_actions():

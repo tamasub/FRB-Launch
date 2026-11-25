@@ -16,12 +16,14 @@ import struct
 import subprocess
 import sys
 
+from python_build_environment import current_supported
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROBE_CODE = (
     "import json, struct, sys; "
     "print(json.dumps({'version': list(sys.version_info[:3]), "
-    "'bits': struct.calcsize('P') * 8, 'executable': sys.executable}))"
+    "'bits': struct.calcsize('P') * 8, 'free_threaded': bool(__import__('sysconfig').get_config_var('Py_GIL_DISABLED')), 'executable': sys.executable}))"
 )
 
 
@@ -77,6 +79,8 @@ def ensure_requirements() -> Path:
 def install_and_check(venv_python: Path, requirements: Path) -> None:
     must_run([str(venv_python), "-m", "pip", "install", "--upgrade", "-r", str(requirements)])
     must_run([str(venv_python), "-m", "pip", "check"])
+    must_run([str(venv_python), str(ROOT / "src" / "python_build_environment.py"),
+              "--migration", "--dependencies"])
 
 
 def run_build() -> None:
@@ -85,7 +89,7 @@ def run_build() -> None:
         raise RefreshError("_build_windows.bat not found")
     env = os.environ.copy()
     env["FRB_ENV_REFRESH"] = "1"
-    must_run(["cmd.exe", "/d", "/c", str(build)], env=env)
+    must_run(["cmd.exe", "/d", "/c", build.name], env=env)
 
 
 def rollback(venv: Path, backup: Path | None) -> None:
@@ -117,8 +121,8 @@ def refresh(*, force: bool = False, no_build: bool = False) -> int:
     if os.name != "nt":
         print("[ERROR] Run this script on Windows.")
         return 1
-    if sys.version_info[:2] != (3, 14) or sys.version_info[:3] < (3, 14, 8) or struct.calcsize("P") != 8:
-        print("[ERROR] This updater requires 64-bit Python 3.14.8 or newer (3.14.x).")
+    if not current_supported(migration=True):
+        print("[ERROR] This updater requires standard x64 Python 3.15.2 or newer (3.15.x).")
         return 1
 
     print("=== FRB Launch Python environment updater ===", flush=True)
@@ -129,8 +133,8 @@ def refresh(*, force: bool = False, no_build: bool = False) -> int:
         raise RefreshError("_build_windows.bat is missing; update is aborted")
 
     venv = ROOT / ".venv"
-    if venv.is_symlink():
-        raise RefreshError(".venv is a symbolic link; refusing to modify it automatically")
+    if venv.is_symlink() or getattr(venv, "is_junction", lambda: False)():
+        raise RefreshError(".venv is a symbolic link or junction; refusing to modify it automatically")
     current = python_identity(find_venv_python(venv)) if venv.exists() else None
     if current:
         print(f"[CURRENT] Python {'.'.join(map(str, current['version']))} / {current['bits']}bit", flush=True)
@@ -138,7 +142,7 @@ def refresh(*, force: bool = False, no_build: bool = False) -> int:
         print("[CURRENT] No usable .venv interpreter was found.", flush=True)
 
     target_version = list(sys.version_info[:3])
-    needs_recreate = force or not current or current.get("version") != target_version or current.get("bits") != 64
+    needs_recreate = force or not current or current.get("version") != target_version or current.get("bits") != 64 or current.get("free_threaded") is not False
     backup: Path | None = None
 
     if needs_recreate:
@@ -154,7 +158,7 @@ def refresh(*, force: bool = False, no_build: bool = False) -> int:
             must_run([sys.executable, "-m", "venv", str(venv)])
             new_python = find_venv_python(venv)
             actual = python_identity(new_python)
-            if not actual or actual["version"] != target_version or actual["bits"] != 64:
+            if not actual or actual["version"] != target_version or actual["bits"] != 64 or actual.get("free_threaded") is not False:
                 raise RefreshError(f"Created .venv did not use the expected Python: {actual}")
             install_and_check(new_python, requirements)
             if not no_build:

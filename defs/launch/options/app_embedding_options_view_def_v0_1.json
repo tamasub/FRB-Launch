@@ -1,0 +1,70 @@
+{
+  "app": {
+    "name": "FRB Launch - アプリ連携設定",
+    "version": "0.1",
+    "presentation": {
+      "preset": "launcher",
+      "density": "compact",
+      "shell": "minimal"
+    }
+  },
+  "views": [
+    {
+      "id": "app_embedding_options",
+      "caption": "アプリ連携",
+      "layout": "header-search-grid-detail",
+      "sections": [
+        {
+          "id": "options",
+          "caption": "アプリケーションの埋め込み設定（再起動後に反映）",
+          "type": "form",
+          "dataPath": "$",
+          "fields": [
+            {
+              "field": "embed_obsidian",
+              "caption": "Obsidian をLaunch内部に表示する",
+              "type": "boolean",
+              "grid": {
+                "visible": false
+              },
+              "edit": {
+                "visible": true
+              },
+              "search": {
+                "visible": false
+              }
+            },
+            {
+              "field": "embed_vscode",
+              "caption": "Visual Studio Code をLaunch内部に表示する",
+              "type": "boolean",
+              "grid": {
+                "visible": false
+              },
+              "edit": {
+                "visible": true
+              },
+              "search": {
+                "visible": false
+              }
+            },
+            {
+              "field": "embed_sakura",
+              "caption": "サクラエディタ をLaunch内部に表示する",
+              "type": "boolean",
+              "grid": {
+                "visible": false
+              },
+              "edit": {
+                "visible": true
+              },
+              "search": {
+                "visible": false
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -19,7 +19,7 @@ def make_view(target, *, virtual=None, current=None, path=None):
 
 
 def test_home_mywork_slash_opens_virtual_children_instead_of_roots(nav):
-    mod, _ = nav
+    mod, key = nav
     node = {'source': 'launch_json', 'kind': 'page', 'node_id': 'page:work',
             'page_id': 'work', 'item_id': '', 'title': 'My Work',
             'children': [{'source': 'launch_json', 'kind': 'folder',
@@ -41,8 +41,12 @@ def test_home_mywork_slash_opens_virtual_children_instead_of_roots(nav):
     assert panel.loaded == []  # Exp model must not be reloaded or expanded.
     menu.populate()
     actions = {item.text(): action for action, item in menu._action_items.items()}
+    assert not menu._submenus
+    menu.popup(mod.QPoint(0, 0))
+    menu.setActiveAction(actions['ZIP'])
+    menu.keyPressEvent(Event(key.Key_Right))
     child = menu._submenus[actions['ZIP']]
-    assert [item.text() for item in child._items()] == ['（カレントフォルダー）', 'Go!']
+    assert [item.text() for item in child._action_items.values()] == ['（カレントフォルダー）', 'Go!']
     assert calls == []
 
 
@@ -128,8 +132,12 @@ def test_physical_breadcrumb_drives_slash_independent_of_exp_list_selection(nav,
     assert panel.loaded == []
     menu.populate()
     inner_action = next(a for a,i in menu._action_items.items() if i.text() == 'inner')
+    assert not menu._submenus
+    menu.popup(mod.QPoint(0, 0))
+    menu.setActiveAction(inner_action)
+    menu.keyPressEvent(Event(key.Key_Right))
     child = menu._submenus[inner_action]
-    assert [i.text() for i in child._items()] == ['（カレントフォルダー）', 'gamma.md']
+    assert [i.text() for i in child._action_items.values()] == ['（カレントフォルダー）', 'gamma.md']
     assert calls == []  # Merely opening / and Right never moves the breadcrumb.
     # Enter on a physical child still uses existing folder navigation.
     menu._commit_terminal(menu._action_items[inner_action])

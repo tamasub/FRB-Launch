@@ -34,6 +34,10 @@ def _release_fixture(tmp_path):
     enum.write_text('{}', encoding='utf-8')
     source = tmp_path / 'FRB_Launch'
     source.mkdir()
+    import shutil
+    (source / 'defaults').mkdir(parents=True, exist_ok=True)
+    for name in ('git_commit_options.json', 'file_index_options.json'):
+        shutil.copy2(ROOT / 'defaults' / name, source / 'defaults' / name)
     (source / 'README.md').write_text('# Launch README\n', encoding='utf-8')
     (source / 'README_Vector_v0.9.11.txt').write_text('ベクター向け説明\n', encoding='utf-8')
     (source / 'ReadMe_INSTALL.TXT').write_text('Install instructions\n', encoding='utf-8')

@@ -145,7 +145,7 @@ def test_bookmark_launch_invokes_new_tab_without_running_launch_action():
     assert len(events) == 1
 
 
-def test_external_mode_switches_to_browser_and_uses_existing_open_action():
+def test_external_mode_preserves_files_workspace_and_uses_existing_open_action():
     events = []
     _, authored, runtime = fixture()
     leaf = next(r for r in runtime if r.get('item_kind') == 'command')
@@ -159,7 +159,7 @@ def test_external_mode_switches_to_browser_and_uses_existing_open_action():
     launch = NS(authored_items=authored, data={'items': runtime}, expanded_view=view,
                 webview_settings={'mode': 'external'}, activate=lambda row: events.append(('execute', row['item_id'])))
     assert action(launch, leaf) is True
-    assert events == [('workspace', 'browser'), ('execute', leaf['item_id'])]
+    assert events == [('execute', leaf['item_id'])]
 
 
 def test_current_launch_config_bookmark_location_is_not_hard_coded():

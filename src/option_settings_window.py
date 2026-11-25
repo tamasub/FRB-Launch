@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QDialogButtonBox
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from launch_option_runtime import find_node, find_studio_root
+from third_column_host_options import ensure_app_embedding_user_options
 
 
 class OptionSettingsWindow(QDialog):
@@ -31,6 +32,7 @@ class OptionSettingsWindow(QDialog):
         self._node = find_node(launch_home, self._root)
         if self._node is None:
             raise RuntimeError('Node.js実行環境がありません。同梱runtime/node/node.exeを確認してください（開発版のみPATH利用可）。')
+        ensure_app_embedding_user_options(state_dir)
         # A dedicated off-the-record browser profile prevents the short-lived
         # localhost token from being persisted in normal Launch browser history.
         self._profile=QWebEngineProfile(self)

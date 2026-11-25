@@ -1213,6 +1213,9 @@ class CascadeMenu(OrderDragMixin,QMenu):
             search_row.addWidget(self.filter_count)
         if bookmark_root:
             layout.addLayout(search_row)
+        # External browsers own their tab selection; keep the bookmark search
+        # and do not offer controls that cannot affect the external browser.
+        if bookmark_root and getattr(self.launcher, 'webview_settings', {}).get('mode', 'embedded') == 'embedded':
             # Use full-width segmented choices instead of native radio dots.
             # On Windows the radio indicator was clipped/indistinct in this
             # ~230px popup, making the selected destination impossible to see.
@@ -3085,16 +3088,22 @@ class Launcher(QWidget):
         self.app_records=installed_apps.read_cache(STATE/'apps_cache.json');self.apps_proc=None;self.apps_log=STATE/'apps.log'
         # A broken User setting must NEVER be silently ignored. Show an explicit
         # warning, keep the original User JSON untouched, and allow recovery.
+        option_errors = []
         try:
             self.file_index_options_path = effective_options_path(LAUNCH_HOME, STATE, 'file_index')
-            self.webview_settings = read_webview_settings(effective_options_path(LAUNCH_HOME, STATE, 'webview'))
         except Exception as option_error:
             self.file_index_options_path = LAUNCH_HOME / 'config' / 'file_index_options.json'
+            option_errors.append('ファイル検索: ' + str(option_error))
+        try:
+            self.webview_settings = read_webview_settings(effective_options_path(LAUNCH_HOME, STATE, 'webview'))
+        except Exception as option_error:
             self.webview_settings = read_webview_settings(LAUNCH_HOME / 'config' / 'webview_settings.json')
-            QTimer.singleShot(0, lambda reason=str(option_error): self.show_launch_notice(
+            option_errors.append('ブラウザー: ' + str(option_error))
+        if option_errors:
+            QTimer.singleShot(0, lambda reason='\n'.join(option_errors): self.show_launch_notice(
                 QMessageBox.Icon.Warning, 'FRB Launch - User設定エラー',
                 '保存済みUser設定を適用できませんでした。既存のUser JSONは保持しています。\n'
-                '今回はSystem標準値で起動します。設定を確認してください。\n\n' + reason))
+                'エラーのあったカテゴリのみSystem標準値で起動します。設定を確認してください。\n\n' + reason))
         self.file_index_db = STATE / 'file_index.db'
         self.file_index_busy = False
         self._file_index_manual = False
@@ -3147,15 +3156,12 @@ class Launcher(QWidget):
         self.exp_auto_expand = str(self.settings.value(
             'exp_auto_expand', 'false')).strip().lower() in (
                 'true', '1', 'yes', 'on')
-        # 4択リモコン表示。旧state.iniの2フラグは最初の読み込み時に移行する。
+        # 3択リモコン表示。廃止済みの1.5列は復元しない。
         self.remote_display_mode = normalize_remote_display_mode(
             self.settings.value('remote_display_mode', None),
             legacy_enabled=self.settings.value('desktop_remote_enabled', 'false'),
             legacy_column15=self.settings.value('experiment_remote_15_column', 'false'))
         self.remote_on_desktop_double_click = mode_is_remote_window(self.remote_display_mode)
-        # Public release: historic Page shortcut trio is opt-in, not default.
-        self.hide_page_buttons = str(self.settings.value(
-            'hide_page_buttons', 'true')).lower() in ('true', '1', 'yes', 'on')
         # Public operating contract: Files column 1 always embeds Files Exp.
         # Retire both legacy experiment switches, including persisted overrides.
         self.files_root_hidden_mode = True
@@ -3164,7 +3170,7 @@ class Launcher(QWidget):
                             'experiment_files_exp_embedded'):
             if self.settings.contains(retired_key):
                 self.settings.remove(retired_key)
-        self.remote_15_mode = self.remote_display_mode == 'column15'
+        self.remote_15_mode = False  # Retired: never enabled by saved settings.
         # Opt-in aim-only prototype: never move or click the OS cursor.
         self.mouse_pointer_rod_mode = str(self.settings.value(
             'experiment_mouse_pointer_rod', 'false')).strip().lower() in (
@@ -3503,7 +3509,6 @@ class Launcher(QWidget):
         self.remote_display_actions = {}
         for value, caption in (
                 ('off', '使用しない'),
-                ('column15', 'リモコンウィンドウ 1.5列へ表示'),
                 ('window', 'リモコンウィンドウ 別Window'),
                 ('wheel', 'ぐりぐりボタンのみ')):
             action = remote_menu.addAction(caption)
@@ -3513,14 +3518,6 @@ class Launcher(QWidget):
             action.triggered.connect(
                 lambda checked=False, selected=value: self.set_remote_display_mode(selected))
             self.remote_display_actions[value] = action
-        self.hide_page_buttons_action = self.theme_menu.addAction('Pageボタンを非表示')
-        self.hide_page_buttons_action.setCheckable(True)
-        self.hide_page_buttons_action.setChecked(self.hide_page_buttons)
-        self.hide_page_buttons_action.setToolTip(
-            'Files・Browserの右横にあるPageショートカットを隠します。Pageデータは削除されません。')
-        self.hide_page_buttons_action.triggered.connect(self.set_hide_page_buttons)
-        # 旧1.5列の独立トグルは「リモコン表示」4択に統合した。
-
         # Warp Rod is the ONLY public rod family. The old plain-rod engine
         # remains internally for compatibility, but is not a menu option.
         # Preserve existing QSettings keys across upgrades.
@@ -4315,17 +4312,9 @@ class Launcher(QWidget):
             'Launch外をクリックすると隠します。' if enabled
             else '通常ウィンドウとして表示します。他のアプリの背面へ移動でき、最小化も使えます。')
 
-    def set_hide_page_buttons(self, checked):
-        self.hide_page_buttons = bool(checked)
-        self.settings.setValue('hide_page_buttons', self.hide_page_buttons)
-        self.settings.sync()
-        # Rebuild only the presentation; do not change Page data/selection.
-        self.update_expanded_visibility()
-
     def set_desktop_remote_enabled(self, checked):
-        """旧呼び出し元との互換性。新UIは4択から設定する。"""
-        mode = ('column15' if self.remote_15_mode else 'window') if checked else 'off'
-        self.set_remote_display_mode(mode)
+        """Compatibility for independent-window callers only."""
+        self.set_remote_display_mode('window' if checked else 'off')
 
     def set_files_root_hidden_mode(self, checked):
         """Deprecated caller compatibility: Exp is permanently column 1."""
@@ -5316,56 +5305,34 @@ class Launcher(QWidget):
             if checked else 'ワープ差し棒：OFF（棒の長さ調整に復帰）。')
 
     def set_remote_display_mode(self, mode):
-        """リモコンの4択表示を切り替える（同時表示させない）。"""
+        """リモコンの3択表示を切り替える（同時表示させない）。"""
         mode = normalize_remote_display_mode(mode)
-        previous_15 = self.remote_15_mode
         self.remote_display_mode = mode
-        self.remote_15_mode = mode == 'column15'
+        self.remote_15_mode = False
         self.remote_on_desktop_double_click = mode_is_remote_window(mode)
         self.settings.setValue('remote_display_mode', mode)
-        # 過去版が開いても設定が破壊されないように互換フラグも同期。
         self.settings.setValue('desktop_remote_enabled', self.remote_on_desktop_double_click)
-        self.settings.setValue('experiment_remote_15_column', self.remote_15_mode)
         self.settings.sync()
         actions = getattr(self, 'remote_display_actions', None)
         if actions:
             actions[mode].setChecked(True)
         view = getattr(self, 'expanded_view', None)
-        if view is not None and previous_15 != self.remote_15_mode:
-            view.apply_remote_15_lane_mode()
         # 別Windowと丸ボタンを重ねない。丸ボタンはLaunchの子Widget。
         if mode in ('off', 'wheel'):
             self.hide_remote()
-        elif self.remote_15_mode:
-            if view is not None and view._workspace_mode == 'browser':
-                self._remote_15_needs_show = False
-                self.hide_remote()
-            else:
-                self.queue_remote_15_alignment(show=True)
-        elif previous_15:
-            remote = getattr(self, 'remote_window', None)
-            if remote is not None:
-                remote._remote_15_placement = False
-                saved = self.settings.value('remote_last_position')
-                if isinstance(saved, QPoint):
-                    remote.move(saved)
-                if remote.isVisible():
-                    remote.show_at(QCursor.pos())
         if view is not None:
             refresh = getattr(view, 'update_rail_wheel_visibility', None)
             if callable(refresh):
                 refresh()
         self.footer.setText('リモコン表示：' + {
             'off': '使用しない',
-            'column15': 'リモコンウィンドウ 1.5列へ表示',
             'window': 'リモコンウィンドウ 別Window',
             'wheel': 'ぐりぐりボタンのみ',
         }[mode])
 
     def set_remote_15_mode(self, checked):
-        """旧コード／テスト用の互換エントリ。"""
-        self.set_remote_display_mode('column15' if checked else (
-            'window' if self.remote_on_desktop_double_click else 'off'))
+        """Retired compatibility entry: intentionally does nothing."""
+        return None
 
     def queue_remote_15_alignment(self, *, show=False):
         """Schedule AFTER splitter geometry changes without focus stealing."""
@@ -5710,9 +5677,7 @@ class Launcher(QWidget):
             elif area == 'search':
                 self.search.setFocus(Qt.FocusReason.OtherFocusReason)
             elif area == 'pages':
-                (view.files_mode_tab if self.hide_page_buttons else
-                 (view.workspace_page_buttons[0] if view.workspace_page_buttons
-                  else view.files_mode_tab)).setFocus(Qt.FocusReason.OtherFocusReason)
+                view.files_mode_tab.setFocus(Qt.FocusReason.OtherFocusReason)
             elif area == 'breadcrumb':
                 view.address_bar.begin_edit()
             elif area == 'roots':
@@ -6785,9 +6750,8 @@ class Launcher(QWidget):
             view = self.expanded_view
             if self.webview_settings.get('mode') == 'embedded':
                 return bool(view.show_web_url(url, new_tab=True))
-            # Company/external-browser mode cannot create an embedded tab.
-            # Switch to the Browser workspace before using the normal opener.
-            view.switch_workspace('browser')
+            # External mode must retain the Files workspace and use the
+            # normal opener, including any explicit browser/profile.
             self.activate(authoritative)
             return True
         authoritative = virtual_execution_row(authored, runtime, page_id, item_id)
@@ -7922,6 +7886,8 @@ class Launcher(QWidget):
                             tree.style().unpolish(tree)
                             tree.style().polish(tree)
                         tree.viewport().update()
+            elif getattr(self, 'webview_settings', {}).get('mode', 'embedded') == 'external':
+                self.info_notice('内部ブラウザーは無効です。右クリックからブックマークを開けます。')
             elif view.switch_workspace('browser'):
                 if self.files_root_hidden_mode:
                     # Explicitly preserve hidden Bookmarks on Remote Browser.
@@ -12510,9 +12476,7 @@ class Launcher(QWidget):
         if target == 'search':
             self.search.setFocus(Qt.FocusReason.TabFocusReason)
         elif target == 'pages':
-            (view.files_mode_tab if self.hide_page_buttons else
-             (view.workspace_page_buttons[0] if view.workspace_page_buttons
-              else view.files_mode_tab)).setFocus(Qt.FocusReason.TabFocusReason)
+            view.files_mode_tab.setFocus(Qt.FocusReason.TabFocusReason)
         elif target == 'workspace_files':
             view.middle.tree.setFocus(Qt.FocusReason.TabFocusReason)
         elif target == 'workspace_browser':
@@ -15179,6 +15143,8 @@ def main():
     if not server.listen(name):raise RuntimeError(server.errorString())
     # First install only: seed menu preferences; never reset an existing user state.
     ensure_initial_state_ini(LAUNCH_HOME / 'defaults' / 'state.ini', STATE / 'state.ini')
+    from third_column_host_options import initialize_app_embedding_runtime
+    initialize_app_embedding_runtime(LAUNCH_HOME)
     window=Launcher()
     # Prime Qt WebEngine before any launcher window is shown.  Unlike a
     # delayed on-screen warm-up, this avoids shifting the first-use flash

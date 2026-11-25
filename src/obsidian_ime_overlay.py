@@ -52,10 +52,10 @@ SWP_SHOWWINDOW = 0x0040
 
 
 def overlay_enabled():
-    """Use state.ini first; only use the legacy trial flag if unconfigured.
+    """Use the configured user switch first; only use the legacy trial flag if unconfigured.
 
     The shipped defaults/state.ini seeds the initial user state.ini.  Explicit
-    user state always wins over diagnostic batch flags, for all four editors.
+    user JSON or INI state always wins over diagnostic batch flags, for all four editors.
     """
     from third_column_host_options import configured_embedded_editor
     configured = configured_embedded_editor(None, 'obsidian')

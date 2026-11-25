@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('assets', 'assets'), ('experiments\\frb_japanese_input', 'experiments/frb_japanese_input')]
+datas = [('assets', 'assets'), ('experiments/frb_japanese_input', 'experiments/frb_japanese_input')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('tzdata')
@@ -9,7 +9,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['src\\app.py'],
+    ['src/app.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -39,7 +39,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets\\frb_launch.ico'],
+    icon=['assets/frb_launch.ico'],
 )
 coll = COLLECT(
     exe,

@@ -24,7 +24,6 @@ from expanded_left_navigation import matching_first_row
 from popup_sizing import popup_available_height, popup_tree_height
 from system_drives import drive_rows, pc_preview_row
 from expanded_view_model import toolbar_roots, root_wheel_target
-from page_presentation import page_display_title
 from expanded_selection import context_paths, physical_paths
 from middle_selection_guard import repair_middle_selection, row_key
 from clipboard_paste import clipboard_sources
@@ -2971,28 +2970,8 @@ class ExpandedLauncherView(QWidget):
             self.browser_mode_tab.clicked.connect(lambda _checked=False: self.switch_workspace('browser'))
             self._update_workspace_tabs()
             self.toolbar_scroller.hide()
-            # Launch Page buttons live alongside the two workspaces rather
-            # than up in the title header or on the remote control. Unlike
-            # QTabBar selection, they open the same Page cascade as Remote.
-            for page in ([] if getattr(self.launcher, 'hide_page_buttons', True)
-                         else list(getattr(self.launcher, 'pages', ()))):
-                page_id = str(page.get('page_id') or '')
-                if not page_id:
-                    continue
-                button = QPushButton(page_display_title(page), self.root_widget)
-                button.setObjectName('expandedPageButton')
-                button.setFixedHeight(30)
-                button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-                button.setToolTip('このPageのメニューを開く（ホイール：5ボタンを選択）')
-                button.installEventFilter(self)
-                button.clicked.connect(lambda checked=False, pid=page_id, b=button:
-                                       self.launcher.open_remote_page(pid, anchor=b))
-                button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                button.customContextMenuRequested.connect(
-                    lambda _point, pid=page_id, b=button:
-                    self.launcher.open_remote_page(pid, anchor=b))
-                self.root_layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignVCenter)
-                self.workspace_page_buttons.append(button)
+            # Retired Page shortcuts are never generated here. Page data and
+            # the existing Page menus elsewhere remain independent.
             # Use a real mouse-receiving widget for the wide blank band.
             # QLayout.addStretch() has no QWidget hit target: clicks used to
             # fall through to the root's 'select first shortcut' handler.
@@ -7511,6 +7490,10 @@ class ExpandedLauncherView(QWidget):
 
     def _ensure_web_view(self):
         """Create the full Browser in the third column; never use the old tab."""
+        # Final construction boundary: external mode must never instantiate
+        # the network Browser, even when a future caller forgets its own guard.
+        if self.launcher.webview_settings.get('mode') != 'embedded':
+            return False
         if self.web_view is not None and self.browser_preview is not None:
             return True
         try:
@@ -7668,6 +7651,8 @@ class ExpandedLauncherView(QWidget):
 
     def show_web_url(self, url, *, new_tab=None):
         """URL requests from any entry point go to the *full* third-column Browser."""
+        if self.launcher.webview_settings.get('mode') != 'embedded':
+            return False
         return self.show_browser_preview(url, new_tab=new_tab)
 
     def preview_bookmark_from_list(self, row):
@@ -7796,7 +7781,9 @@ class ExpandedLauncherView(QWidget):
         For a direct URL request, navigate first rather than adding a spare
         Google tab. Opening Browser without a URL instead creates the home tab.
         """
-        if self._workspace_mode != 'files':
+        # Reject before any Studio/editor release or splitter mutation.
+        if (self._workspace_mode != 'files' or
+                self.launcher.webview_settings.get('mode') != 'embedded'):
             return False
         studio = getattr(self, 'studio_preview', None)
         if studio is not None and not studio.isHidden():

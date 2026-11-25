@@ -49,6 +49,10 @@ def _dummy_app_parts(tmp_path):
     node.write_bytes(b'node')
     source = tmp_path/'launch_source'
     source.mkdir()
+    import shutil
+    (source / 'defaults').mkdir(parents=True, exist_ok=True)
+    for name in ('git_commit_options.json', 'file_index_options.json'):
+        shutil.copy2(ROOT / 'defaults' / name, source / 'defaults' / name)
     return SimpleNamespace(
         version='0.9.0', launch_version='0.9.0', studio_version='0.9.0',
         launch_dist=launch, studio_runtime=studio, launch_source=source,

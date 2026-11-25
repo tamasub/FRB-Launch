@@ -629,10 +629,10 @@ def test_up_down_cannot_open_any_child_menu_without_right(nav):
     assert all(action.menu() is None for action in selected)
     menu.keyPressEvent(Event(key.Key_Down))
     assert menu.activeAction() is selected[1]
-    assert not menu._submenus[selected[1]].visible
+    assert selected[1] not in menu._submenus
     menu.keyPressEvent(Event(key.Key_Up))
     assert menu.activeAction() is selected[0]
-    assert not menu._submenus[selected[0]].visible
+    assert selected[0] not in menu._submenus
     assert calls == []
 
 
@@ -669,7 +669,8 @@ def test_terminal_has_no_fake_right_arrow_and_icons_keep_native_left_lane(nav):
     assert '▸' not in actions[0].caption
     assert actions[0] not in menu._submenus
     assert actions[0]._icon == 'folder-icon'  # Native Qt icon to left.
-    assert actions[1] in menu._submenus
+    assert actions[1] in menu._branch_actions
+    assert actions[1] not in menu._submenus
     assert '▸' not in actions[1].caption  # One painted chevron, not text+native.
 
 

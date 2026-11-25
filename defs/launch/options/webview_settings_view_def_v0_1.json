@@ -17,11 +17,25 @@
           "dataPath": "$",
           "fields": [
             {
+              "field": "mode",
+              "caption": "Launch内部ブラウザーを利用する（再起動後に反映）",
+              "type": "select",
+              "options": [
+                { "value": "embedded", "label": "有効" },
+                { "value": "external", "label": "無効（外部ブラウザーで開く）" }
+              ],
+              "grid": { "visible": false },
+              "edit": { "visible": true },
+              "search": { "visible": false },
+              "width": "FULL"
+            },
+            {
               "field": "remember_login",
               "caption": "ログイン状態を記憶する",
               "type": "boolean",
               "grid": { "visible": false },
               "edit": { "visible": true },
+              "visibleWhen": { "field": "mode", "equals": "embedded" },
               "search": { "visible": false }
             },
             {
@@ -30,6 +44,7 @@
               "type": "text",
               "grid": { "visible": false },
               "edit": { "visible": true },
+              "visibleWhen": { "field": "mode", "equals": "embedded" },
               "search": { "visible": false },
               "width": "FULL"
             }

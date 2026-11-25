@@ -785,6 +785,8 @@ class LaunchRemote(QWidget):
         self.browser_button = self._button('Browser', 'Browser画面へ切り替え / 右クリック：ブックマークを展開',
                                            'WORKSPACE_BROWSER', width=172, height=27,
                                            role='workspace', wheel_enabled=True)
+        if getattr(launcher, 'webview_settings', {}).get('mode') == 'external':
+            self.browser_button.setToolTip('内部ブラウザー無効 / 右クリック：ブックマークを外部ブラウザーで開く')
         # Browser right-click opens its non-modal searchable bookmarks;
         # native left-click remains WORKSPACE_BROWSER.
         self.browser_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

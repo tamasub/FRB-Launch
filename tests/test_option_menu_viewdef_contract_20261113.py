@@ -62,7 +62,7 @@ def test_option_menu_is_closed_after_action_event_and_before_dialog():
 def test_launch_owns_viewdefs_and_only_one_registry():
     base=ROOT/'defs/launch/options'
     registry=json.loads((base/'options_registry.json').read_text(encoding='utf-8'))
-    assert [x['id'] for x in registry['options']]==['webview','file_index']
+    assert [x['id'] for x in registry['options']]==['webview','file_index','app_embedding']
     for x in registry['options']:
         assert (ROOT/x['viewDef']).is_file()
     file_index=json.loads((base/'file_index_options_view_def_v0_1.json').read_text(encoding='utf-8'))
@@ -77,4 +77,4 @@ def test_launch_owns_viewdefs_and_only_one_registry():
     assert help_field['edit']['readonly'] is True
     assert 'registered' in help_field['defaultValue']
     webview=json.loads((base/'webview_settings_view_def_v0_1.json').read_text(encoding='utf-8'))
-    assert [x['field'] for x in webview['views'][0]['sections'][0]['fields']]==['remember_login','new_tab_url']
+    assert [x['field'] for x in webview['views'][0]['sections'][0]['fields']]==['mode','remember_login','new_tab_url']

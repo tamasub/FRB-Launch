@@ -114,7 +114,8 @@ def test_expanded_browser_supports_explicit_current_and_new_tab_mode():
     fn, source = extract(EXP, 'ExpandedLauncherView', 'show_web_url')
     assert "def show_web_url(self, url, *, new_tab=None):" in source
     preview = Mock(return_value=True)
-    view = NS(show_browser_preview=preview)
+    view = NS(show_browser_preview=preview,
+              launcher=NS(webview_settings={'mode': 'embedded'}))
     assert fn(view, 'https://example.com', new_tab=True) is True
     preview.assert_called_with('https://example.com', new_tab=True)
     preview.reset_mock()

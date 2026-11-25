@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['src\\frb_updater_main.py'],
+    ['src/frb_updater_main.py'],
     pathex=[],
     binaries=[],
     datas=[],

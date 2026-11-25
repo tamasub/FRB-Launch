@@ -12,6 +12,12 @@
       "caption": "ファイル検索",
       "dataFile": "file_index_options.json",
       "viewDef": "defs/launch/options/file_index_options_view_def_v0_1.json"
+    },
+    {
+      "id": "app_embedding",
+      "caption": "アプリ連携",
+      "dataFile": "app_embedding_options.json",
+      "viewDef": "defs/launch/options/app_embedding_options_view_def_v0_1.json"
     }
   ]
 }

@@ -1,19 +1,34 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-rem Shared Launch dialog contract is mandatory before touching the running app.
-if exist .venv\Scripts\python.exe (
-  .venv\Scripts\python.exe scripts\check_dialog_contract.py
-) else (
-  py -3 scripts\check_dialog_contract.py
-)
+rem Do not stop the app or remove dist until the new environment passes checks.
+if exist .venv\Scripts\python.exe goto checkpython
+py -3.15 src\python_build_environment.py --migration
+if errorlevel 1 goto unsupported
+py -3.15 -m venv .venv
 if errorlevel 1 goto fail
-rem Shared Exp/List context menu icon/spacing contract is mandatory, too.
-if exist .venv\Scripts\python.exe (
-  .venv\Scripts\python.exe scripts\check_context_menu_contract.py
-) else (
-  py -3 scripts\check_context_menu_contract.py
+:checkpython
+.venv\Scripts\python.exe src\python_build_environment.py
+if errorlevel 1 goto unsupported
+rem Shared dialog and context menu contracts are mandatory before touching the running app.
+.venv\Scripts\python.exe scripts\check_dialog_contract.py
+if errorlevel 1 goto fail
+.venv\Scripts\python.exe scripts\check_context_menu_contract.py
+if errorlevel 1 goto fail
+rem Validate only the shipped template. Do NOT migrate/write user config during an EXE build.
+.venv\Scripts\python.exe src\prepare_launch_home.py --build
+if errorlevel 1 goto fail
+if not "%FRB_ENV_REFRESH%"=="1" (
+  .venv\Scripts\python.exe -m pip install --upgrade -r requirements.txt
+  if errorlevel 1 goto fail
 )
+.venv\Scripts\python.exe -m pip check
+if errorlevel 1 goto fail
+.venv\Scripts\python.exe src\python_build_environment.py --dependencies
+if errorlevel 1 goto fail
+rem Render the real Exp/List FRBContextMenu before making a distributable.
+rem A missing QAction foreground (0272 blank grey menu regression) fails closed.
+.venv\Scripts\python.exe scripts\smoke_context_menu_native_gui.py
 if errorlevel 1 goto fail
 echo [BUILD] Stopping FRBLaunch.exe if running...
 taskkill /F /IM FRBLaunch.exe >nul 2>&1
@@ -31,26 +46,8 @@ echo [ERROR] FRBLaunch.exe did not exit after 15 seconds.
 echo [ACTION] Exit the tray app or close the process in Task Manager, then rebuild.
 goto fail
 :frb_process_stopped
-if exist .venv\Scripts\python.exe goto checkpython
-py -3 -m venv .venv
-if errorlevel 1 goto fail
-:checkpython
-.venv\Scripts\python.exe -c "import sys,struct; print('Build Python:',sys.version); print('Bits:',struct.calcsize('P')*8); sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,15) and struct.calcsize('P')==8 else 1)"
-if errorlevel 1 goto unsupported
-rem Validate only the shipped template. Do NOT migrate/write user config during an EXE build.
-.venv\Scripts\python.exe src\prepare_launch_home.py --build
-if errorlevel 1 goto fail
-rem The migration above must finish before any old dist is removed.
 rem Stop before the long PyInstaller build if the previous DLLs are locked.
 .venv\Scripts\python.exe src\build_output_preflight.py
-if errorlevel 1 goto fail
-if not "%FRB_ENV_REFRESH%"=="1" (
-  .venv\Scripts\python.exe -m pip install --upgrade -r requirements.txt
-  if errorlevel 1 goto fail
-)
-rem Render the real Exp/List FRBContextMenu before making a distributable.
-rem A missing QAction foreground (0272 blank grey menu regression) fails closed.
-.venv\Scripts\python.exe scripts\smoke_context_menu_native_gui.py
 if errorlevel 1 goto fail
 .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --windowed --onedir --name FRBLaunch --collect-all tzdata --icon "assets\frb_launch.ico" --add-data "assets;assets" --add-data "experiments\frb_japanese_input;experiments/frb_japanese_input" src\app.py
 if errorlevel 1 goto fail
@@ -71,8 +68,7 @@ echo Build complete: dist\FRBLaunch\FRBLaunch.exe
 if not "%FRB_ENV_REFRESH%"=="1" pause
 exit /b 0
 :unsupported
-echo This build requires standard 64-bit Python 3.10 to 3.14.
-echo To choose Python 3.14 explicitly, create a fresh venv with: py -3.14 -m venv .venv
+echo To migrate to standard x64 Python 3.15.2, install it and run update_python_env.bat.
 goto fail
 :fail
 echo Build failed. See the output above.

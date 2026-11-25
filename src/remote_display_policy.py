@@ -1,6 +1,6 @@
-"""リモコン表示モードと旧設定からの移行規則（Qt非依存）。"""
+"""リモコン表示モード（Qt非依存）。廃止済み1.5列は復元しない。"""
 
-MODES = ('off', 'column15', 'window', 'wheel')
+MODES = ('off', 'window', 'wheel')
 
 
 def _enabled(value):
@@ -8,15 +8,19 @@ def _enabled(value):
 
 
 def normalize_remote_display_mode(value, *, legacy_enabled=False, legacy_column15=False):
-    """新設定優先。古いstate.iniは従来の表示に読み替える。"""
-    if value is not None and str(value).strip().lower() in MODES:
-        return str(value).strip().lower()
+    """有効な現行値を優先。廃止値はoff。旧別Windowのみ互換維持。"""
+    if value is not None:
+        normalized = str(value).strip().lower()
+        if normalized in MODES:
+            return normalized
+        # Never fall through to the old desktop flag for a retired mode.
+        return 'off'
     if _enabled(legacy_column15):
-        return 'column15'
+        return 'off'
     if _enabled(legacy_enabled):
         return 'window'
     return 'off'
 
 
 def mode_is_remote_window(mode):
-    return mode in ('column15', 'window')
+    return mode == 'window'

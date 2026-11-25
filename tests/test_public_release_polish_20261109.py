@@ -94,14 +94,14 @@ def test_new_and_renamed_pages_are_not_hardcoded_to_three_names():
     assert [p['title'] for p in tree] == ['新しい作業', '第四のページ']
 
 
-def test_page_button_option_defaults_hidden_and_scroll_engine_is_retained():
+def test_page_button_option_retired_and_scroll_engine_is_retained():
     app = (ROOT / 'src/app.py').read_text(encoding='utf8')
     expanded = (ROOT / 'src/expanded_view.py').read_text(encoding='utf8')
     remote = (ROOT / 'src/launch_remote.py').read_text(encoding='utf8')
-    assert "'hide_page_buttons', 'true'" in app
-    assert "'Pageボタンを非表示'" in app
-    assert 'self.hide_page_buttons_action.triggered.connect(self.set_hide_page_buttons)' in app
-    assert "getattr(self.launcher, 'hide_page_buttons', True)" in expanded
+    assert "hide_page_buttons" not in app
+    assert "Pageボタンを非表示" not in app
+    assert "hide_page_buttons" not in expanded
+    assert "self.workspace_page_buttons.append(" not in expanded
     assert 'root.addWidget(self.scroll_pad' not in remote
     assert 'self.scroll_pad.hide()' in remote
     assert 'self.scroll_pad.start_from_wheel' not in app  # still calls via local pad

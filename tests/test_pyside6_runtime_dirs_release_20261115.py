@@ -51,6 +51,10 @@ class QtDirectoryReleaseRegression(unittest.TestCase):
         (self.studio / 'runtime/node').mkdir(parents=True)
         (self.studio / 'runtime/node/node.exe').write_bytes(b'node')
         self.source.mkdir()
+        import shutil
+        (self.source / 'defaults').mkdir(parents=True, exist_ok=True)
+        for name in ('git_commit_options.json', 'file_index_options.json'):
+            shutil.copy2(ROOT / 'defaults' / name, self.source / 'defaults' / name)
         self.args = SimpleNamespace(
             launch_dist=self.dist, studio_runtime=self.studio, launch_source=self.source,
             output=self.output, version='0.9.9', launch_version='0.9.9',

@@ -80,8 +80,8 @@ def test_shipped_template_and_startup_hook_and_package_source():
     assert destination.is_file()
     text = destination.read_text(encoding='utf-8')
     for key in ('appearance_theme', 'vdi_no_cursor_warp', 'dismiss_on_outside_click',
-                'folder_open_mode', 'desktop_remote_enabled', 'hide_page_buttons',
-                'experiment_remote_15_column', 'experiment_mouse_pointer_rod',
+                'folder_open_mode', 'desktop_remote_enabled', 'remote_display_mode',
+                'experiment_mouse_pointer_rod',
                 'experiment_mouse_pointer_rod_windows', 'experiment_mouse_pointer_rod_smart'):
         assert key + '=' in text
     source = (ROOT / 'src/app.py').read_text(encoding='utf-8')

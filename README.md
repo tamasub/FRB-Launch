@@ -187,12 +187,11 @@ FRB Launchは、**普通に使える「正統派」**と、少し変わった操
 
 ### ぐりぐりボタン・ポインター自動移動は任意
 
-歯車メニューの**「リモコン表示」**は4択です。
+歯車メニューの**「リモコン表示」**は3択です。
 
 | 設定 | 内容 |
 | :-- | :-- |
 | **使用しない** | **初期値**。標準的な操作で使う |
-| リモコンウィンドウ 1.5列へ表示 | 既存のリモコン表示 |
 | リモコンウィンドウ 別Window | 独立ウィンドウとして表示 |
 | ぐりぐりボタンのみ | Files Exp / Files Listの境界に丸ボタンを表示 |
 
@@ -203,12 +202,12 @@ FRB Launchは、**普通に使える「正統派」**と、少し変わった操
 GitHubのソースから動かす場合は、WindowsにPythonを用意してから開発用の依存パッケージを導入します。**ポータブル配布版とは手順が異なります。**
 
 ```bat
-py -3 -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-_run_windows.bat
+py -3.15 --version
+update_python_env.bat --no-build
+_★run_windows.bat
 ```
 
-Windows用EXEの作成には `_build_windows.bat` を使用します。
+Windows用EXEの作成には `_build_windows.bat` を使用します。新規環境・移行の推奨は標準（非free-threaded）の64bit Python 3.15.2です。既存3.10〜3.14の仮想環境は従来の依存バージョンを維持します。Python更新から再ビルドまで行う場合は `update_python_env.bat` を使用してください。詳細は [Python 3.15移行手順](docs/Python_315_Migration_20261125.md) を参照してください。
 
 ---
 
@@ -300,6 +299,6 @@ FRB Launchは、**「昨日の日付を入力するのが面倒だった」**と
 ## 2026-11-21 — Ctrl+Gぱんくず履歴と第3列エディター設定
 
 - Ctrl+G後、独立した非アクティブ化ToolへQtフォーカスを渡す方式を廃止し、Launch側のキー入力を表示中の履歴へ明示的にルーティング。↑/↓/Enter/→/Delete/Escを処理。
-- `defaults/state.ini` の初回標準値: `embed_studio=true`, `embed_obsidian=true`, `embed_vscode=true`, `embed_sakura=false`。実際の読み込み元はUserの`state.ini`で、旧ファイルは上書きしません。
+- `defaults/state.ini` の初回標準値: `embed_studio=true`, `embed_obsidian=true`, `embed_vscode=true`, `embed_sakura=true`。Studio以外はオプション設定「アプリ連携」で変更でき、保存先はUserConfig/app_embedding_options.jsonです（初回設定画面で旧state.iniから引き継ぎ、再起動後に反映）。Studioは引き続きUserのstate.iniを参照し、旧ファイルは上書きしません。
 - Sakuraは引き続き第3列ゲストを無効（通常のエディター外部起動は変更なし）。
 - 既存インストールでは `%LOCALAPPDATA%\FRBLaunch\state.ini` の `[General]` を手動更新してください（詳細は docs/FRBLaunch_FirstInstall_StateIni_20261115.md）。

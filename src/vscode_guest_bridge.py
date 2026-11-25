@@ -21,7 +21,7 @@ CODE_SUFFIXES = frozenset({
 
 
 def enabled(environment=None):
-    """Use state.ini first; honor old trial env only when not configured."""
+    """Use the configured user switch first; honor old trial env only when not configured."""
     env = os.environ if environment is None else environment
     from third_column_host_options import configured_embedded_editor
     configured = configured_embedded_editor(None, 'vscode', environment=env)

@@ -120,6 +120,10 @@ def test_builder_omits_personal_files_and_preserves_defaults(tmp_path):
     (studio/'runtime'/'node').mkdir(parents=True)
     (studio/'runtime'/'node'/'node.exe').write_bytes(b'node')
     source=tmp_path/'src';(source/'defaults').mkdir(parents=True)
+    import shutil
+    (source / 'defaults').mkdir(parents=True, exist_ok=True)
+    for name in ('git_commit_options.json', 'file_index_options.json'):
+        shutil.copy2(ROOT / 'defaults' / name, source / 'defaults' / name)
     (source/'defaults'/'frb_launch_data.template.json').write_text('{"template":true}')
     (source/'config').mkdir();(source/'config'/'frb_launch_data.json').write_text('personal')
     (source/'config'/'file_index_options.json').write_text('{"system":true}')

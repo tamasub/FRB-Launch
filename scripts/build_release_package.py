@@ -23,6 +23,29 @@ BLOCKED_SUFFIXES={'.pyc','.pyo','.zip','.log','.bak'}
 # user-created .zip to exclude from the System release.
 PYINSTALLER_BASE_LIBRARY = '_internal/base_library.zip'
 LAUNCH_ENUM_SOURCE = 'data/json/config/launch_enums_v0_1.json'
+# These machine-specific settings have an explicitly maintained distribution source.
+RELEASE_DEFAULT_CONFIGS = {
+    'git_commit_options.json': 'repositories',
+    'file_index_options.json': 'index_folders',
+}
+
+
+def release_default_configs(launch_source):
+    result = {}
+    for name, private_list in RELEASE_DEFAULT_CONFIGS.items():
+        path = launch_source / 'defaults' / name
+        if not path.is_file() or path.is_symlink():
+            raise ValueError('配布用標準設定がありません（configへの代替は禁止）: ' + str(path))
+        try:
+            data = json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError('配布用標準設定が不正です: ' + str(path)) from exc
+        if not isinstance(data, dict) or data.get(private_list) != []:
+            raise ValueError('配布用標準設定の ' + private_list + ' は空配列が必要です: ' + str(path))
+        result['defaults/' + name] = path
+        result['config/' + name] = path
+    return result
+
 
 def verify_launch_vocabularies(files):
     # Only explicitly approved system vocabularies may be distributed.
@@ -51,7 +74,7 @@ def verify_pyinstaller_runtime(launch_dist: Path):
         )
     try:
         with zipfile.ZipFile(runtime) as archive:
-            # Python 3.10-3.14 PyInstaller archives include the encodings
+            # Python 3.10-3.15 PyInstaller archives include the encodings
             # module, required BEFORE the application can start.
             if 'encodings/__init__.pyc' not in archive.namelist():
                 raise ValueError('encodings/__init__.pyc が見つかりません')
@@ -87,6 +110,8 @@ def collect_files(launch_dist: Path, studio_runtime: Path, launch_source: Path, 
     # files survive both ZIP builders AND the file-only Update manifest.
     # Legacy mock builds without PySide6 remain valid test fixtures.
     ensure_qt_runtime_directories(launch_dist, create=False, require_qt=False)
+    standard_configs = release_default_configs(launch_source)
+    reserved = {key.casefold() for key in standard_configs}
     result={}
     for base,prefix in ((launch_dist,''),(studio_runtime,'Studio')):
         if not base.is_dir():raise ValueError(f'ビルド済みディレクトリがありません: {base}')
@@ -104,14 +129,15 @@ def collect_files(launch_dist: Path, studio_runtime: Path, launch_source: Path, 
                             or rel == LAUNCH_ENUM_SOURCE)
                 if not approved:
                     continue
-            if selectable(f,key):result[key]=f
+            if key.casefold() not in reserved and selectable(f,key):result[key]=f
     for folder in ('defs','defaults','scripts','config'):
         base=launch_source/folder
         if not base.is_dir():continue
         for f in sorted(base.rglob('*')):
             if not f.is_file():continue
             key=f.relative_to(launch_source).as_posix()
-            if selectable(f,key):result[key]=f
+            if key.casefold() not in reserved and selectable(f,key):result[key]=f
+    result.update(standard_configs)
     # Include only README files at the Launch source root (case-insensitive),
     # e.g. README.md and README_Vector_v0.9.11.txt.  Both the portable and
     # updater ZIPs use this same inventory, so they receive identical docs.

@@ -27,7 +27,9 @@ def make_zip(root):
                     def allowed(name):
                         path = Path(directory) / name
                         junction = getattr(os.path, 'isjunction', lambda p: False)
-                        return name.casefold() not in EXCLUDED and not path.is_symlink() and not junction(path)
+                        return (name.casefold() not in EXCLUDED
+                                and not name.casefold().startswith((".venv_backup_", ".venv_failed_"))
+                                and not path.is_symlink() and not junction(path))
                     dirs[:] = sorted(d for d in dirs if allowed(d))
                     for name in sorted(files):
                         path = Path(directory) / name

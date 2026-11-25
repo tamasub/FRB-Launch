@@ -1,4 +1,4 @@
-"""FRB Launch リモコン4択／ぐりぐり丸ボタン・静的契約テスト。"""
+"""FRB Launch リモコン3択（1.5列廃止）／ぐりぐり丸ボタン・静的契約テスト。"""
 from pathlib import Path
 import sys
 import ast
@@ -11,34 +11,37 @@ from remote_display_policy import normalize_remote_display_mode, mode_is_remote_
 from launch_state_defaults import _template_values
 
 
-def test_all_four_modes_and_legacy_flags():
-    for mode in ('off', 'column15', 'window', 'wheel'):
+def test_three_modes_and_retired_flags():
+    for mode in ('off', 'window', 'wheel'):
         assert normalize_remote_display_mode(mode) == mode
-        assert mode_is_remote_window(mode) is (mode in ('column15', 'window'))
+        assert mode_is_remote_window(mode) is (mode == 'window')
+        assert normalize_remote_display_mode(mode, legacy_enabled=True, legacy_column15=True) == mode
     assert normalize_remote_display_mode(None, legacy_enabled='true') == 'window'
-    assert normalize_remote_display_mode(None, legacy_column15='true') == 'column15'
+    assert normalize_remote_display_mode(None, legacy_column15='true') == 'off'
+    assert normalize_remote_display_mode(None, legacy_enabled=True, legacy_column15=True) == 'off'
     assert normalize_remote_display_mode(None) == 'off'
-    assert normalize_remote_display_mode('off', legacy_enabled='true', legacy_column15='true') == 'off'
-    assert normalize_remote_display_mode('wheel', legacy_enabled='true') == 'wheel'
-    assert normalize_remote_display_mode('invalid', legacy_enabled='true') == 'window'
+    assert normalize_remote_display_mode('invalid', legacy_enabled=True) == 'off'
+    assert normalize_remote_display_mode('COLUMN15', legacy_enabled=True) == 'off'
+    assert not mode_is_remote_window('column15')
 
 
 def test_state_ini_default_matches_off_and_seed_recognizes_enum():
     state = _template_values(ROOT / 'defaults' / 'state.ini')
     assert state['remote_display_mode'] == 'off'
     assert state['desktop_remote_enabled'] == 'false'
-    assert state['experiment_remote_15_column'] == 'false'
+    assert 'experiment_remote_15_column' not in state
+    assert 'hide_page_buttons' not in state
 
 
 def test_options_is_exclusive_submenu_and_legacy_state_writes():
     app = (SRC / 'app.py').read_text(encoding='utf-8')
-    for label in ('使用しない', 'リモコンウィンドウ 1.5列へ表示',
-                  'リモコンウィンドウ 別Window', 'ぐりぐりボタンのみ'):
+    for label in ('使用しない', 'リモコンウィンドウ 別Window', 'ぐりぐりボタンのみ'):
         assert label in app
+    assert 'リモコンウィンドウ 1.5列へ表示' not in app
     assert 'self.remote_display_group.setExclusive(True)' in app
     assert "self.settings.setValue('remote_display_mode', mode)" in app
     assert "self.settings.setValue('desktop_remote_enabled', self.remote_on_desktop_double_click)" in app
-    assert "self.settings.setValue('experiment_remote_15_column', self.remote_15_mode)" in app
+    assert "self.settings.setValue('experiment_remote_15_column'" not in app
     assert "if mode in ('off', 'wheel'):" in app
 
 

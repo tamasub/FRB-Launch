@@ -6,4 +6,6 @@
 __pycache__/
 *.py[cod]
 /.venv/
+/.venv_backup_*/
+/.venv_failed_*/
 /*.zip

@@ -21,8 +21,6 @@ SEED_KEYS = (
     'folder_open_mode',
     'desktop_remote_enabled',
     'remote_display_mode',
-    'hide_page_buttons',
-    'experiment_remote_15_column',
     'experiment_mouse_pointer_rod',
     'experiment_mouse_pointer_rod_windows',
     'experiment_mouse_pointer_rod_smart',
@@ -49,8 +47,11 @@ def _normalized_value(key: str, value: str) -> str | None:
         return normalized
     elif key == 'folder_open_mode' and normalized in {'single', 'double'}:
         return normalized
-    elif key == 'remote_display_mode' and normalized in {'off', 'column15', 'window', 'wheel'}:
-        return normalized
+    elif key == 'remote_display_mode':
+        if normalized in {'off', 'window', 'wheel'}:
+            return normalized
+        if normalized == 'column15':
+            return 'off'
     return None
 
 
@@ -79,6 +80,9 @@ def _template_values(template: Path) -> dict[str, str]:
             logging.warning('FRB Launch default state.ini invalid value ignored: %s=%r', key, raw)
         else:
             results[key] = value
+    if (not parser.has_option('General', 'remote_display_mode')
+            and parser.get('General', 'experiment_remote_15_column', fallback='false').strip().lower() in _TRUE):
+        results['remote_display_mode'] = 'off'
     return results
 
 
