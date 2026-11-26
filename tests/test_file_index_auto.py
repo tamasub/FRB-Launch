@@ -122,7 +122,7 @@ class AutoIndexTests(unittest.TestCase):
         self.assertEqual(len(fi.search_index(self.db,'first.ps1')),1)
         success=self.update()
         self.assertTrue(success['applied'])
-        self.assertEqual(fi.index_status(self.db)['index_version'],2)
+        self.assertEqual(fi.index_status(self.db)['index_version'],3)
         self.assertEqual(len(fi.search_index(self.db,'second.md')),1)
 
     def test_cancel_retains_old_snapshot(self):

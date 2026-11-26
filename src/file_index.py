@@ -24,18 +24,18 @@ from filesystem_visibility import is_hidden_attribute
 DEFAULT_OPTIONS = {
     'enabled': True,  # Backward-compatible switch; false overrides index_mode.
     'index_mode': 'registered',  # registered / configured / off
-    'index_target': 'files',  # files / folders (legacy) / both (eligible files + containing folders)
+    'index_target': 'files',  # compatibility key; only file rows are persisted
     'index_folders': [],  # Used only in configured mode; absolute paths, spaces OK.
     'max_depth': None,  # None=recursive, 0=files in root only, 1=one child level.
     'extensions': ['.bat', '.py', '.ps1', '.json', '.xlsx', '.md'],
-    'exclude_name_contains': ['view_def'],
+    'exclude_name_contains': [],
     'exclude_directories': ['.venv', '.git', 'node_modules', '__pycache__', 'build', 'dist', 'System Volume Information', '$RECYCLE.BIN'],
     'exclude_directory_globs': [],  # Relative paths or folder names; e.g. '**/Broken (*)'.
     'scan_error_policy': 'preserve_cached',  # or 'fail_root'; see README.
 
     'search_limit': 100,
     'update_mode': 'manual',
-    'auto_update': {'startup_delay_seconds': 90, 'check_interval_minutes': 30, 'max_scan_workers': 2},
+    'auto_update': {'startup_delay_seconds': 300, 'check_interval_minutes': 30, 'max_scan_workers': 2},
 }
 
 
@@ -46,16 +46,19 @@ def load_options(path):
     if not isinstance(raw, dict):
         raise ValueError('file_index_options.json はJSONオブジェクトにしてください')
     options = {**DEFAULT_OPTIONS, **raw}
-    if options['index_target'] not in ('files', 'folders', 'both'):
-        raise ValueError('index_target は files / folders / both を指定してください')
+    # Legacy configurations may still specify both/folders. Never store folder rows.
+    options['index_target'] = 'files'
     if options['index_mode'] not in ('registered', 'configured', 'off'):
         raise ValueError('index_mode は registered / configured / off を指定してください')
     if not isinstance(options['index_folders'], list) or not all(
             isinstance(x, str) and x.strip() for x in options['index_folders']):
         raise ValueError('index_folders は空でないパス文字列の配列にしてください')
+    # The numeric option editor uses -1 as the explicit unlimited sentinel.
+    if type(options['max_depth']) is int and options['max_depth'] == -1:
+        options['max_depth'] = None
     if options['max_depth'] is not None and (
             type(options['max_depth']) is not int or not 0 <= options['max_depth'] <= 100):
-        raise ValueError('max_depth は null または 0～100 の整数にしてください')
+        raise ValueError('max_depth は null / -1 または 0～100 の整数にしてください')
     if options['update_mode'] not in ('manual', 'auto'):
         raise ValueError('update_mode は manual / auto を指定してください')
     auto = options.get('auto_update', {})
@@ -63,7 +66,7 @@ def load_options(path):
         raise ValueError('auto_update はJSONオブジェクトにしてください')
     auto = {**DEFAULT_OPTIONS['auto_update'], **auto}
     limits = {'startup_delay_seconds': (0, 3600),
-              'check_interval_minutes': (1, 1440),
+              'check_interval_minutes': (0, 1440),
               'max_scan_workers': (1, 99)}
     for key, (minimum, maximum) in limits.items():
         if type(auto[key]) is not int or not minimum <= auto[key] <= maximum:
@@ -298,7 +301,7 @@ def _preserve_failed_subtrees(db, scanned):
     for p, name, folded, folder, extension, key in db.execute(
             'SELECT path,name,name_fold,directory,extension,root_key FROM files WHERE root_key=?',
             (scanned['key'],)):
-        if any(_contains(directory, p) for directory in failed):
+        if extension and any(_contains(directory, p) for directory in failed):
             rows.setdefault(_normalized_path(p), (p, name, folded, folder, extension, key))
     scanned['rows'] = sorted(rows.values(), key=lambda row: _normalized_path(row[0]))
     scanned['count'] = len(scanned['rows'])
@@ -308,7 +311,7 @@ def _preserve_failed_subtrees(db, scanned):
 
 def _scan(roots, options, connection):
     extensions = set(options['extensions'])
-    hidden = tuple({'view_def', *(x.casefold() for x in options['exclude_name_contains'] if x)})
+    hidden = tuple(x.casefold() for x in options['exclude_name_contains'] if x)
     excluded_dirs = {x.casefold() for x in options['exclude_directories']}
     max_depth = options.get('max_depth')
     inserted, skipped, errors = 0, 0, []
@@ -319,13 +322,6 @@ def _scan(roots, options, connection):
         if is_hidden_attribute(root) and not _windows_drive_root(root):
             skipped += 1
             continue
-        folders_only = options.get('index_target') == 'folders'
-        include_parents = options.get('index_target') == 'both'
-        if folders_only and not is_hidden_attribute(root):
-            name = os.path.basename(os.path.normpath(root))
-            cur.execute('INSERT OR IGNORE INTO files(path, name, name_fold, directory, extension) VALUES(?,?,?,?,?)',
-                        (root, name, name.casefold(), os.path.dirname(os.path.normpath(root)), ''))
-            inserted += cur.rowcount
         if not os.path.isdir(root):
             raise FileNotFoundError(f'索引更新中に対象フォルダーが見つからなくなりました: {root}')
         # Detect root permission failures before accepting a partial scan.
@@ -345,14 +341,6 @@ def _scan(roots, options, connection):
                 else:
                     retained.append(dirname)
             dirs[:] = retained
-            if folders_only:
-                for dirname in retained:
-                    child = os.path.join(parent, dirname)
-                    cur.execute('INSERT OR IGNORE INTO files(path, name, name_fold, directory, extension) VALUES(?,?,?,?,?)',
-                                (child, dirname, dirname.casefold(), parent, ''))
-                    inserted += cur.rowcount
-                continue
-            indexed_parent = False
             for name in files:
                 extension = os.path.splitext(name)[1].casefold()
                 if extension not in extensions or any(token in name.casefold() for token in hidden):
@@ -362,15 +350,6 @@ def _scan(roots, options, connection):
                     skipped += 1; continue
                 cur.execute('INSERT OR IGNORE INTO files(path, name, name_fold, directory, extension) VALUES(?,?,?,?,?)',
                             (path, name, name.casefold(), parent, extension))
-                inserted += cur.rowcount
-                indexed_parent = True
-            # 'both': include a directory only when it directly contains at
-            # least one eligible file (same extension/hidden/exclusion rules).
-            if include_parents and indexed_parent:
-                parent_path = os.path.normpath(parent)
-                parent_name = os.path.basename(parent_path)
-                cur.execute('INSERT OR IGNORE INTO files(path, name, name_fold, directory, extension) VALUES(?,?,?,?,?)',
-                            (parent_path, parent_name, parent_name.casefold(), os.path.dirname(parent_path), ''))
                 inserted += cur.rowcount
         connection.commit()
     return inserted, skipped, errors
@@ -422,31 +401,41 @@ def index_status(database):
 
 
 def search_index(database, query, limit=100, *, entry_type=None):
-    """Match full paths; optionally return only indexed directories.
+    """Search files and optionally derive unique containing folders at read time.
 
-    The existing SQLite table name stays `files` for old database compatibility.
-    Folder entries have an empty extension. A folder-only SQL predicate runs
-    BEFORE LIMIT so stale file entries cannot crowd out folder hits. 'both'
-    returns eligible file and parent-folder entries together.
+    Legacy folder rows are ignored even before the first successful refresh.
+    Only directories directly containing an eligible indexed file are returned.
+    Folder matches have priority before the shared result limit (as before).
     """
-    if not parse_search_query(query) or not Path(database).is_file():
+    if not parse_search_query(query) or not Path(database).is_file() or limit <= 0:
         return []
     condition, params = sql_search_condition(query)
     try:
         with closing(sqlite3.connect(database, timeout=1)) as db:
-            kind_clause = (" AND extension = ''" if entry_type == 'folders' else
-                           " AND extension <> ''" if entry_type == 'files' else '')
-            # In mixed mode a folder name also matches every child's full
-            # path. Show actual folder hits first so many matching files do
-            # not hide the folder entirely behind the search_limit cap.
-            order = ("CASE WHEN extension = '' THEN 0 ELSE 1 END, name_fold, path"
-                     if entry_type == 'both' else 'name_fold, path')
-            sql = ('SELECT path, name, directory, extension FROM files WHERE '
-                   + condition + kind_clause + ' ORDER BY ' + order + ' LIMIT ?')
-            return [dict(path=p, name=n, directory=d, extension=e)
-                    for p,n,d,e in db.execute(sql, (*params, limit))]
+            db.execute('BEGIN')  # Both result kinds see the same snapshot.
+            hits = []
+            if entry_type in ('both', 'folders'):
+                # Match the directory itself, not a child's filename. SQLite
+                # DISTINCT uses NOCASE to match Windows path identity.
+                folder_condition, folder_params = sql_search_condition(query, ('directory',))
+                db.create_function('folder_name', 1, lambda p: ntpath.basename(ntpath.normpath(p)).casefold())
+                sql = ("SELECT DISTINCT directory COLLATE NOCASE AS folder_path "
+                       "FROM files WHERE extension <> '' AND directory <> '' AND "
+                       + folder_condition + " ORDER BY folder_name(folder_path), folder_path LIMIT ?")
+                for (path,) in db.execute(sql, (*folder_params, limit)):
+                    # ntpath handles Windows and POSIX separators; preserve the
+                    # original path style when deriving the display parent.
+                    pathmod = ntpath if '\\' in path or ntpath.splitdrive(path)[0] else os.path
+                    name = pathmod.basename(pathmod.normpath(path))
+                    hits.append(dict(path=path, name=name, directory=pathmod.dirname(pathmod.normpath(path)), extension=''))
+            remaining = limit - len(hits)
+            if entry_type != 'folders' and remaining > 0:
+                sql = ('SELECT path, name, directory, extension FROM files WHERE '
+                       + condition + " AND extension <> '' ORDER BY name_fold, path LIMIT ?")
+                hits.extend(dict(path=p, name=n, directory=d, extension=e)
+                            for p,n,d,e in db.execute(sql, (*params, remaining)))
+            return hits
     except (sqlite3.Error, OSError):
-        # A freshly installed launcher may not have an index yet.
         return []
 
 
@@ -535,7 +524,7 @@ def route_registered_open_step(step, studio_root=''):
 # the live launcher uses refresh_index, which never replaces an open SQLite file.
 
 def _index_options_digest(options):
-    relevant = {'index_target': options.get('index_target', 'files'),
+    relevant = {'index_target': 'files', 'file_only_storage_revision': 1,
                 'hidden_attribute_filter': 2,
                 'windows_drive_root_visible': True,
                 **{key: options[key] for key in
@@ -581,15 +570,10 @@ def _root_scan(root, options, cancelled=None):
         with os.scandir(scan_root) as entries:
             next(entries, None)
     extensions = set(options['extensions'])
-    hidden = ('view_def', *(v.casefold() for v in options['exclude_name_contains'] if v))
+    hidden = tuple(v.casefold() for v in options['exclude_name_contains'] if v)
     excluded_dirs = {v.casefold() for v in options['exclude_directories']}
     max_depth = options.get('max_depth')
     rows, excluded = [], 0
-    folders_only = options.get('index_target') == 'folders'
-    include_parents = options.get('index_target') == 'both'
-    if folders_only and not is_hidden_attribute(scan_root):
-        name = os.path.basename(os.path.normpath(root))
-        rows.append((root, name, name.casefold(), os.path.dirname(os.path.normpath(root)), '', _root_key(root)))
     failures, failed_dirs = [], []
     def on_error(exc):
         path = _original_scan_path(getattr(exc, 'filename', '') or root)
@@ -612,13 +596,6 @@ def _root_scan(root, options, cancelled=None):
             else:
                 retained.append(dirname)
         dirs[:] = retained
-        if folders_only:
-            for dirname in retained:
-                child = os.path.join(parent, dirname)
-                rows.append((_original_scan_path(child), dirname, dirname.casefold(),
-                             _original_scan_path(parent), '', _root_key(root)))
-            continue
-        indexed_parent = False
         for name in files:
             extension = os.path.splitext(name)[1].casefold()
             if extension not in extensions or any(token in name.casefold() for token in hidden):
@@ -630,15 +607,6 @@ def _root_scan(root, options, cancelled=None):
                 continue
             rows.append((_original_scan_path(path), name, name.casefold(),
                          _original_scan_path(parent), extension, _root_key(root)))
-            indexed_parent = True
-        # Store the containing folder once per directory with matching files.
-        # Excluded descendants, hidden files, and unsupported extensions do not
-        # cause an otherwise empty folder to become searchable.
-        if include_parents and indexed_parent:
-            parent_path = _original_scan_path(parent)
-            parent_name = os.path.basename(os.path.normpath(parent_path))
-            rows.append((parent_path, parent_name, parent_name.casefold(),
-                         os.path.dirname(os.path.normpath(parent_path)), '', _root_key(root)))
     if failures and options.get('scan_error_policy', 'preserve_cached') == 'fail_root':
         raise OSError(f'{root}: サブフォルダーの走査に失敗: {failures[0]}（{len(failures)}件）')
     rows.sort(key=lambda row: _normalized_path(row[0]))
@@ -686,7 +654,7 @@ def _save_index_metadata(db, roots, options, warnings):
         'roots': [item[0] for item in root_info],
         'extensions': options['extensions'],
         'warnings': list(warnings)[:15], 'scan_errors': len(warnings),
-        'index_version': 2, 'index_target': options.get('index_target', 'files'),
+        'index_version': 3, 'index_target': 'files',
     }
     db.executemany('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)',
                    [(key, json.dumps(value, ensure_ascii=False)) for key, value in metadata.items()])

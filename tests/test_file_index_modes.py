@@ -86,7 +86,7 @@ class IndexModesTests(unittest.TestCase):
 
     def test_validation_and_reject_root(self):
         for values in ({'index_mode':'all'}, {'index_folders': 'not-a-list'},
-                       {'max_depth':-1}, {'max_depth':True}, {'max_depth':101}):
+                       {'max_depth':-2}, {'max_depth':True}, {'max_depth':101}):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 self.opts(**values)
         for folder in (str(Path(os.sep)), 'not/an/absolute/path'):

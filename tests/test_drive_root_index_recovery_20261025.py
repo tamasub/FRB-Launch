@@ -41,7 +41,7 @@ def test_drive_root_ignores_root_hidden_flag_but_still_hides_child_files(tmp_pat
     with patch.object(fi, '_windows_scan_path', return_value=str(physical_root)), \
          patch.object(fi, 'is_hidden_attribute', side_effect=hidden_flag):
         result = fi._root_scan('F:\\', opts)
-    assert result['count'] == 2  # eligible file plus its folder
+    assert result['count'] == 1  # only the eligible file is persisted
     assert 'visible.md' in {row[1] for row in result['rows']}
     assert 'hidden.md' not in {row[1] for row in result['rows']}
 
@@ -53,13 +53,13 @@ def test_index_revision_rechecks_existing_drive_snapshots(tmp_path):
     opts = fi.load_options(tmp_path / 'missing.json')
     opts['index_target'] = 'both'
     db = tmp_path / 'index.db'
-    assert fi.refresh_index(db, [str(root)], opts)['count'] == 2
+    assert fi.refresh_index(db, [str(root)], opts)['count'] == 1
     import sqlite3
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE index_roots SET options_digest='old_implementation'")
     result = fi.refresh_index(db, [str(root)], opts)
     assert result['changed_roots'] == [str(root)]
-    assert result['count'] == 2
+    assert result['count'] == 1
 
 
 def test_diagnostic_root_counts_are_logged():

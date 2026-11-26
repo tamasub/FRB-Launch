@@ -3878,12 +3878,12 @@ class Launcher(QWidget):
         self._jump_list_startup_synced = False
         self.reload(True)
         self.file_index_check_timer = QTimer(self)
-        interval = self.file_index_settings['auto_update']['check_interval_minutes']
-        self.file_index_check_timer.setInterval(interval * 60 * 1000)
         self.file_index_check_timer.timeout.connect(self.auto_refresh_file_index)
-        self.file_index_check_timer.start()
         delay = self.file_index_settings['auto_update']['startup_delay_seconds']
-        QTimer.singleShot(delay * 1000, self.auto_refresh_file_index)
+        self._file_index_startup_pending = (file_index.index_mode(self.file_index_settings) != 'off'
+                                            and self.file_index_settings['update_mode'] == 'auto')
+        if self._file_index_startup_pending:
+            QTimer.singleShot(delay * 1000, self.startup_refresh_file_index)
         QTimer.singleShot(0,self.refresh_apps)
         self.registered_key = ''
         self._registered_hotkey_hwnd = 0
@@ -4556,7 +4556,7 @@ class Launcher(QWidget):
             self.footer.setText(
                 f'名前を変更しました: {Path(old_path).name} → {Path(new_path).name}')
             if self.file_index_settings.get('enabled', True) and not self.file_index_busy:
-                QTimer.singleShot(0, lambda: self.refresh_file_index(manual=False))
+                QTimer.singleShot(0, lambda: self.refresh_file_index_after_mutation())
         return changed
 
     def _remote_popup_vertical_bounds(self):
@@ -8946,6 +8946,31 @@ class Launcher(QWidget):
     def _index_expanse(self, value):
         return self.expander().expand(value)
 
+    def _sync_file_index_periodic_timer(self, opts):
+        interval = opts['auto_update']['check_interval_minutes']
+        timer = self.file_index_check_timer
+        if (interval == 0 or opts['update_mode'] != 'auto' or file_index.index_mode(opts) == 'off'
+                or getattr(self, '_file_index_startup_pending', False)):
+            timer.stop()
+            return
+        if timer.interval() != interval * 60000:
+            timer.setInterval(interval * 60000)
+        if not timer.isActive():
+            timer.start()
+
+    def startup_refresh_file_index(self):
+        self._file_index_startup_pending = False
+        self._sync_file_index_periodic_timer(self.file_index_settings)
+        self.auto_refresh_file_index()
+
+    def refresh_file_index_after_mutation(self):
+        # Startup-only mode must not silently launch another full traversal
+        # after a rename/delete. Manual updates remain available.
+        if (getattr(self, '_file_index_startup_pending', False) or
+                self.file_index_settings.get('auto_update', {}).get('check_interval_minutes', 30) == 0):
+            return
+        self.refresh_file_index(manual=False)
+
     def auto_refresh_file_index(self):
         """Lightweight timer; filesystem enumeration runs only in a worker."""
         self.refresh_file_index(manual=False)
@@ -8962,9 +8987,7 @@ class Launcher(QWidget):
         try:
             opts = file_index.load_options(self.file_index_options_path)
             self.file_index_settings = opts
-            new_interval = opts['auto_update']['check_interval_minutes'] * 60000
-            if self.file_index_check_timer.interval() != new_interval:
-                self.file_index_check_timer.setInterval(new_interval)
+            self._sync_file_index_periodic_timer(opts)
             mode = file_index.index_mode(opts)
             if mode == 'off':
                 if manual:
@@ -9494,18 +9517,20 @@ class Launcher(QWidget):
         return None
 
     def _search_list_focus_context(self, widget):
-        """True for Files List and its local search; never for main search.
+        """True for Files List and search editing controls.
 
         A search result List is an operating session: local folder filtering
-        and its menus stay inside the session, while Exp/breadcrumb/main search
-        are separate keyboard destinations.
+        and its menus stay inside the session. Main search edits also retain
+        the current query; Exp/breadcrumb remain separate destinations.
         """
         if widget is None:
             return False
         view = getattr(self, 'expanded_view', None)
         if view is None:
             return False
-        controls = (getattr(getattr(view, 'middle', None), 'tree', None),
+        controls = (getattr(self, 'search', None),
+                    getattr(self, 'history_popup', None),
+                    getattr(getattr(view, 'middle', None), 'tree', None),
                     getattr(view, 'middle_search', None),
                     getattr(view, 'middle_search_history_button', None),
                     getattr(view, 'middle_search_history_menu', None))
@@ -9565,6 +9590,8 @@ class Launcher(QWidget):
             self._search_list_focus_session = False
             return
         if self._search_list_focus_context(widget):
+            if widget is getattr(self, 'search', None):
+                return
             self._search_list_focus_session = True
         elif getattr(self, '_search_list_focus_session', False):
             QTimer.singleShot(0, self._finish_search_list_focus_exit)
@@ -10370,15 +10397,9 @@ class Launcher(QWidget):
                     for hit in file_index.search_index(
                             self.file_index_db, query,
                             self.file_index_settings['search_limit'],
-                            entry_type=self.file_index_settings.get('index_target')):
-                        # The SQLite table is shared between files and folders.
-                        # Classify each hit individually in 'both' mode rather
-                        # than treating the entire result as one kind.
-                        target = self.file_index_settings.get('index_target', 'files')
+                            entry_type='both'):
+                        # Folder hits are derived from eligible file rows.
                         is_folder = hit['extension'] == ''
-                        if (target == 'folders' and not is_folder or
-                                target == 'files' and is_folder):
-                            continue
                         if is_folder:
                             row = dict(item_id='__folder_index_'+hit['path'],
                                        title=hit['name'], description=hit['directory'],
@@ -11650,7 +11671,7 @@ class Launcher(QWidget):
         """Leave a Search Location via Backspace or a genuine List focus exit.
 
         Backspace keeps the keyboard in List; focus-exit must NOT steal it back
-        from Exp, breadcrumb, toolbar, or the global search editor.
+        from Exp, breadcrumb, or toolbar.
         """
         view = getattr(self, 'expanded_view', None)
         if (view is None or not getattr(view, '_main_search_active', False)
@@ -13023,8 +13044,10 @@ class Launcher(QWidget):
         if (obj is getattr(self, 'search', None) and
                 event.type() == getattr(QEvent.Type, 'MouseButtonPress', None) and
                 event.button() == Qt.MouseButton.LeftButton):
-            if not self.history_popup.isVisible():
-                QTimer.singleShot(0, self.show_history_popup)
+            # A normal click edits the existing query; history has its own
+            # chevron, wheel and keyboard triggers.
+            if self.history_popup.isVisible():
+                self.hide_history_popup()
         # Qt.Tool cascade columns do not monopolize keyboard focus.  On some
         # Windows setups the key event still lands in the main list/search/tabs
         # after the user selects a cascade row.  Give visible columns keyboard
@@ -13645,7 +13668,7 @@ class Launcher(QWidget):
                 self.expanded_view.refresh_middle()
             self.footer.setText(f'名前を変更しました: {path.name} → {Path(new_path).name}')
         if self.file_index_settings.get('enabled', True) and not self.file_index_busy:
-            QTimer.singleShot(0, lambda: self.refresh_file_index(manual=False))
+            QTimer.singleShot(0, lambda: self.refresh_file_index_after_mutation())
         return True
 
     def commit_remote_inline_rename(self, old_path, new_name, kind):
@@ -13691,7 +13714,7 @@ class Launcher(QWidget):
             self.expanded_view.refresh_middle()
         self.footer.setText(f'名前を変更しました: {path.name} → {Path(new_path).name}')
         if self.file_index_settings.get('enabled', True) and not self.file_index_busy:
-            QTimer.singleShot(0, lambda: self.refresh_file_index(manual=False))
+            QTimer.singleShot(0, lambda: self.refresh_file_index_after_mutation())
         return new_path
 
     def show_expanded_background_paste_menu(self, global_pos, *, remote_folder_list=False,
@@ -14589,7 +14612,7 @@ class Launcher(QWidget):
                     elif not deleted_current_folder:
                         self.render()
                 if self.file_index_settings.get('enabled', True) and not self.file_index_busy:
-                    QTimer.singleShot(0, lambda: self.refresh_file_index(manual=False))
+                    QTimer.singleShot(0, lambda: self.refresh_file_index_after_mutation())
                 self.info_notice(f'削除を完了しました: {path.name}')
             elif action_id in ('copy_full_path', 'copy_path'):
                 QApplication.clipboard().setText(str(path))
@@ -14680,7 +14703,7 @@ class Launcher(QWidget):
                 self.close_cascade_for_main_interaction()
                 self.render()
                 if self.file_index_settings.get('enabled', True) and not self.file_index_busy:
-                    QTimer.singleShot(0, lambda: self.refresh_file_index(manual=False))
+                    QTimer.singleShot(0, lambda: self.refresh_file_index_after_mutation())
             else:
                 raise ValueError('未対応の操作: ' + str(action_id))
         except (OSError, ValueError, RuntimeError) as exc:

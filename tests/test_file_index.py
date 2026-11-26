@@ -63,14 +63,14 @@ class FileIndexTests(unittest.TestCase):
         (self.source/'.venv').mkdir();(self.source/'.venv'/'evil.py').write_text('')
         (self.source/'dist').mkdir();(self.source/'dist'/'other.py').write_text('')
         stats=build_index(self.out,[str(self.source)],self.options)
-        self.assertEqual(stats['count'],7)
-        self.assertEqual(index_status(self.out)['count'],7)
+        self.assertEqual(stats['count'],8)
+        self.assertEqual(index_status(self.out)['count'],8)
         self.assertEqual(len(search_index(self.out,'.py')),1)
         self.assertEqual(search_index(self.out,'evil'),[])
-        self.assertEqual(search_index(self.out,'view_def'),[])
+        self.assertEqual(len(search_index(self.out,'view_def')),1)
         self.assertEqual([x['name'] for x in search_index(self.out,'report')],['report.xlsx'])
         self.assertEqual([x['name'] for x in search_index(self.out,'folder-name-only-is-in-path')], ['folder-name-only-is-in-path.xlsx'])
-        self.assertEqual(len(search_index(self.out,'sub')),7)
+        self.assertEqual(len(search_index(self.out,'sub')),8)
         # AND terms may match in different parts of the full file path.
         self.assertEqual([x['name'] for x in search_index(self.out,'report sub')], ['report.xlsx'])
         self.assertEqual([x['name'] for x in search_index(self.out,'sub report*.xlsx')], ['report.xlsx'])
@@ -86,16 +86,18 @@ class FileIndexTests(unittest.TestCase):
         self.assertEqual([hit['path'] for hit in hits], [path])
         self.assertEqual([hit['path'] for hit in search_index(self.out, r'FRB\tools *.ps1')], [path])
 
-    def test_view_def_always_excluded_even_if_optional_list_is_cleared(self):
+    def test_view_def_is_excluded_only_by_explicit_setting(self):
         opts = {**self.options, 'exclude_name_contains': []}
         build_index(self.out, [str(self.source)], opts)
+        self.assertEqual(len(search_index(self.out, 'view_def')), 1)
+        build_index(self.out, [str(self.source)], {**opts, 'exclude_name_contains': ['VIEW_DEF']})
         self.assertEqual(search_index(self.out, 'view_def'), [])
 
     def test_full_path_search_with_and_terms(self):
         (self.folder / 'plain.md').write_text('hello',encoding='utf8')
         build_index(self.out,[str(self.source)],self.options)
         # Folder-only keywords now match, but can be narrowed by filename.
-        self.assertEqual(len(search_index(self.out,self.source.name)),8)
+        self.assertEqual(len(search_index(self.out,self.source.name)),9)
         self.assertEqual([hit['name'] for hit in search_index(self.out,'sub plain')], ['plain.md'])
         self.assertEqual([hit['name'] for hit in search_index(self.out,'SUB *.MD')], ['notes.md', 'plain.md'])
         self.assertEqual([hit['name'] for hit in search_index(self.out,'sub plain*.ps1')], [])

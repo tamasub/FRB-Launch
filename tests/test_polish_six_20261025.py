@@ -23,7 +23,7 @@ def extract_method(name, scope):
     return scope[name]
 
 
-def test_folder_only_index_excludes_files_and_excluded_subtrees(tmp_path):
+def test_legacy_folder_mode_does_not_store_folder_rows(tmp_path):
     root = tmp_path / 'workspace'
     (root / 'project' / 'src').mkdir(parents=True)
     (root / 'project' / 'src' / 'main.py').write_text('test')
@@ -33,18 +33,11 @@ def test_folder_only_index_excludes_files_and_excluded_subtrees(tmp_path):
     options['index_target'] = 'folders'
     db = tmp_path / 'index.db'
     result = file_index.refresh_index(db, [str(root)], options)
-    assert result['count'] == 3
-    assert set(r['name'] for r in file_index.search_index(db, 'project')) == {'project', 'src'}
-    assert file_index.search_index(db, 'readme.md') == []
-    assert file_index.search_index(db, 'build') == []
-    assert all(r['extension'] == '' for r in file_index.search_index(db, 'workspace'))
-    # Changed index mode has its own digest and rebuilds the same root.
-    assert file_index.refresh_index(db, [str(root)], options)['changed_roots'] == []
-    old_mode = {**options, 'index_target': 'files'}
-    assert file_index.refresh_index(db, [str(root)], old_mode)['changed_roots'] == [str(root)]
-    assert file_index.search_index(db, 'readme.md')[0]['extension'] == '.md'
-    assert file_index.refresh_index(db, [str(root)], options)['changed_roots'] == [str(root)]
-    assert file_index.search_index(db, 'readme.md') == []
+    assert result['count'] == 2
+    assert set(r['name'] for r in file_index.search_index(db, 'project', entry_type='folders')) == {'project', 'src'}
+    assert file_index.search_index(db, 'readme.md')
+    assert file_index.search_index(db, 'build', entry_type='both') == []
+    assert file_index.refresh_index(db, [str(root)], {**options, 'index_target': 'files'})['changed_roots'] == []
 
 
 def test_hidden_attribute_filters_browser_and_index(tmp_path):
@@ -54,6 +47,9 @@ def test_hidden_attribute_filters_browser_and_index(tmp_path):
     (root / 'visible' / 'hiddenchild').mkdir()
     (root / 'visible' / '.normal-dotfile').write_text('dot')
     (root / 'visible' / 'hidden.txt').write_text('hide')
+    (root / 'visible' / 'inside' / 'keep.md').write_text('keep')
+    (root / 'hidden' / 'secret' / 'secret.md').write_text('hide')
+    (root / 'visible' / 'hiddenchild' / 'hidden.md').write_text('hide')
     from filesystem_visibility import is_hidden_attribute as real_hidden
     def hidden(path):
         return Path(path).name in {'hidden', 'hiddenchild', 'hidden.txt'}
@@ -63,7 +59,7 @@ def test_hidden_attribute_filters_browser_and_index(tmp_path):
         options['index_target'] = 'folders'
         db = tmp_path / 'idx.db'
         file_index.refresh_index(db, [str(root)], options)
-        names = {x['name'] for x in file_index.search_index(db, str(root.name))}
+        names = {x['name'] for x in file_index.search_index(db, str(root.name), entry_type='both')}
         assert 'hidden' not in names
         assert 'hiddenchild' not in names
         assert 'secret' not in names
@@ -120,7 +116,7 @@ def test_single_delete_keeps_guard_until_after_modal_and_ui_refresh(tmp_path):
 
 def test_config_and_context_menu_spacing():
     options=json.loads((ROOT/'config/file_index_options.json').read_text(encoding='utf8'))
-    assert options['index_target']=='both'
+    assert options['index_target']=='files'
     style=(ROOT/'src/launch_appearance.py').read_text(encoding='utf8')
     assert 'CONTEXT_MENU_SPACING_QSS' in style and 'margin-left:4px' in style
     assert "('copy_full_path', 'フルパスのコピー')" in APP

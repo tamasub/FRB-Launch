@@ -1,6 +1,7 @@
 """FRB Launch: index eligible files *and the directories containing them*."""
 import ast
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -31,7 +32,7 @@ def _create_tree(tmp_path):
 
 
 def _assert_mixed_results(db, root):
-    paths = {hit['path'] for hit in fi.search_index(db, 'workspace', limit=100)}
+    paths = {hit['path'] for hit in fi.search_index(db, 'workspace', limit=100, entry_type='both')}
     want = {root, root / 'top.ps1', root / 'project', root / 'project' / 'README.md',
             root / 'project' / 'src', root / 'project' / 'src' / 'main.py'}
     assert paths == {str(p) for p in want}
@@ -48,11 +49,14 @@ def _assert_mixed_results(db, root):
 def test_incremental_mixed_index_excludes_unwanted_and_keeps_files(tmp_path):
     root = _create_tree(tmp_path)
     opts = fi.load_options(tmp_path / 'not_found.json')
-    opts['index_target'] = 'both'
+    opts['index_target'] = 'both'  # legacy value is ignored
+    opts['exclude_name_contains'] = ['view_def']
     db = tmp_path / 'index.db'
     with patch.object(fi, 'is_hidden_attribute', side_effect=lambda path: Path(path).name in ('hidden.py', 'hiddenfolder')):
         result = fi.refresh_index(db, [str(root)], opts)
-        assert result['count'] == 6
+        assert result['count'] == 3
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM files WHERE extension=''").fetchone()[0] == 0
         _assert_mixed_results(db, root)
         assert fi.search_index(db, 'project', limit=1, entry_type='both')[0]['name'] == 'project'
         assert fi.refresh_index(db, [str(root)], opts)['changed_roots'] == []
@@ -73,14 +77,17 @@ def test_legacy_full_index_build_both_targets(tmp_path):
     root = _create_tree(tmp_path)
     options = fi.load_options(tmp_path / 'missing.json')
     options['index_target'] = 'both'
+    options['exclude_name_contains'] = ['view_def']
     db = tmp_path / 'legacy.db'
     with patch.object(fi, 'is_hidden_attribute', side_effect=lambda path: Path(path).name in ('hidden.py', 'hiddenfolder')):
         result = fi.build_index(db, [str(root)], options)
-        assert result['count'] == 6
+        assert result['count'] == 3
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM files WHERE extension=''").fetchone()[0] == 0
         _assert_mixed_results(db, root)
 
 
-def test_options_switch_from_folders_triggers_reindex_and_legacy_modes_remain(tmp_path):
+def test_legacy_modes_are_ignored_and_folder_results_are_derived(tmp_path):
     root = tmp_path / 'workspace'
     child = root / 'src'
     child.mkdir(parents=True)
@@ -88,25 +95,20 @@ def test_options_switch_from_folders_triggers_reindex_and_legacy_modes_remain(tm
     (root / 'alone').mkdir()
     db = tmp_path / 'index.db'
     options = fi.load_options(tmp_path / 'missing.json')
-    options['index_target'] = 'folders'
-    fi.refresh_index(db, [str(root)], options)
-    assert fi.search_index(db, 'main.py') == []
-    assert fi.search_index(db, 'alone', entry_type='folders')
-    options['index_target'] = 'both'
-    assert fi.refresh_index(db, [str(root)], options)['changed_roots'] == [str(root)]
-    assert fi.search_index(db, 'main.py', entry_type='both')
-    assert fi.search_index(db, 'src', entry_type='both')
-    assert fi.search_index(db, 'alone', entry_type='both') == []
-    options['index_target'] = 'files'
-    fi.refresh_index(db, [str(root)], options)
-    assert fi.search_index(db, 'main.py', entry_type='files')
-    assert not any(hit['name'] == 'src' for hit in fi.search_index(db, 'src', entry_type='files'))
+    for target in ('folders', 'both', 'files'):
+        options['index_target'] = target
+        assert fi.refresh_index(db, [str(root)], options)['count'] == 1
+        assert fi.search_index(db, 'main.py', entry_type='files')
+        assert [h['name'] for h in fi.search_index(db, 'src', entry_type='folders')] == ['src']
+        assert not fi.search_index(db, 'alone', entry_type='both')
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM files WHERE extension='' ").fetchone()[0] == 0
 
 
 def test_config_and_launcher_search_branch_support_mixed_results(tmp_path):
     config = json.loads((ROOT / 'config/file_index_options.json').read_text(encoding='utf-8'))
-    assert config['index_target'] == 'both'
-    assert fi.load_options(ROOT / 'config/file_index_options.json')['index_target'] == 'both'
+    assert config['index_target'] == 'files'
+    assert fi.load_options(ROOT / 'config/file_index_options.json')['index_target'] == 'files'
     app_source = (ROOT / 'src/app.py').read_text(encoding='utf8')
     ast.parse(app_source)
     assert "is_folder = hit['extension'] == ''" in app_source

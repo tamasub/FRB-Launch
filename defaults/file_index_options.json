@@ -7,7 +7,7 @@
   "enabled": true,
   "index_mode": "registered",
   "index_folders": [],
-  "max_depth": null,
+  "max_depth": -1,
   "extensions": [
     ".bat",
     ".ps1",
@@ -16,9 +16,7 @@
     ".md",
     ".html"
   ],
-  "exclude_name_contains": [
-    "view_def"
-  ],
+  "exclude_name_contains": [],
   "exclude_directories": [
     ".venv",
     ".venv_backup",
@@ -33,11 +31,11 @@
   "search_limit": 100,
   "update_mode": "auto",
   "auto_update": {
-    "startup_delay_seconds": 90,
+    "startup_delay_seconds": 300,
     "check_interval_minutes": 30,
     "max_scan_workers": 2
   },
   "exclude_directory_globs": [],
   "scan_error_policy": "preserve_cached",
-  "index_target": "both"
+  "index_target": "files"
 }

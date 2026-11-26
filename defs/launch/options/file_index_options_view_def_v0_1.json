@@ -48,6 +48,10 @@
               ],
               "edit": {
                 "visible": true
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
               }
             },
             {
@@ -62,6 +66,10 @@
               },
               "grid": {
                 "visible": false
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
               }
             },
             {
@@ -72,8 +80,31 @@
                 "visible": true
               },
               "visibleWhen": {
-                "field": "index_mode",
-                "equals": "configured"
+                "all": [
+                  {
+                    "field": "enabled",
+                    "equals": true
+                  },
+                  {
+                    "field": "index_mode",
+                    "equals": "configured"
+                  }
+                ]
+              }
+            },
+            {
+              "field": "max_depth",
+              "caption": "最大探索階層（-1＝無制限、0＝直下のみ）",
+              "type": "number",
+              "edit": {
+                "visible": true,
+                "min": -1,
+                "max": 100,
+                "step": 1
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
               }
             },
             {
@@ -82,6 +113,46 @@
               "type": "stringArray",
               "edit": {
                 "visible": true
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
+              }
+            },
+            {
+              "field": "exclude_name_contains",
+              "caption": "除外ファイル名（部分一致・1行に1つ）",
+              "type": "stringArray",
+              "edit": {
+                "visible": true
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
+              }
+            },
+            {
+              "field": "exclude_directories",
+              "caption": "除外フォルダー名（完全一致・1行に1つ）",
+              "type": "stringArray",
+              "edit": {
+                "visible": true
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
+              }
+            },
+            {
+              "field": "exclude_directory_globs",
+              "caption": "除外フォルダーパターン（ワイルドカード・1行に1つ）",
+              "type": "stringArray",
+              "edit": {
+                "visible": true
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
               }
             },
             {
@@ -93,6 +164,10 @@
                 "min": 1,
                 "max": 500,
                 "step": 1
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
               }
             },
             {
@@ -105,6 +180,109 @@
               ],
               "edit": {
                 "visible": true
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
+              }
+            }
+          ]
+        },
+        {
+          "id": "auto_update",
+          "caption": "自動更新の詳細",
+          "type": "form",
+          "dataPath": "$.auto_update",
+          "fields": [
+            {
+              "field": "startup_delay_seconds",
+              "caption": "起動後の待機時間（秒）",
+              "type": "number",
+              "edit": {
+                "visible": true,
+                "min": 0,
+                "max": 3600,
+                "step": 1
+              },
+              "visibleWhen": {
+                "all": [
+                  {
+                    "field": "enabled",
+                    "equals": true
+                  },
+                  {
+                    "field": "update_mode",
+                    "equals": "auto"
+                  }
+                ]
+              }
+            },
+            {
+              "field": "check_interval_minutes",
+              "caption": "定期更新間隔（分・0＝定期更新なし）",
+              "type": "number",
+              "edit": {
+                "visible": true,
+                "min": 0,
+                "max": 1440,
+                "step": 1
+              },
+              "visibleWhen": {
+                "all": [
+                  {
+                    "field": "enabled",
+                    "equals": true
+                  },
+                  {
+                    "field": "update_mode",
+                    "equals": "auto"
+                  }
+                ]
+              }
+            },
+            {
+              "field": "max_scan_workers",
+              "caption": "並列走査数（詳細）",
+              "type": "number",
+              "edit": {
+                "visible": true,
+                "min": 1,
+                "max": 99,
+                "step": 1
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
+              }
+            }
+          ]
+        },
+        {
+          "id": "scan_options",
+          "caption": "走査設定",
+          "type": "form",
+          "dataPath": "$",
+          "fields": [
+            {
+              "field": "scan_error_policy",
+              "caption": "走査エラー時の動作（詳細）",
+              "type": "select",
+              "options": [
+                {
+                  "value": "preserve_cached",
+                  "label": "既存索引を保持（標準）"
+                },
+                {
+                  "value": "fail_root",
+                  "label": "対象ルートの更新を中止"
+                }
+              ],
+              "edit": {
+                "visible": true
+              },
+              "visibleWhen": {
+                "field": "enabled",
+                "equals": true
               }
             }
           ]

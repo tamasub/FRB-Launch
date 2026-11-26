@@ -69,7 +69,7 @@ class WildcardSearchTests(unittest.TestCase):
             self.assertEqual(find('*10%*'), {'FRB_10%.ps1'})
             self.assertEqual(find('frb_11'), {'frb_11.ps1'})
             self.assertEqual(find('frb%11'), set())
-            self.assertNotIn('view_def.md', find('*'))
+            self.assertIn('view_def.md', find('*'))
             self.assertTrue(find('*'))
 
     def test_file_index_path_and_filename_terms_use_and(self):
@@ -86,12 +86,12 @@ class WildcardSearchTests(unittest.TestCase):
             db = root / 'file_index.db'
             build_index(db, [str(root)], load_options(root / 'missing.json'))
             find = lambda q: {hit['path'] for hit in search_index(db, q)}
-            self.assertEqual(find('make zip_app'), {str(folder/'make_FRB.ps1'), str(folder/'not_make.md')})
+            self.assertEqual(find('make zip_app'), {str(folder/'make_FRB.ps1'), str(folder/'not_make.md'), str(folder/'view_def_make.json')})
             self.assertEqual(find('zip_app *.ps1'), {str(folder/'make_FRB.ps1')})
             self.assertEqual(find('ZIP_APP MAKE*.PS1'), {str(folder/'make_FRB.ps1')})
             self.assertEqual(find('docs make'), {str(other/'make_FRB.ps1')})
             self.assertEqual(find('zip_app missing'), set())
-            self.assertNotIn(str(folder/'view_def_make.json'), find('zip_app'))
+            self.assertIn(str(folder/'view_def_make.json'), find('zip_app'))
 
 
 if __name__ == '__main__':
