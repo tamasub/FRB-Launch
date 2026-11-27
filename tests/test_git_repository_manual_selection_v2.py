@@ -137,6 +137,8 @@ def method(name):
         'QMessageBox': SimpleNamespace(StandardButton=SimpleNamespace(Yes=1)),
         'DIAG': SimpleNamespace(exception=Mock()),
         'subprocess': subprocess,
+        'FilesOperationProgress': object(),
+        'MESSAGE': 'MESSAGE',
     }
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])),
                  '<test dialog>', 'exec'), scope)
@@ -161,7 +163,13 @@ def test_dialog_requires_human_choice(tmp_path, choice, should_commit):
         preview_calls.append(options['repository_path'])
         return git_commit_preview(options)
     scope['git_commit_preview'] = preview
-    def run_dialog(dialog, buttons, editor):
+    background_calls = []
+    def run_background(callback, mode, **kwargs):
+        background_calls.append((mode, kwargs))
+        return callback()
+    scope['processing_display'] = lambda factory: SimpleNamespace(run_background=run_background)
+    def run_dialog(dialog, buttons, editor, *, wheel_combo=None):
+        assert wheel_combo is editor
         assert editor.entries[0][1] == ''
         editor.index = choice
         return True
@@ -174,8 +182,11 @@ def test_dialog_requires_human_choice(tmp_path, choice, should_commit):
         assert preview_calls == [str(launch)]
         assert git(launch, 'log', '-1', '--format=%s') == selected_file.name
         host.info_notice.assert_called_once()
+        host.error.assert_not_called()
+        assert background_calls == [('MESSAGE', {'verb': 'Gitコミット', 'parent': host})]
     else:
         assert preview_calls == []
+        assert background_calls == []
         assert '選択' in host.error.call_args.args[0]
     assert git(frb, 'log', '-1', '--format=%s') == 'initial'
     if not should_commit:

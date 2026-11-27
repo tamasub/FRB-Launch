@@ -10,6 +10,48 @@ MESSAGE = 'MESSAGE'
 PROGRESS = 'PROGRESS'
 
 
+def _run_qt_background(callback):
+    """Run non-GUI work while the calling GUI thread continues dispatching events.
+
+    The worker owns only the operation and its outcome. Qt widgets, the cursor,
+    and completion handling remain on the caller's GUI thread.
+    """
+    from PySide6.QtCore import QCoreApplication, QEventLoop, QThread, Qt
+
+    app = QCoreApplication.instance()
+    if app is None or QThread.currentThread() != app.thread():
+        raise RuntimeError('Background processing must be started on the GUI thread')
+
+    class OperationWorker(QThread):
+        def __init__(self):
+            super().__init__()
+            self.result = None
+            self.error = None
+
+        def run(self):
+            try:
+                self.result = callback()
+            except BaseException as exc:
+                # Never let an exception escape a Qt thread; re-raise on the
+                # caller so its existing failure handling remains unchanged.
+                self.error = exc
+
+    worker = OperationWorker()
+    loop = QEventLoop()
+    # Explicitly queue completion on the GUI thread. Even if the operation
+    # finishes immediately, quit is delivered only inside the event loop.
+    worker.finished.connect(loop.quit, Qt.ConnectionType.QueuedConnection)
+    worker.start()
+    try:
+        loop.exec()
+    finally:
+        # Keep the worker alive until it exits, including on app shutdown.
+        worker.wait()
+    if worker.error is not None:
+        raise worker.error
+    return worker.result
+
+
 class ProcessingDisplay:
     def __init__(self, application, wait_cursor, exclude_input, dialog_factory=None):
         self.application = application
@@ -74,6 +116,18 @@ class ProcessingDisplay:
     def run(self, callback, mode=CURSOR, **kwargs):
         with self.display(mode, **kwargs):
             return callback()
+
+    def run_background(self, callback, mode=MESSAGE, **kwargs):
+        """Keep the shared modal processing display responsive during work.
+
+        Use only for callbacks that are safe off the GUI thread. Native
+        Windows Shell operations and Qt widget work stay on their existing
+        paths. Return the result or raise the original exception like run().
+        """
+        if mode not in (MESSAGE, PROGRESS):
+            raise ValueError('Background processing requires a modal display')
+        with self.display(mode, **kwargs):
+            return _run_qt_background(callback)
 
 
 _shared = None

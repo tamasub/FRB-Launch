@@ -2063,6 +2063,14 @@ class FilesOperationProgress(QDialog):
             self.detail.hide()
             self.bar.hide()
 
+    def keyPressEvent(self, event):
+        # The processing display is not a cancellation control. In particular,
+        # Escape must not dismiss it while a background operation is running.
+        if event.key() == Qt.Key.Key_Escape:
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def _update_detail_text(self):
         completed, total, name = self._detail_values
         prefix = f'{completed} / {total} 件'
@@ -14659,10 +14667,10 @@ class Launcher(QWidget):
                                 else '未追跡ファイルは追加しません。')))
             if answer != QMessageBox.StandardButton.Yes:
                 return
-            with processing_display(FilesOperationProgress).display(
-                    MESSAGE, verb='Gitコミット', parent=self):
-                committed = commit_tracked_changes(preview['repository'], message,
-                                                   include_untracked=preview['include_untracked'])
+            committed = processing_display(FilesOperationProgress).run_background(
+                lambda: commit_tracked_changes(preview['repository'], message,
+                                               include_untracked=preview['include_untracked']),
+                MESSAGE, verb='Gitコミット', parent=self)
             self.info_notice('Gitコミット完了：' + committed)
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             DIAG.exception('GIT_COMMIT_FROM_FILENAME path=%s', selected_path)

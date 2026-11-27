@@ -163,3 +163,45 @@ def test_failure_while_constructing_dialog_restores_cursor(setup):
     manager.dialog_factory = bad
     with pytest.raises(RuntimeError): manager.run(lambda: None, MESSAGE)
     assert app.cursors == [] and manager.depth == 0
+
+
+@pytest.mark.parametrize('mode', [MESSAGE, PROGRESS])
+def test_background_work_stays_inside_shared_display(setup, monkeypatch, mode):
+    import processing_display as pd
+    events, app, manager = setup
+    result = object()
+    def worker(callback):
+        assert ('show', mode) in events
+        assert ('hide', mode) not in events
+        assert app.cursors == ['wait']
+        return callback()
+    monkeypatch.setattr(pd, '_run_qt_background', worker)
+    assert manager.run_background(lambda: result, mode, verb='test') is result
+    assert ('dispose', mode) in events
+    assert app.cursors == []
+    assert manager.depth == 0
+
+
+def test_background_failure_restores_cursor_and_preserves_exception(setup, monkeypatch):
+    import processing_display as pd
+    events, app, manager = setup
+    failure = OSError('operation failed')
+    def worker(callback):
+        raise failure
+    monkeypatch.setattr(pd, '_run_qt_background', worker)
+    with manager.display(CURSOR):
+        with pytest.raises(OSError) as exc:
+            manager.run_background(lambda: None, MESSAGE)
+        assert exc.value is failure
+        assert ('dispose', MESSAGE) in events
+        assert app.cursors == ['wait']
+    assert app.cursors == [] and manager.depth == 0
+
+
+def test_background_rejects_nonmodal_cursor_only_mode(setup, monkeypatch):
+    import processing_display as pd
+    events, app, manager = setup
+    monkeypatch.setattr(pd, '_run_qt_background', lambda cb: pytest.fail('must not start'))
+    with pytest.raises(ValueError):
+        manager.run_background(lambda: None, CURSOR)
+    assert events == []
