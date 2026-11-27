@@ -15023,6 +15023,26 @@ class Launcher(QWidget):
         QApplication.quit()
 
 
+def report_desktop_startup_ready(hook_active):
+    """Source-run console notice; called once Qt can dispatch events."""
+    if getattr(sys, 'frozen', False) or sys.stdout is None:
+        return
+    if hook_active:
+        message = '[READY] FRB Launch 起動完了！ デスクトップをダブルクリックできます。'
+        fallback = '[READY] FRB Launch - Double-click the desktop to open.'
+    else:
+        message = '[WARN] FRB Launch 起動完了。ただしデスクトップダブルクリックは利用できません。'
+        fallback = '[WARN] FRB Launch started; desktop double-click is unavailable.'
+    try:
+        try:
+            print(message, flush=True)
+        except UnicodeEncodeError:
+            print(fallback, flush=True)
+    except (OSError, ValueError):
+        # A closed/redirected development console must not affect Launch.
+        pass
+
+
 def main():
     requested_jump_item = jump_list.requested_item(sys.argv[1:])
     # Set an explicit identity BEFORE creating any taskbar windows/Jump Lists.
@@ -15069,6 +15089,7 @@ def main():
     # Desktop double-click support is optional: a Windows API/COM error must
     # never prevent the launcher itself from starting (tray/hotkey still work).
     desktop_click = None
+    desktop_hook_active = False
     def open_from_desktop(click=None):
         DIAG.info('DESKTOP_OPEN_CALLBACK visible_before=%s minimized=%s',
                   window.isVisible(), window.isMinimized())
@@ -15280,8 +15301,10 @@ def main():
             defer_wallpaper_outside=lambda: window.remote_on_desktop_double_click,
             on_embedded_mouse_release=focus_docked_external_on_mouse_release,
         )
-        DIAG.info('DESKTOP_DOUBLE_CLICK_HOOK active=%s', desktop_click.start())
+        desktop_hook_active = desktop_click.start()
+        DIAG.info('DESKTOP_DOUBLE_CLICK_HOOK active=%s', desktop_hook_active)
     except Exception:
+        desktop_hook_active = False
         DIAG.exception('DESKTOP_DOUBLE_CLICK_HOOK unavailable; launcher will keep running')
         if desktop_click is not None:
             try:
@@ -15351,6 +15374,10 @@ def main():
         initial_foreground = windows.foreground()
         window.summon()
         request_executable_open_focus(initial_foreground, 'exe_preview')
+    # Report only after initialization and once Qt starts dispatching events.
+    # Do not announce readiness from the BAT or merely from process creation.
+    if not getattr(sys, 'frozen', False) and sys.stdout is not None:
+        QTimer.singleShot(0, lambda: report_desktop_startup_ready(desktop_hook_active))
     try:
         result=app.exec()
     finally:
