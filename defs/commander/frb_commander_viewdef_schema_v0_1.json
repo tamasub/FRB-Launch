@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FRB Commander ViewDef v0.1 — AI作成用スキーマ",
-  "description": "2026-11-25時点の実装に基づく安全な作成用部分集合。実行時の寛容なvalidatorとは異なり、未知項目や未対応の任意入力を禁止する。ID一意性、参照、PS1との一致は別途確認する。",
+  "description": "2026-11-27時点の実装に基づく安全な作成用部分集合。実行時の寛容なvalidatorとは異なり、未知項目や未対応の任意入力を禁止する。ID一意性、参照、PS1との一致は別途確認する。",
   "type": "object",
   "properties": {
     "schema_version": {
@@ -48,6 +48,9 @@
           },
           {
             "$ref": "#/$defs/fileStep"
+          },
+          {
+            "$ref": "#/$defs/folderStep"
           }
         ]
       }
@@ -293,6 +296,92 @@
           "properties": {
             "type": {
               "const": "keyboard_ex.file"
+            },
+            "initial_location": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "workspace_root",
+                        "script_dir"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "const": "parent_of"
+                    },
+                    "selection": {
+                      "$ref": "#/$defs/identifier"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "selection"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "initial_location"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "input",
+        "selector"
+      ],
+      "additionalProperties": false
+    },
+    "folderStep": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "not": {
+                "const": "source"
+              }
+            }
+          ]
+        },
+        "label": {
+          "$ref": "#/$defs/nonBlankString"
+        },
+        "input": {
+          "const": "folder_path"
+        },
+        "required": {
+          "const": true,
+          "default": true,
+          "description": "現行GUIでは表示中の全項目が必須。省略時も必須。"
+        },
+        "visible_when": {
+          "$ref": "#/$defs/visibleWhen"
+        },
+        "selector": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "keyboard_ex.folder"
             },
             "initial_location": {
               "oneOf": [

@@ -1,6 +1,9 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+rem Invalidate the previous build receipt before any work (manual or GUI).
+if exist "dist\.frb_launch_build.json" del /f /q "dist\.frb_launch_build.json"
+if exist "dist\.frb_launch_build.json" goto fail
 rem Do not stop the app or remove dist until the new environment passes checks.
 if exist .venv\Scripts\python.exe goto checkpython
 py -3.15 src\python_build_environment.py --migration
@@ -39,7 +42,8 @@ tasklist /FI "IMAGENAME eq FRBLaunch.exe" /NH | find /I "FRBLaunch.exe" >nul
 if errorlevel 1 goto frb_process_stopped
 set /a _frb_wait+=1
 if %_frb_wait% GEQ 15 goto frb_process_stuck
-timeout /t 1 /nobreak >nul
+rem GUI builds have redirected stdin; TIMEOUT requires a console.
+.venv\Scripts\python.exe -c "import time; time.sleep(1)"
 goto wait_frb_exit
 :frb_process_stuck
 echo [ERROR] FRBLaunch.exe did not exit after 15 seconds.
@@ -63,14 +67,16 @@ copy /Y README.md dist\FRBLaunch\README.md
 if errorlevel 1 goto fail
 > "dist\FRBLaunch\portable_studio_ready.txt" echo bundled_studio_root_v1
 if errorlevel 1 goto fail
-if not "%FRB_ENV_REFRESH%"=="1" start "" explorer.exe "%~dp0dist\FRBLaunch"
+.venv\Scripts\python.exe scripts\launch_release_build.py record
+if errorlevel 1 goto fail
+if not "%FRB_GUI_BUILD%"=="1" if not "%FRB_ENV_REFRESH%"=="1" start "" explorer.exe "%~dp0dist\FRBLaunch"
 echo Build complete: dist\FRBLaunch\FRBLaunch.exe
-if not "%FRB_ENV_REFRESH%"=="1" pause
+if not "%FRB_GUI_BUILD%"=="1" if not "%FRB_ENV_REFRESH%"=="1" pause
 exit /b 0
 :unsupported
 echo To migrate to standard x64 Python 3.15.2, install it and run update_python_env.bat.
 goto fail
 :fail
 echo Build failed. See the output above.
-if not "%FRB_ENV_REFRESH%"=="1" pause
+if not "%FRB_GUI_BUILD%"=="1" if not "%FRB_ENV_REFRESH%"=="1" pause
 exit /b 1

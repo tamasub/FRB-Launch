@@ -20,6 +20,7 @@ from html.parser import HTMLParser
 from html import unescape
 from runtime_paths import resolve_studio_cli, resolve_node, portable_runtime
 from shell_link_stream import make_link_data, ShellLinkError
+from process_runner import run_internal_process
 
 
 VIEW_DEF = 'launch/frb_launch_maintenance_view_def_v0_1.json'
@@ -516,7 +517,7 @@ def commit_add(config_path, studio_root, page_id, parent_id, records, *, timeout
         def run(mode):
             request['mode'] = mode
             try:
-                completed = subprocess.run(
+                completed = run_internal_process(
                     [node, str(root / 'tools/change_core/cli.mjs'), '--config', str(trusted_path)],
                     input=json.dumps(request, ensure_ascii=False), text=True, encoding='utf-8',
                     capture_output=True, timeout=timeout, check=False)
@@ -583,7 +584,7 @@ def _invoke_delete_cli(root, trusted_config, request, mode, timeout):
         config_file = Path(directory) / 'trusted.json'
         config_file.write_text(json.dumps(trusted_config, ensure_ascii=False), encoding='utf-8')
         try:
-            completed = subprocess.run(
+            completed = run_internal_process(
                 [node, str(root / 'tools/change_core/cli.mjs'), '--config', str(config_file)],
                 input=json.dumps(payload, ensure_ascii=False), text=True, encoding='utf-8',
                 capture_output=True, timeout=timeout, check=False)

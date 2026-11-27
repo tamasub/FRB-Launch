@@ -7,6 +7,8 @@ import logging
 import time
 import threading
 from contextlib import contextmanager
+from processing_display import processing_display, CURSOR, MESSAGE, PROGRESS
+from menu_lifecycle import close_menu_tree, finish_selection, install_terminal_menu, selection_root
 import subprocess
 from pathlib import Path
 from ctypes import wintypes
@@ -679,7 +681,8 @@ class CascadeMenu(OrderDragMixin,QMenu):
                 return False
             mime = QApplication.clipboard().mimeData()
             if clipboard_sources(mime) or is_virtual_file_clipboard(mime):
-                self.launcher.paste_into_directory(self)
+                finish_selection(selection_root(self),
+                    lambda: self.launcher.paste_into_directory(self))
             return True
         if key not in (Qt.Key.Key_C, Qt.Key.Key_X):
             return False
@@ -689,8 +692,8 @@ class CascadeMenu(OrderDragMixin,QMenu):
         if not path:
             return False
         kind = 'folder' if Path(path).is_dir() else 'file'
-        self.launcher.perform_filesystem_context_action(
-            'cut' if key == Qt.Key.Key_X else 'copy', path, kind)
+        finish_selection(selection_root(self), lambda: self.launcher.perform_filesystem_context_action(
+            'cut' if key == Qt.Key.Key_X else 'copy', path, kind))
         return True
 
     def _authored_context_row(self, row):
@@ -1198,7 +1201,8 @@ class CascadeMenu(OrderDragMixin,QMenu):
                 QPushButton#directoryPasteButton:disabled { color:#879cab;
                     background:#eaf5ff; border-color:#89afcf; }
             ''')
-            self.paste_button.clicked.connect(lambda checked=False: self.launcher.paste_into_directory(self))
+            self.paste_button.clicked.connect(lambda checked=False: finish_selection(
+                selection_root(self), lambda: self.launcher.paste_into_directory(self)))
             self._update_paste_button()
             search_row.addWidget(self.paste_button)
         self.filter_count = QLabel('', container)
@@ -1588,6 +1592,7 @@ class CascadeMenu(OrderDragMixin,QMenu):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._frb_terminal_dispatched = False
         self._refresh_parent_route_highlight()
         self.select_first()
         if self.filter_edit is not None:
@@ -1892,7 +1897,7 @@ class CascadeMenu(OrderDragMixin,QMenu):
             path = self._filesystem_row_path(row)
             if path and Path(path).exists():
                 kind = 'folder' if Path(path).is_dir() else 'file'
-                self.launcher.perform_filesystem_context_action('delete', path, kind)
+                finish_selection(selection_root(self), lambda: self.launcher.perform_filesystem_context_action('delete', path, kind))
                 event.accept()
                 return
         # The editor is always present. Space is ordinary input, not a
@@ -2012,7 +2017,7 @@ class FilesOperationProgress(QDialog):
     bin); repaint safely only between individual operations. A single large
     file/dir may still occupy the UI until its filesystem call returns.
     """
-    def __init__(self, parent, verb, total):
+    def __init__(self, parent, verb, total, *, mode=PROGRESS):
         super().__init__(parent)
         self.setWindowTitle('FRB Launch — 処理中')
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
@@ -2054,6 +2059,9 @@ class FilesOperationProgress(QDialog):
         self.bar.setValue(0)
         self.bar.setTextVisible(True)
         layout.addWidget(self.bar)
+        if mode == MESSAGE:
+            self.detail.hide()
+            self.bar.hide()
 
     def _update_detail_text(self):
         completed, total, name = self._detail_values
@@ -2503,11 +2511,7 @@ class RemoteFolderCascade(CascadeMenu):
             self._inline_rename_editor = None
             editor.deleteLater()
             self._inline_rename_committing = False
-            # Enter/Escape ends the rename command; do not leave a floating
-            # context menu (or its ancestor folder columns) behind.
-            closer = getattr(self.launcher, 'close_finished_file_context_menus', None)
-            if callable(closer):
-                QTimer.singleShot(0, closer)
+            close_menu_tree(selection_root(self))
 
     def eventFilter(self, obj, event):
         if obj is getattr(self, '_inline_rename_editor', None):
@@ -2549,19 +2553,17 @@ class RemoteFolderCascade(CascadeMenu):
         """Open a Filesリスト leaf and dismiss the whole context cascade.
 
         Both QMenu rows and scroll-tree rows execute files through here.
-        Closing on the NEXT event-loop tick keeps the double-click release
-        intact and avoids destroying its Tool column inside mouse dispatch.
-        Folder clicks are navigation only and must retain their menus.
+        Callers defer until the double-click release; folder browsing stays open.
         """
         filename = row.get('_browse_file')
-        if not filename or not Path(filename).is_file():
+        if not filename:
             return
-        try:
+        def launch():
+            if not Path(filename).is_file():
+                self.launcher.error("対象ファイルが見つかりません: " + str(filename))
+                return
             self.launcher.activate(row)
-        finally:
-            closer = getattr(self.launcher, 'close_finished_file_context_menus', None)
-            if callable(closer):
-                QTimer.singleShot(0, closer)
+        finish_selection(selection_root(self), launch)
 
     def _remote_commit_folder(self, row, action=None):
         if (getattr(self, '_remote_rename_activation_guard', False) or
@@ -3800,6 +3802,7 @@ class Launcher(QWidget):
         self.update_bookmark_source_action()
         traymenu.addAction('ログフォルダーを開く', lambda:self.open_target(str(STATE)))
         traymenu.addSeparator(); traymenu.addAction('終了', self.quit)
+        install_terminal_menu(traymenu)
         self.tray_menu = traymenu
         self.apply_color_theme()
         self.tray.setContextMenu(traymenu); self.tray.activated.connect(lambda r:self.summon() if r==QSystemTrayIcon.ActivationReason.Trigger else None)
@@ -4047,6 +4050,7 @@ class Launcher(QWidget):
             menu = LaunchActionMenu(self)
             menu.launcher = self  # Owned by the same event-filter policy.
             self._launch_action_menu = menu
+            install_terminal_menu(menu)
         menu.clear()
         menu.set_launch_theme(self.color_theme)
         files = bool(getattr(self, 'expanded_view', None) is not None
@@ -4060,7 +4064,8 @@ class Launcher(QWidget):
             action.setEnabled(action_is_available(action_id, files))
             action.triggered.connect(
                 lambda checked=False, identifier=action_id:
-                QTimer.singleShot(0, lambda: self.execute_launch_action(identifier)))
+                QTimer.singleShot(0, lambda: processing_display().run(
+                    lambda: self.execute_launch_action(identifier))))
             if first_enabled is None and action.isEnabled():
                 first_enabled = action
         point = self._launch_action_menu_point(source)
@@ -4181,11 +4186,7 @@ class Launcher(QWidget):
             return
         self._update_information_pending = True
         try:
-            self.theme_menu.close()
-            for child in self.theme_menu.findChildren(QMenu):
-                if child.isVisible():
-                    child.close()
-            self.theme_menu.hide()
+            close_menu_tree(self.theme_menu)
             QTimer.singleShot(0, self._show_update_information_after_menu_close)
         except Exception:
             self._update_information_pending = False
@@ -4193,18 +4194,6 @@ class Launcher(QWidget):
 
     def _show_update_information_after_menu_close(self):
         try:
-            # Hybrid Settings is a Qt.Tool QMenu; repeat closing on the next
-            # event turn, just as the existing Option Settings launcher does.
-            for child in self.theme_menu.findChildren(QMenu):
-                if child.isVisible():
-                    child.close()
-                    child.hide()
-            self.theme_menu.close()
-            self.theme_menu.hide()
-            self.theme_menu.setActiveAction(None)
-            wheel = getattr(self, '_remote_context_wheel', None)
-            if wheel is not None and getattr(wheel, 'root', None) is self.theme_menu:
-                wheel.stop()
             existing = getattr(self, '_update_information_dialog', None)
             if existing is not None and existing.isVisible():
                 existing.raise_()
@@ -4224,27 +4213,12 @@ class Launcher(QWidget):
             self._update_information_pending = False
 
     def show_version_information(self, checked=False):
-        """Close the hybrid Settings menu *before* opening About.
-
-        The Settings QMenu is a non-grabbing Qt.Tool window (for ぐりぐり).
-        Unlike a native Qt.Popup it can remain visible when its QAction is
-        triggered. Opening RemoteConfirmation synchronously from that signal
-        starts a nested event loop while the menu is still on top: the dialog
-        can be hidden and its global input guard blocks other actions, even
-        the tray's Exit command. Yield to the event loop after closing it.
-        """
+        """Open About after the shared selection boundary."""
         if getattr(self, '_version_information_pending', False):
             return
         self._version_information_pending = True
         try:
-            self.theme_menu.close()
-            # Qt.Tool menus do not always auto-hide on QAction activation.
-            # Ensure the parent menu and any expanded child are no longer
-            # visible before the confirmation's input guard is installed.
-            for child in self.theme_menu.findChildren(QMenu):
-                if child.isVisible():
-                    child.close()
-            self.theme_menu.hide()
+            close_menu_tree(self.theme_menu)
             QTimer.singleShot(0, self._show_version_information_after_menu_close)
         except Exception:
             self._version_information_pending = False
@@ -4353,27 +4327,6 @@ class Launcher(QWidget):
             if self.files_exp_embedded_mode else
             'Filesルート非表示：第2列のみを操作します。'
             if self.files_root_hidden_mode else '従来のFiles第1列を復元しました。')
-
-    def close_finished_file_context_menus(self):
-        """Dismiss filesystem context menus after an operation completes.
-
-        Navigating/hovering Filesリスト is not an operation, so callers run
-        this only after an action (Paste, Copy, Cut, Delete, etc.) is chosen.
-        Close from the root down to avoid leaving orphaned cascade columns.
-        """
-        context = getattr(self, '_launch_context_menu', None)
-        if context is not None:
-            try:
-                context.close()
-            except RuntimeError:  # Qt already destroyed the popup.
-                pass
-            if getattr(self, '_launch_context_menu', None) is context:
-                self._launch_context_menu = None
-        self.close_remote_folder_menu()
-        cascade = getattr(self, 'menu', None)
-        if (cascade is not None and cascade is not getattr(self, '_remote_page_menu', None)
-                and cascade.isVisible()):
-            cascade.close()
 
     def close_remote_folder_menu(self):
         """Close Remote filesystem preview and its right-click opener."""
@@ -6194,7 +6147,7 @@ class Launcher(QWidget):
             self._prepend_remote_pad_navigation(menu)
         self._remote_web_popup = menu
         menu.aboutToHide.connect(lambda: setattr(self, '_remote_web_popup', None))
-        menu.aboutToHide.connect(menu.deleteLater)
+        menu.aboutToHide.connect(lambda m=menu: QTimer.singleShot(250, m.deleteLater))
         pad = remote.pad
         point = pad.mapToGlobal(QPoint(pad.width() + 4, 0))
         screen = QApplication.screenAt(pad.mapToGlobal(pad.rect().center())) or QApplication.primaryScreen()
@@ -6343,7 +6296,7 @@ class Launcher(QWidget):
         if wheel is not None and wheel.root is menu:
             wheel.stop()
         origin = QCursor.pos() if getattr(self, 'pointer_warp_enabled', False) else None
-        menu.close()
+        close_menu_tree(menu)
         # No LEFT/RIGHT dispatch here: those are *hierarchy* commands and can
         # traverse physical folders. Column switching owns no history entry.
         def finish():
@@ -6499,6 +6452,8 @@ class Launcher(QWidget):
         menu = FRBContextMenu(parent=parent or self, launcher=self)
         menu.remote_context_root = True  # Context commands, not a search column.
         menu._frb_files_context_menu = True
+        if isinstance(parent, CascadeMenu):
+            menu._frb_selection_parent = selection_root(parent)
         # FRBContextMenu self-installs both its Runner and its appearance.
         return menu
 
@@ -6521,6 +6476,7 @@ class Launcher(QWidget):
         # Single mandatory presentation boundary, independent of where the
         # menu was created or whether the Remote is visible. Settings keeps
         # its existing theme-specific presentation via context=False.
+        install_terminal_menu(menu)
         if context:
             # The same exact final style for Exp and List, regardless of
             # individual actions (Filesリスト is an Exp-only action).
@@ -7380,9 +7336,6 @@ class Launcher(QWidget):
         self._wire_hybrid_context_menu(menu, column=column)
         self._launch_context_menu = menu
         menu.aboutToHide.connect(lambda m=menu: self._forget_launch_context_menu(m))
-        menu.triggered.connect(
-            lambda action, m=menu: m.close()
-            if action is not None and action.menu() is None else None)
         # The wheel controller closes first and schedules QAction.trigger()
         # on the next event tick. Deleting the menu immediately on hide would
         # also destroy that pending QAction. Defer disposal beyond the tick.
@@ -8690,6 +8643,7 @@ class Launcher(QWidget):
             action.setChecked(index == self.tabs.currentIndex())
             action.triggered.connect(
                 lambda checked=False, i=index: self.tabs.setCurrentIndex(i))
+        install_terminal_menu(menu)
         menu.exec(self.page_overflow_button.mapToGlobal(
             QPoint(0, self.page_overflow_button.height())))
 
@@ -9280,7 +9234,8 @@ class Launcher(QWidget):
         self._remote_text_dialog = adapter
         self._filesystem_dialog_depth = getattr(self, '_filesystem_dialog_depth', 0) + 1
         try:
-            return adapter.ask()
+            with processing_display().waiting_for_user():
+                return adapter.ask()
         finally:
             self._remote_text_dialog = None
             self._filesystem_dialog_depth = max(
@@ -9359,7 +9314,8 @@ class Launcher(QWidget):
         self._remote_confirmation = confirmation
         self._filesystem_dialog_depth = getattr(self, '_filesystem_dialog_depth', 0) + 1
         try:
-            return confirmation.ask()
+            with processing_display().waiting_for_user():
+                return confirmation.ask()
         finally:
             self._remote_confirmation = None
             self._filesystem_dialog_depth = max(
@@ -11078,17 +11034,14 @@ class Launcher(QWidget):
     @contextmanager
     def filesystem_progress(self, verb, total):
         """One shared indicator for bulk paste/delete; always closed on error."""
-        # Single-item operations can be large too; show processing feedback.
-        progress = FilesOperationProgress(self, verb, total)
+        previous = getattr(self, '_filesystem_busy', False)
         self._filesystem_busy = True
         try:
-            progress.show()
-            progress.advance(0, total)
-            yield progress.advance
+            with processing_display(FilesOperationProgress).display(
+                    PROGRESS, verb=verb, total=total, parent=self) as advance:
+                yield advance
         finally:
-            progress.close()
-            progress.deleteLater()
-            self._filesystem_busy = False
+            self._filesystem_busy = previous
 
     def paste_with_progress(self, plan, *, move=False, overwrite=False):
         """Modal UI, nonblocking worker, no second Paste while running.
@@ -11314,7 +11267,8 @@ class Launcher(QWidget):
                 # The Shell can show a second overwrite prompt for ZIP members.
                 # Suppress it ONLY when known name conflicts were explicitly
                 # approved in Launch. Unknown clipboard names keep native UI.
-                paste_virtual_shell_items(destination, overwrite_confirmed=bool(conflicts))
+                with processing_display().display(CURSOR):
+                    paste_virtual_shell_items(destination, overwrite_confirmed=bool(conflicts))
                 if names:
                     names_done = names
                 else:
@@ -11353,16 +11307,6 @@ class Launcher(QWidget):
             report = getattr(self, '_record_transfer_result', None)
             if callable(report):
                 report(destination, names_done)
-            # A finished Paste closes its context menu; the updated Files/Exp
-            # views and transient feedback show the result instead of
-            # re-opening a floating cascade after the user's command.
-            closer = getattr(self, 'close_finished_file_context_menus', None)
-            if callable(closer):
-                QTimer.singleShot(0, closer)
-            else:
-                # Historical test adapters have no popup lifecycle owner.
-                QTimer.singleShot(0, lambda m=menu: self.refresh_pasted_directory(
-                    m, reopen=True, focus_pasted=True))
         except (OSError, ValueError) as exc:
             DIAG.exception('DIRECTORY_PASTE target=%s', context.get('launch_browse_target'))
             self.error('貼り付けできませんでした: ' + str(exc))
@@ -11471,23 +11415,19 @@ class Launcher(QWidget):
                                       review_deleted=True)
 
     def run_menu_item(self, row):
-        # Remote > Browser right-click uses its own tab destination, while
-        # the normal Bookmarks pane has an independent destination selector.
-        # Other cascades retain their established activation semantics.
         root = getattr(self, 'menu', None)
-        if (getattr(root, 'remote_browser_bookmark_roots', False)
-                and self.webview_settings.get('mode') == 'embedded'):
-            url = bookmark_web_url(row)
-            if url:
-                new_tab = getattr(root, 'remote_bookmark_new_tab', True)
-                if root is not None:
-                    root.close()
-                if self.expanded_view.show_web_url(url, new_tab=new_tab):
+        def execute():
+            if (getattr(root, 'remote_browser_bookmark_roots', False)
+                    and self.webview_settings.get('mode') == 'embedded'):
+                url = bookmark_web_url(row)
+                if url and self.expanded_view.show_web_url(
+                        url, new_tab=getattr(root, 'remote_bookmark_new_tab', True)):
                     return
-                # WebEngine unavailable: preserve the existing activation
-                # fallback (including the configured external-browser mode).
-        if self.menu:self.menu.close()
-        self.activate(row)
+            self.activate(row)
+        if root is not None:
+            finish_selection(root, execute)
+        else:
+            processing_display().run(execute)
 
     def cascade(self,row,q=None,mode="keyboard"):
         self.hover_timer.stop();self.pending_menu_item=None
@@ -11994,21 +11934,24 @@ class Launcher(QWidget):
         delete_action = menu.addAction('カテゴリーを削除（履歴は未分類へ）...')
         pos = tree.viewport().mapToGlobal(point) if point is not None else tree.viewport().mapToGlobal(tree.visualItemRect(item).center())
         chosen = menu.exec(pos)
-        try:
-            if chosen == rename_action:
-                name, accepted = self.ask_launch_text('カテゴリー名変更', '新しい名前:', text=group['name'])
-                if accepted and name.strip() and not self.search_categories.rename(identifier, name):
-                    self.show_launch_notice(QMessageBox.Icon.Information, 'カテゴリー', '同じ名前のカテゴリーがあるか、変更できない名前です。')
-                elif accepted:
-                    self.populate_history_popup()
-            elif chosen == delete_action:
-                answer = self.ask_remote_confirmation('カテゴリー削除',
-                    f'「{group["name"]}」を削除しますか？\n中の検索履歴は未分類へ移動します。')
-                if answer == QMessageBox.StandardButton.Yes:
-                    self.search_categories.delete(identifier)
-                    self.populate_history_popup()
-        except OSError:
-            DIAG.exception('SEARCH_HISTORY category edit failed')
+        if chosen is None:
+            return
+        with processing_display().display(CURSOR):
+            try:
+                if chosen == rename_action:
+                    name, accepted = self.ask_launch_text('カテゴリー名変更', '新しい名前:', text=group['name'])
+                    if accepted and name.strip() and not self.search_categories.rename(identifier, name):
+                        self.show_launch_notice(QMessageBox.Icon.Information, 'カテゴリー', '同じ名前のカテゴリーがあるか、変更できない名前です。')
+                    elif accepted:
+                        self.populate_history_popup()
+                elif chosen == delete_action:
+                    answer = self.ask_remote_confirmation('カテゴリー削除',
+                        f'「{group["name"]}」を削除しますか？\n中の検索履歴は未分類へ移動します。')
+                    if answer == QMessageBox.StandardButton.Yes:
+                        self.search_categories.delete(identifier)
+                        self.populate_history_popup()
+            except OSError:
+                DIAG.exception('SEARCH_HISTORY category edit failed')
         if chosen is not None and not self.history_popup.isVisible():
             self.show_history_popup()
 
@@ -12065,7 +12008,7 @@ class Launcher(QWidget):
         if not hasattr(self, 'history_popup'):
             return
         was_visible = self.history_popup.isVisible()
-        self.history_popup.hide()
+        close_menu_tree(self.history_popup)
         self.expanded_view.refresh_guest_popup_priority()
         self._history_popup_anchor = None
         # Start each invocation with the full history; local filter is not a
@@ -12110,13 +12053,14 @@ class Launcher(QWidget):
         if keyword not in self.search_history.keywords and not self.session_history.has(keyword):
             return
         self.hide_history_popup()
-        self.search.setText(keyword)  # Existing live textChanged search is the only search path.
-        self.search.setCursorPosition(len(keyword))
-        if self.list.topLevelItemCount():
-            self.list.setCurrentItem(self.list.topLevelItem(0))
-        if not self.focus_settled_global_search_results():
-            self.list.setFocus(Qt.FocusReason.ShortcutFocusReason)
-        DIAG.info('SEARCH_HISTORY selected keyword=%s', keyword)
+        with processing_display().display(CURSOR):
+            self.search.setText(keyword)  # Existing live textChanged search is the only search path.
+            self.search.setCursorPosition(len(keyword))
+            if self.list.topLevelItemCount():
+                self.list.setCurrentItem(self.list.topLevelItem(0))
+            if not self.focus_settled_global_search_results():
+                self.list.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            DIAG.info('SEARCH_HISTORY selected keyword=%s', keyword)
 
     def change_history_row(self, value, action):
         try:
@@ -13312,21 +13256,12 @@ class Launcher(QWidget):
         return super().eventFilter(obj,event)
 
     def open_option_settings(self, checked=False):
-        """Dismiss the non-grabbing settings menu before launching the editor.
-
-        This QMenu uses Qt.Tool for the ぐりぐり UI, so QAction.triggered does
-        not reliably hide it.  Defer the dialog until the menu-close events
-        have been processed (the same lifetime rule as About).
-        """
+        """Open the existing options editor after the selection boundary."""
         if getattr(self, '_option_settings_pending', False):
             return
         self._option_settings_pending = True
         try:
-            self.theme_menu.close()
-            for child in self.theme_menu.findChildren(QMenu):
-                if child.isVisible():
-                    child.close()
-            self.theme_menu.hide()
+            close_menu_tree(self.theme_menu)
             QTimer.singleShot(0, self._show_option_settings_after_menu_close)
         except Exception:
             self._option_settings_pending = False
@@ -13335,18 +13270,6 @@ class Launcher(QWidget):
     def _show_option_settings_after_menu_close(self):
         """Reuse an open options dialog or open the one shared editor host."""
         try:
-            # QAction.triggered may fire before Qt.Tool finishes mouse-release.
-            # A second close here (on the NEXT event-loop turn) is required.
-            for child in self.theme_menu.findChildren(QMenu):
-                if child.isVisible():
-                    child.close()
-                    child.hide()
-            self.theme_menu.close()
-            self.theme_menu.hide()
-            self.theme_menu.setActiveAction(None)
-            wheel = getattr(self, '_remote_context_wheel', None)
-            if wheel is not None and getattr(wheel, 'root', None) is self.theme_menu:
-                wheel.stop()
             # Options always owns the Files third column on Windows, even
             # when the independent 'embed_studio' guest preference is OFF.
             # That preference is about Studio NativeShell, not the Options
@@ -13495,11 +13418,6 @@ class Launcher(QWidget):
             self.paste_into_expanded_directory()
         else:
             self.paste_into_expanded_directory(destination_override=target_folder)
-        # The destination/clipboard result now lives in the Files views and
-        # status bar; never leave a source context menu hovering above them.
-        closer = getattr(self, 'close_finished_file_context_menus', None)
-        if callable(closer):
-            QTimer.singleShot(0, closer)
 
     def can_rename_remote_folder(self, directory):
         """Never rename a registered shortcut root, drive, or filesystem root."""
@@ -13589,8 +13507,7 @@ class Launcher(QWidget):
 
     def begin_remote_rename_after_menu(self, directory):
         """Dismiss the popup BEFORE focusing Files Exp's inline editor."""
-        self.close_finished_file_context_menus()
-        QTimer.singleShot(0, lambda: self.rename_remote_folder(directory))
+        processing_display().run(lambda: self.rename_remote_folder(directory))
 
     def rename_remote_folder(self, directory):
         """One Rename command for Files Exp and Remote's current-folder menu.
@@ -13901,32 +13818,11 @@ class Launcher(QWidget):
             return menu
         self._launch_context_menu = menu
         menu.aboutToHide.connect(lambda m=menu: self._forget_launch_context_menu(m))
-        # QMenu keeps hover-preview branches open deliberately. Leaf actions
-        # are complete commands and must dismiss all related popup windows.
-        menu.triggered.connect(lambda action, m=menu:
-            self._on_file_context_action_triggered(m, action))
         self._wire_hybrid_context_menu(
             menu, column='exp' if remote_folder_list and explicit_target is not None
             else 'list')
         menu.popup(global_pos)
         return True
-
-    def _on_file_context_action_triggered(self, menu, action):
-        if action is None or action.menu() is not None or action is getattr(menu, 'folder_list_action', None):
-            return  # Preview/submenu navigation is not a completed action.
-        # New Folder starts an inline grid edit asynchronously; closing the
-        # menu immediately can steal editor focus before Enter. Let editing-
-        # Finished close the context menu instead.
-        new_action = getattr(menu, 'new_submenu_action', None)
-        new_menu = new_action.menu() if new_action is not None else None
-        if new_menu is not None and action in new_menu.actions():
-            return
-        if action.text().strip() == '名前の変更':
-            # Queue after begin_folder_rename() so the editor survives the
-            # popup dismissal. Its Enter/Escape still work independently.
-            QTimer.singleShot(0, self.close_finished_file_context_menus)
-            return
-        QTimer.singleShot(0, self.close_finished_file_context_menus)
 
     def add_open_with_submenu(self, parent_menu, title, path):
         """Right-opening app list; native chooser remains the final fallback."""
@@ -14129,7 +14025,9 @@ class Launcher(QWidget):
                     action = menu.addAction(definition['title'],
                         lambda checked=False, p=path, k=origin, source=context_parent:
                         QTimer.singleShot(0, lambda:
-                            self.rename_remote_cascade_entry(p, k, source)))
+                            processing_display().run(
+                                lambda: self.rename_remote_cascade_entry(p, k, source))))
+                    action.setProperty('frb_handoff_to_selection_host', True)
                     if origin == 'folder':
                         action.setEnabled(self.can_rename_remote_folder(path))
                 elif action_id == 'open_with' and origin == 'file':
@@ -14172,8 +14070,6 @@ class Launcher(QWidget):
             # a menu originates in Files, Remote, or Files Exp.
             menu.setMinimumWidth(218)
             menu.setMaximumWidth(225)
-            menu.triggered.connect(lambda action, m=menu:
-                self._on_file_context_action_triggered(m, action))
         # Do not keep a stale Python wrapper after a cascade tool-window is
         # closed/deleted. Hover polling must not ask a deleted QMenu if visible.
         if hasattr(menu, 'aboutToHide'):
@@ -14330,7 +14226,8 @@ class Launcher(QWidget):
                 if conflicts and not self._ask_overwrite(destination, conflicts):
                     return
                 before = {p.name.casefold() for p in destination.iterdir()}
-                paste_virtual_shell_items(destination, overwrite_confirmed=bool(conflicts))
+                with processing_display().display(CURSOR):
+                    paste_virtual_shell_items(destination, overwrite_confirmed=bool(conflicts))
                 count = len(names) if names else sum(
                     p.name.casefold() not in before for p in destination.iterdir())
                 self.info_notice(f'{count}件をZIPから貼り付けました → {destination}')
@@ -14422,11 +14319,8 @@ class Launcher(QWidget):
         dest_text = destination.text().strip()
         if not dest_text:
             raise ValueError('展開先を指定してください')
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
+        with processing_display().display(CURSOR):
             extracted = safe_extract_zip(path, dest_text)
-        finally:
-            QApplication.restoreOverrideCursor()
         self.footer.setText(f'ZIPを展開しました → {extracted}')
         if show_files.isChecked():
             open_file_explorer(extracted)
@@ -14534,18 +14428,6 @@ class Launcher(QWidget):
                              (2 if action_id == 'cut' else 1).to_bytes(4, 'little'))
                 QApplication.clipboard().setMimeData(mime)
                 self.footer.setText(f'{path.name} を{"切り取り" if action_id == "cut" else "コピー"}しました')
-                # A Remote/Exp clipboard action is finished. Do not leave the
-                # Filesリスト cascade or parent context window on screen.
-                def close_clipboard_menus():
-                    transient = getattr(self, '_launch_context_menu', None)
-                    if transient is not None:
-                        transient.close()
-                    if (getattr(self, '_remote_folder_opener', None) is not None or
-                            getattr(self, '_remote_folder_root_menu', None) is not None):
-                        self.close_remote_folder_menu()
-                if (getattr(self, '_remote_folder_opener', None) is not None or
-                        getattr(self, '_remote_folder_root_menu', None) is not None):
-                    QTimer.singleShot(0, close_clipboard_menus)
             elif action_id == 'refresh_directory' and kind == 'folder':
                 self.refresh_folder_information(path)
             elif action_id == 'delete':
@@ -14709,12 +14591,6 @@ class Launcher(QWidget):
         except (OSError, ValueError, RuntimeError) as exc:
             DIAG.exception('FILESYSTEM_CONTEXT action=%s target=%s', action_id, target)
             self.error('操作を実行できませんでした: ' + str(exc))
-        finally:
-            # Menus are command launchers, not persistent status displays.
-            # Keep inline editors alive: they close on their own commit.
-            closer = getattr(self, 'close_finished_file_context_menus', None)
-            if action_id != 'rename' and callable(closer):
-                QTimer.singleShot(0, closer)
 
     def git_commit_using_filename(self, selected_path):
         """Ask a human for the Git repository; filename is message text only."""
@@ -14783,8 +14659,10 @@ class Launcher(QWidget):
                                 else '未追跡ファイルは追加しません。')))
             if answer != QMessageBox.StandardButton.Yes:
                 return
-            committed = commit_tracked_changes(preview['repository'], message,
-                                               include_untracked=preview['include_untracked'])
+            with processing_display(FilesOperationProgress).display(
+                    MESSAGE, verb='Gitコミット', parent=self):
+                committed = commit_tracked_changes(preview['repository'], message,
+                                                   include_untracked=preview['include_untracked'])
             self.info_notice('Gitコミット完了：' + committed)
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             DIAG.exception('GIT_COMMIT_FROM_FILENAME path=%s', selected_path)

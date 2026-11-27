@@ -8,7 +8,7 @@ from pathlib import Path, PureWindowsPath
 SCHEMA_VERSION = "frb_commander_viewdef_v0.1"
 _SUPPORTED_SCRIPT_SUFFIXES = frozenset({".ps1"})
 _PLACEHOLDER = re.compile(r"^\$\{([a-z][a-z0-9_]*)\}$")
-_KNOWN_INPUTS = {"single_choice", "text", "file_path"}
+_KNOWN_INPUTS = {"single_choice", "text", "file_path", "folder_path"}
 
 
 def companion_viewdef(script):
@@ -79,14 +79,17 @@ def validate_viewdef(obj, script):
                     args = choice.get('args')
                     if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
                         raise ValueError('sourceの各choiceにはargs配列が必要です')
-        if step['input'] == 'file_path':
+        if step['input'] in ('file_path', 'folder_path'):
             selector = step.get('selector')
-            if not isinstance(selector, dict) or selector.get('type') != 'keyboard_ex.file':
-                raise ValueError(f'{name}: keyboard_ex.fileが必要です')
+            expected_selector = 'keyboard_ex.folder' if step['input'] == 'folder_path' else 'keyboard_ex.file'
+            if not isinstance(selector, dict) or selector.get('type') != expected_selector:
+                raise ValueError(f'{name}: {expected_selector}が必要です')
             start = selector.get('initial_location')
             if not isinstance(start, dict) or start.get('type') not in ('workspace_root', 'parent_of', 'script_dir'):
                 raise ValueError(f'{name}: initial_location.typeが未対応です')
-            if start['type'] == 'parent_of' and start.get('selection') not in ids:
+            if start['type'] == 'parent_of' and not any(
+                    previous.get('id') == start.get('selection') and previous.get('input') == 'file_path'
+                    for previous in steps[:steps.index(step)]):
                 raise ValueError(f'{name}: parent_ofは先行する選択項目を参照してください')
         when = step.get('visible_when')
         if when is not None and (not isinstance(when, dict) or len(when) != 1 or
@@ -132,6 +135,8 @@ def build_argv(definition, values, script):
                 raise ValueError(f'{step["label"]}は定義された候補から選んでください')
         if step['input'] == 'file_path' and not Path(value).is_file():
             raise ValueError(f'{step["label"]}のファイルが見つかりません: {value}')
+        if step['input'] == 'folder_path' and not Path(value).is_dir():
+            raise ValueError(f'{step["label"]}のフォルダーが見つかりません: {value}')
     selected = next(choice for choice in definition['steps'][0]['choices']
                     if choice['value'] == values['source'])
     extra = []

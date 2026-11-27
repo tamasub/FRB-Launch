@@ -1,5 +1,7 @@
 """Launch-owned FRB Commander with breadcrumb-anchored searchable choice windows."""
 from pathlib import Path
+from menu_lifecycle import close_menu_tree
+from processing_display import processing_display
 
 from PySide6.QtCore import QEvent, QTimer, Qt, QProcess, QPoint
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -192,8 +194,8 @@ class CommanderWindow(QDialog):
         for index, step in enumerate(steps):
             value = self.values.get(step['id'])
             if value:
-                if step['input'] == 'file_path':
-                    text = f'{step["label"]}: {Path(value).name}'
+                if step['input'] in ('file_path', 'folder_path'):
+                    text = f'{step["label"]}: {Path(value).name or value}'
                 elif step['input'] == 'single_choice':
                     text = next((c['label'] for c in step['choices']
                                  if c['value'] == value), value)
@@ -346,7 +348,7 @@ class CommanderWindow(QDialog):
         if not steps:
             return
         step = steps[self.focus_index]
-        if step['input'] == 'file_path':
+        if step['input'] in ('file_path', 'folder_path'):
             self.close_candidates()
             self.open_file_picker(step)
             return
@@ -447,14 +449,14 @@ class CommanderWindow(QDialog):
             value = self.search.text().strip()
             if not value:
                 return
-        self.accept_value(step['id'], value)
+        processing_display().run(lambda: self.accept_value(step['id'], value))
 
     def close_candidates(self, *, restore_focus=True):
         self.picking_step = None
         if self._popup_mouse_guard:
             QApplication.instance().removeEventFilter(self)
             self._popup_mouse_guard = False
-        self.candidate_popup.hide()
+        close_menu_tree(self.candidate_popup)
         self.search.clear()
         self._update_command_buttons()
         if restore_focus and self.isVisible():
@@ -517,7 +519,8 @@ class CommanderWindow(QDialog):
                 source_item=source,
                 first_column_width=max(300, min(self.width() - 60, 480)),
                 on_file_selected=lambda chosen, item_id=selected_step_id:
-                    self._file_chosen(item_id, chosen))
+                    self._file_chosen(item_id, chosen),
+                selection_kind='folder' if step['input'] == 'folder_path' else 'file')
             if not opened:
                 self._file_picker_pending = False
                 self._update_command_buttons()
@@ -547,7 +550,7 @@ class CommanderWindow(QDialog):
                 self.isVisible() and self._file_picker_pending):
             self._file_picker_pending = False
             self._update_command_buttons()
-            self.status.setText('ファイル選択をキャンセルしました。↓で再選択')
+            self.status.setText('選択をキャンセルしました。↓で再選択')
             self.activateWindow()
             self.focus_breadcrumb()
 

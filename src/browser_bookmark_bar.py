@@ -4,6 +4,7 @@ Only the top-level rows are rendered in the scrollable strip. Folder buttons
 open nested menus on click; scrolling never expands a folder or opens a URL.
 The imported bookmark rows remain unchanged.
 """
+from menu_lifecycle import install_terminal_menu
 from PySide6.QtCore import Qt, QEvent, QPoint, QTimer
 from PySide6.QtWidgets import (QApplication, QScrollArea, QFrame, QWidget,
                               QHBoxLayout, QToolButton, QMenu)
@@ -176,7 +177,8 @@ class HorizontalBookmarkBar(QScrollArea):
             action = menu.addAction('（空のフォルダー）')
             action.setEnabled(False)
         menu.aboutToHide.connect(lambda m=menu: self._clear_folder_menu(m))
-        menu.aboutToHide.connect(menu.deleteLater)
+        install_terminal_menu(menu)
+        menu.aboutToHide.connect(lambda m=menu: QTimer.singleShot(250, m.deleteLater))
         menu.popup(anchor.mapToGlobal(QPoint(0, anchor.height())))
 
     def _clear_folder_menu(self, menu):

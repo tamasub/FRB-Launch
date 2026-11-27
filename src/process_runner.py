@@ -39,10 +39,26 @@ def batch_script_working_directory(program, arguments=()):
     return None
 
 
-def start_process(program, arguments, cwd, show_console=False, log_path=None):
-    options = {'cwd': cwd}
+def _console_options(show_console=False):
+    """Single Windows console policy for detached and synchronous launches."""
     if os.name == 'nt':
-        options['creationflags'] = subprocess.CREATE_NEW_CONSOLE if show_console else subprocess.CREATE_NO_WINDOW
+        return {'creationflags': (subprocess.CREATE_NEW_CONSOLE if show_console
+                                  else subprocess.CREATE_NO_WINDOW)}
+    return {}
+
+
+def run_internal_process(command, **options):
+    """Run an internal CLI without a console; preserve caller-owned I/O.
+
+    Unlike detached Run actions, internal request/response protocols may need
+    stdin, stdout and stderr. Do not replace their pipes with DEVNULL.
+    """
+    options.update(_console_options())
+    return subprocess.run(command, **options)
+
+
+def start_process(program, arguments, cwd, show_console=False, log_path=None):
+    options = {'cwd': cwd, **_console_options(show_console)}
     if not show_console:
         options.update(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if log_path is not None:

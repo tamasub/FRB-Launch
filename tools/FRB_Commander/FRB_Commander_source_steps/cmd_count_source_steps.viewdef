@@ -1,0 +1,50 @@
+{
+  "schema_version": "frb_commander_viewdef_v0.1",
+  "view_type": "frb_commander",
+  "title": "ソースステップ数集計",
+  "description": "指定フォルダー配下のソース行数を再帰集計する。必要に応じてGit HEADとの差分行数も集計する。",
+  "script": {
+    "file": "cmd_count_source_steps.ps1"
+  },
+  "steps": [
+    {
+      "id": "source",
+      "label": "集計方法",
+      "input": "single_choice",
+      "required": true,
+      "choices": [
+        {
+          "value": "count",
+          "label": "ソースステップ数集計",
+          "hint": "ファイル別・拡張子別・総行数（Git不要）",
+          "args": [
+            "-Root",
+            "${root}"
+          ]
+        },
+        {
+          "value": "count_git_diff",
+          "label": "ソースステップ数集計＋Git差分",
+          "hint": "通常集計に加えHEADとの差分の追加・削除行数を表示",
+          "args": [
+            "-Root",
+            "${root}",
+            "-GitDiff"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "root",
+      "label": "対象フォルダー",
+      "input": "folder_path",
+      "required": true,
+      "selector": {
+        "type": "keyboard_ex.folder",
+        "initial_location": {
+          "type": "workspace_root"
+        }
+      }
+    }
+  ]
+}

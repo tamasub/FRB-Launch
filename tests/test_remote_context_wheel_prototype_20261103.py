@@ -104,6 +104,10 @@ class FakeApplication:
 @pytest.fixture
 def harness(monkeypatch):
     app = FakeApplication()
+    import menu_lifecycle
+    from processing_display import ProcessingDisplay
+    display = ProcessingDisplay(NS(setOverrideCursor=lambda *args: None, restoreOverrideCursor=lambda: None, processEvents=lambda *args: None), "wait", "exclude")
+    monkeypatch.setattr(menu_lifecycle, "processing_display", lambda: display)
     jobs = []
     pyqt = ModuleType('PySide6')
     core = ModuleType('PySide6.QtCore')

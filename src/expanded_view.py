@@ -3,6 +3,8 @@
 This is a QWidget INSIDE the main window (never a second Qt.Tool popup).
 All rows/actions are supplied by Launcher and use its existing menu data.
 """
+from menu_lifecycle import close_menu_tree, finish_selection, install_terminal_menu
+from processing_display import processing_display
 from PySide6.QtCore import Qt, QPoint, QPointF, QSize, QTimer, QEvent, QRectF, QFileInfo, QFileSystemWatcher, Signal, QMimeData
 from PySide6.QtGui import QKeyEvent, QDrag, QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPixmap, QLinearGradient, QPen, QPalette, QCursor
 from PySide6.QtWidgets import (QApplication, QFrame, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
@@ -1114,6 +1116,7 @@ class DirectoryAddressBar(QStackedWidget):
             action.setToolTip(str(directory[1]) if isinstance(directory, tuple)
                               and len(directory) > 1 else str(directory))
             action.triggered.connect(lambda checked=False, p=directory: self._go_to_crumb(p))
+        install_terminal_menu(menu)
         menu.exec(button.mapToGlobal(QPoint(0, button.height())))
 
     def _build_crumbs(self):
@@ -1759,10 +1762,7 @@ class ExpandedLauncherView(QWidget):
         # Initialize menu state before activating its event filter.
         self._middle_search_history_keyword_actions = []
         self.middle_search_history_menu.installEventFilter(self)
-        # Tool QMenus do not rely on a native popup dismissal. Explicitly
-        # close after a selection (including a nested delete-history action).
-        self.middle_search_history_menu.triggered.connect(
-            lambda _action: self.middle_search_history_menu.hide())
+        install_terminal_menu(self.middle_search_history_menu)
         self.middle_search_history_button.clicked.connect(
             self.toggle_middle_search_history_menu)
         middle_search_layout.addWidget(self.middle_search_history_button, 0)
@@ -3412,8 +3412,7 @@ class ExpandedLauncherView(QWidget):
                 return False
             action = menu.activeAction()
             if action in self._middle_search_history_keyword_actions:
-                action.trigger()  # Calls existing select_middle_search_history.
-                menu.hide()
+                finish_selection(menu, action.trigger)
             # Enter with no keyword highlighted must not accidentally execute
             # the separate "register current keyword" menu command.
             event.accept()
@@ -4396,7 +4395,7 @@ class ExpandedLauncherView(QWidget):
         self.favorite_dropdown.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def hide_favorite_popup(self):
-        self.favorite_popup.hide()
+        close_menu_tree(self.favorite_popup)
         self.refresh_guest_popup_priority()
         self._favorite_popup_wheel_delta = 0
         self._favorite_popup_warp_generation += 1
@@ -4415,8 +4414,9 @@ class ExpandedLauncherView(QWidget):
                 self.hide_favorite_popup()
             return
         self.hide_favorite_popup()
-        if not self.go_to_directory(path):
-            self.launcher.error('フォルダーが見つかりません: ' + path)
+        with processing_display().display():
+            if not self.go_to_directory(path):
+                self.launcher.error('フォルダーが見つかりません: ' + path)
 
     def directory_favorites_reordered(self, paths):
         try:
@@ -4652,12 +4652,6 @@ class ExpandedLauncherView(QWidget):
         # QLineEdit should select only the stem, leaving the extension intact.
         editor = tree.findChild(QLineEdit)
         if editor is not None:
-            # A native popup must not remain open after an inline edit commits.
-            # Close *after* editingFinished so the QStyledItemDelegate can
-            # commit the final text before the menu loses its focus.
-            closer = getattr(self.launcher, 'close_finished_file_context_menus', None)
-            if callable(closer):
-                editor.editingFinished.connect(lambda: QTimer.singleShot(0, closer))
             if origin == 'file':
                 length = len(Path(path).stem)
                 editor.setSelection(0, length)
@@ -5136,7 +5130,8 @@ class ExpandedLauncherView(QWidget):
         folder_action = submenu.addAction('フォルダー')
         folder_action.setIcon(self.launcher.file_icons.icon(QFileIconProvider.IconType.Folder))
         folder_action.triggered.connect(lambda checked=False: QTimer.singleShot(
-            0, lambda p=target_directory: self.create_from_lane('folder', target_directory=p)))
+            0, lambda p=target_directory: processing_display().run(
+                lambda: self.create_from_lane('folder', target_directory=p))))
         shortcut = submenu.addAction('ショートカット')
         shortcut.setIcon(self.launcher.file_icons.icon(QFileInfo('sample.lnk')))
         shortcut.setToolTip('Windowsのショートカット作成ウィザードは未対応です')
@@ -5146,7 +5141,8 @@ class ExpandedLauncherView(QWidget):
             action = submenu.addAction(title)
             action.setIcon(self.launcher.file_icons.icon(QFileInfo('sample' + suffix)))
             action.triggered.connect(lambda checked=False, k=kind: QTimer.singleShot(
-                0, lambda p=target_directory: self.create_from_lane(k, target_directory=p)))
+                0, lambda p=target_directory: processing_display().run(
+                    lambda: self.create_from_lane(k, target_directory=p))))
         extras = [entry for entry in discover_shellnew() if entry[0] not in ('.txt', '.md')]
         if extras:
             submenu.addSeparator()
@@ -8045,7 +8041,8 @@ class ExpandedLauncherView(QWidget):
             action.triggered.connect(
                 lambda checked=False, path=folder: self._open_third_column_folder(path))
         self._third_column_folder_menu = menu
-        menu.aboutToHide.connect(menu.deleteLater)
+        install_terminal_menu(menu)
+        menu.aboutToHide.connect(lambda m=menu: QTimer.singleShot(250, m.deleteLater))
         menu.popup(panel.folder_button.mapToGlobal(
             QPoint(0, panel.folder_button.height())))
         return True

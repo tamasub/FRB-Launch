@@ -2,7 +2,7 @@
 
 - 対象: FRB Launch / FRB Commander（バッチコマンダー）
 - ViewDef仕様バージョン: `frb_commander_viewdef_v0.1`
-- 基準日: 2026-11-25
+- 基準日: 2026-11-27（folder_path 追加。v0.1互換拡張）
 - 正本: `src/commander/viewdef.py`、`src/commander/window.py`、`src/commander/launch_adapter.py`
 - 同梱スキーマ: `frb_commander_viewdef_schema_v0_1.json`（JSON Schema Draft 2020-12）
 - 配置: `FRB_Launch/defs/commander/`。この2ファイルは作成用の参照資料であり、Commander起動時には不要。
@@ -19,7 +19,7 @@
 
 Commanderは人間の選択からPowerShell実行コマンドを組み立て、確認後に発行するUIである。ViewDefは選択経路と引数の対応を宣言する。PS1の業務処理、Node.js・Git等の探索や導入、ファイルの作成、上書き可否、エラー処理はPS1自身の責務。CommanderやViewDefがPS1の依存環境を提供するわけではない。
 
-PS1とViewDefはLaunchの管理外にあってもよい。事前登録は不要。ただし、ファイル選択UIを利用する場合はLaunch内でKeyboard ExのFiles Expが利用できる必要がある。
+PS1とViewDefはLaunchの管理外にあってもよい。事前登録は不要。ただし、ファイル／フォルダー選択UIを利用する場合はLaunch内でKeyboard ExのFiles Expが利用できる必要がある。
 
 ```text
 FRB_Launch/
@@ -82,13 +82,14 @@ D:/Work/MyTools/                  ← 任意の配置先
 | `choices[].hint` | 任意の文字列。候補検索・表示に使用 |
 | `source.choices[].args` | 必須。選択した経路で渡す引数配列。引数なしなら `[]` |
 
-### 入力タイプ（3種類のみ）
+### 入力タイプ（4種類のみ）
 
 | input | 意味 | 追加項目 |
 |---|---|---|
 | `single_choice` | 固定候補から1件選択 | `choices`（空配列不可） |
 | `text` | 1行の文字列入力 | なし。前後空白はUIで除去。空入力不可 |
 | `file_path` | Keyboard Exで既存ファイルを1件選択 | `selector` 必須 |
+| `folder_path` | Keyboard Exで既存フォルダーを1件選択 | `selector` 必須 |
 
 後続の `single_choice` には `args` を置かない。`value` が文字列としてsourceの引数テンプレートに渡る。例えば候補valueを `JSON` / `CSV` とし、source側のargsに `"-Format", "${format}"` を記述する。表示名は日本語でよい。
 
@@ -119,7 +120,23 @@ D:/Work/MyTools/                  ← 任意の配置先
 
 `parent_of` の例: `{"type":"parent_of","selection":"from_file"}`。参照するstepは先行する `file_path` とし、その経路で必ず選択済みになるよう定義する。
 
-ファイルは実行されず、パスだけが返る。引数生成時にも実在ファイルか確認される。フォルダー選択、複数ファイル選択、まだ存在しない出力ファイルの選択、拡張子フィルターは現行ViewDefの機能ではない。出力パスを入力させるなら `text` を検討し、パスの妥当性・上書き等はPS1側で検証する。
+ファイルは実行されず、パスだけが返る。引数生成時にも実在ファイルか確認される。複数ファイル／フォルダー選択、まだ存在しない出力ファイルの選択、拡張子フィルターは現行ViewDefの機能ではない。出力パスを入力させるなら `text` を検討し、パスの妥当性・上書き等はPS1側で検証する。
+
+### フォルダー選択（2026-11-27追加）
+
+```json
+{
+  "id": "root",
+  "label": "対象フォルダー",
+  "input": "folder_path",
+  "selector": {
+    "type": "keyboard_ex.folder",
+    "initial_location": { "type": "workspace_root" }
+  }
+}
+```
+
+sourceのargsに `"-Root", "${root}"` を指定する（PS1が実際に -Root を受け付ける場合）。初期位置はファイル選択と同じ `workspace_root` / `script_dir` / `parent_of`（先行するfile_pathの親）。フォルダーのみ表示し、Enterで選択、→で子階層、←で親列、Escで取消。各列の先頭「（このフォルダーを選択）」で現在のフォルダーを確定できるため空フォルダーも選択可。マウスはフォルダー行クリックで子列へ、先頭行クリックで確定。LaunchのFiles Listを移動せず、パスだけを返す。引数生成時に実在ディレクトリを再確認する。初期位置の外側への移動は未対応。従来のfile_pathの動作は変更しない。
 
 ## 4. 引数生成の契約
 
@@ -221,6 +238,8 @@ JSON Schemaは型・必須項目・許可キー・入力タイプ・初期位置
 - [ ] 各source経路のExpected argvを提示し、実行せずに検証できる範囲を確認する。
 
 既存のPython実装が利用できる開発環境なら、`src/commander/viewdef.py` の `read_viewdef` / `visible_steps` / `build_command` を用い、PS1を実行せず引数・作業フォルダーを検証できる。JSON Schema検証にはDraft 2020-12対応validatorを使用する（例: Python jsonschema）。これらはAIの作成時の検証手段であり、利用者PCへの追加インストールを要求しない。
+
+- [ ] folder_path は keyboard_ex.folder、file_path は keyboard_ex.file。既存パスの種類を検証する。
 
 ## 8. 資料の管理
 

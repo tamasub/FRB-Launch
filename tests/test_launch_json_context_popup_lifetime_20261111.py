@@ -58,6 +58,12 @@ class FakeMenu:
         self.popup_calls = []
         self.close_calls = 0
 
+    def isVisible(self):
+        return self.visible
+
+    def actions(self):
+        return []
+
     def popup(self, point):
         self.popup_calls.append(point)
         self.visible = True
@@ -82,13 +88,21 @@ class FakeAction:
     def menu(self):
         return self.submenu
 
+    def isEnabled(self): return True
+    def isVisible(self): return True
+    def isSeparator(self): return False
+
 
 def make_launcher():
     launcher = SimpleNamespace(_launch_context_menu=None, wired=[], remote_added=[])
     launcher._forget_launch_context_menu = lambda menu: (
         setattr(launcher, '_launch_context_menu', None)
         if launcher._launch_context_menu is menu else None)
-    launcher._wire_hybrid_context_menu = lambda menu, *, column: launcher.wired.append((menu, column))
+    def wire(menu, *, column):
+        from menu_lifecycle import close_after_native_trigger
+        launcher.wired.append((menu, column))
+        menu.triggered.connect(lambda action: close_after_native_trigger(menu, action))
+    launcher._wire_hybrid_context_menu = wire
     launcher._prepend_remote_pad_navigation = launcher.remote_added.append
     launcher._show_launch_json_context_popup = lambda menu, point, column='exp': (
         _method('_show_launch_json_context_popup')(

@@ -7,6 +7,7 @@ the menu remain native. No transparent hit target, SendKeys or duplicated
 filesystem implementation is required.
 """
 
+from menu_lifecycle import finish_selection
 from PySide6.QtCore import QObject, QEvent, QTimer, Qt
 try:
     from PySide6.QtCore import QAbstractNativeEventFilter
@@ -514,20 +515,17 @@ class RemoteContextWheel(QObject):
                 if ((operation == 'open_with_app' and len(arguments) == 2) or
                         (operation == 'open_with_dialog' and len(arguments) == 1)):
                     self.stop()
-                    self.root.close()
                     if operation == 'open_with_app':
-                        QTimer.singleShot(0, lambda args=arguments:
-                                          self.launcher.open_file_with_selected_app(*args))
+                        callback = lambda args=arguments: self.launcher.open_file_with_selected_app(*args)
                     else:
-                        QTimer.singleShot(0, lambda filename=arguments[0]:
-                                          self.launcher.perform_filesystem_context_action(
-                                              'open_with', filename, 'file'))
+                        callback = lambda filename=arguments[0]: self.launcher.perform_filesystem_context_action(
+                            'open_with', filename, 'file')
+                    finish_selection(self.root, callback, action=action, defer=lambda fn: QTimer.singleShot(0, fn))
                     return True
             # Dismiss popup/grab BEFORE a potentially modal confirmation or
             # inline rename; do not call the filesystem operation ourselves.
             self.stop()
-            self.root.close()
-            QTimer.singleShot(0, action.trigger)
+            finish_selection(self.root, action.trigger, action=action, defer=lambda fn: QTimer.singleShot(0, fn))
             return True
         if name in ('CLOSE', 'ESCAPE'):
             self.root.close()

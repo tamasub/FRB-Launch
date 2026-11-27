@@ -11,6 +11,7 @@ import unicodedata
 import logging
 from time import perf_counter
 
+from menu_lifecycle import close_menu_tree, finish_selection
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QKeyEvent, QPainter, QPainterPath, QPixmap, QStandardItem
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout,
@@ -699,6 +700,10 @@ class SlashExpMenu(QMenu):
         item.setData(True, _LOADED_ROLE)
         return item
 
+    def _folder_picker(self):
+        return (getattr(self.root_menu, '_file_selection_callback', None) is not None
+                and getattr(self.root_menu, '_selection_kind', 'file') == 'folder')
+
     def _current_folder_item(self):
         """Context handle for THIS opened directory, never the Exp root.
 
@@ -706,8 +711,9 @@ class SlashExpMenu(QMenu):
         top-level namespace. The source of a child column is the only safe
         authority; the unrelated currently highlighted List row is not.
         """
-        if getattr(self.root_menu, '_file_selection_callback', None) is not None:
-            return None  # Picker has no (カレントフォルダー) execution command.
+        if (getattr(self.root_menu, '_file_selection_callback', None) is not None
+                and not self._folder_picker()):
+            return None  # File picker has no current-folder command.
         if self.source_item is None or self._context_source is not None:
             return None  # No current directory on the unrooted Exp main list.
         # The FIRST / column is also an opened logical directory. Its source
@@ -730,7 +736,8 @@ class SlashExpMenu(QMenu):
             description = str(node.get('title') or '現在のフォルダー')
         else:
             return None
-        item = QStandardItem(QIcon(), '（カレントフォルダー）')
+        item = QStandardItem(QIcon(), '（このフォルダーを選択）' if self._folder_picker()
+                             else '（カレントフォルダー）')
         item.setEditable(False)
         item.setToolTip(description)
         item.setData(context, _DATA_ROLE)
@@ -823,7 +830,8 @@ class SlashExpMenu(QMenu):
             info = self.source_item.data(_DATA_ROLE) or {}
             path = info.get('path')
             if path and os.path.isdir(path) and not info.get('file'):
-                result.extend(self._file_entries(path, paths=file_paths))
+                if not self._folder_picker():
+                    result.extend(self._file_entries(path, paths=file_paths))
                 return self._sort_physical_items_for_list(result, path)
         return result
 
@@ -1211,7 +1219,8 @@ class SlashExpMenu(QMenu):
                     lambda checked=False, target=item:
                     self._close_then(lambda: self._commit_terminal(target)))
             if (item.data(_DATA_ROLE) or {}).get('current_folder'):
-                self._context_hint_actions.add(action)
+                if not self._folder_picker():
+                    self._context_hint_actions.add(action)
                 # The Keyboard EX self-row is also a mouse command. Before,
                 # Enter navigated but clicking simply dismissed the QMenu.
                 # Right still enters the existing context submenu.
@@ -1449,21 +1458,19 @@ class SlashExpMenu(QMenu):
         if trace_enter:
             _trace_current_folder_enter('before_root_close', self.launcher, self,
                                         ticket=foreground_handoff)
-        self.root_menu.close()
-        if trace_enter:
-            _trace_current_folder_enter('after_root_close', self.launcher, self,
-                                        ticket=foreground_handoff)
-        if foreground_handoff is not None:
-            # Try immediately, while the Enter keypress is still being
-            # dispatched. Waiting for the next Qt tick may see the Enter KEYUP
-            # as newer input and lose the guarded Windows handoff opportunity.
-            restored = windows.finish_menu_enter_handoff(
-                int(self.launcher.winId()), foreground_handoff)
+        def after_close():
             if trace_enter:
-                _trace_current_folder_enter('immediate_restore', self.launcher,
-                                            ticket=foreground_handoff, result=restored)
-        # Navigate only after the Qt.Tool is hidden and its native grab freed.
-        QTimer.singleShot(0, callback)
+                _trace_current_folder_enter('after_root_close', self.launcher, self,
+                                            ticket=foreground_handoff)
+            if foreground_handoff is not None:
+                # Preserve the native Enter handoff before the next Qt tick.
+                restored = windows.finish_menu_enter_handoff(
+                    int(self.launcher.winId()), foreground_handoff)
+                if trace_enter:
+                    _trace_current_folder_enter('immediate_restore', self.launcher,
+                                                ticket=foreground_handoff, result=restored)
+        finish_selection(self.root_menu, callback, after_close=after_close,
+                         defer=lambda fn: QTimer.singleShot(0, fn))
 
     def _build_existing_context(self, item):
         """Bind real List/Exp context actions as the NEXT menu column.
@@ -1668,6 +1675,11 @@ class SlashExpMenu(QMenu):
         selector = getattr(self.root_menu, '_file_selection_callback', None)
         if selector is not None:
             path = info.get('path')
+            if self._folder_picker():
+                if not info.get('file') and path and os.path.isdir(path):
+                    selector(str(path))
+                    return True
+                return False
             if info.get('file') and path and os.path.isfile(path):
                 selector(str(path))  # Return the path; NEVER open/execute it.
                 return True
@@ -1863,6 +1875,15 @@ class SlashExpMenu(QMenu):
             return
         if getattr(self.root_menu, '_file_selection_callback', None) is not None:
             data = item.data(_DATA_ROLE) or {}
+            if self._folder_picker():
+                if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    if not data.get('file') and os.path.isdir(data.get('path') or ''):
+                        self._close_then(lambda target=item: self._commit_terminal(target))
+                    event.accept()
+                    return
+                if data.get('current_folder') or data.get('file'):
+                    event.accept()
+                    return
             if data.get('file') and key in (Qt.Key.Key_Right, Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self._close_then(lambda target=item: self._commit_terminal(target))
                 event.accept()
@@ -2012,10 +2033,7 @@ def _slash_tool_chain_has_composition(menu):
 
 def _close_visible_slash_children(menu):
     """Tool submenu windows must never outlive their closed root."""
-    for child in (*menu._submenus.values(), *menu._context_menus.values()):
-        if child.isVisible():
-            _close_visible_slash_children(child)
-            child.close()
+    close_menu_tree(menu, include_root=False)
 
 
 def physical_folder_source(launcher, directory):
@@ -2031,7 +2049,7 @@ def physical_folder_source(launcher, directory):
 def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
                         extra_name_gutter=0,
                         list_bottom_y=None, source_item=None, list_height=None,
-                        parent_left=None, on_file_selected=None):
+                        parent_left=None, on_file_selected=None, selection_kind="file"):
     """Create one breadcrumb-rooted session; never register a new Exp root."""
     started = perf_counter()
     previous = getattr(launcher, '_slash_exp_navigation_menu', None)
@@ -2044,6 +2062,7 @@ def popup_exp_navigator(launcher, panel, anchor, *, first_column_width=None,
     # window for Japanese IME and our guard provides outside-click closing.
     menu = SlashExpMenu(launcher, panel, source_item=source_item, parent=launcher)
     menu._file_selection_callback = on_file_selected
+    menu._selection_kind = selection_kind
     if list_height is not None:
         # New floating mode: Launch window may be shorter than this popup.
         # Files List *height* is the hard cap; the monitor's work area keeps

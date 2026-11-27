@@ -21,57 +21,52 @@ def source_method(owner, name, scope):
     return scope[name]
 
 
-def setup_activate():
-    deferred = []
-    scope = {
-        'Path': Path,
-        'QTimer': NS(singleShot=lambda interval, callback: deferred.append((interval, callback))),
-    }
-    return source_method('RemoteFolderCascade', '_remote_activate_file', scope), deferred
+def setup_activate(monkeypatch):
+    import menu_lifecycle as ml
+    from processing_display import ProcessingDisplay
+    from test_menu_lifecycle_processing_20261127 import Application
+    events = []
+    display = ProcessingDisplay(Application(events), 'wait', 'exclude')
+    monkeypatch.setattr(ml, 'processing_display', lambda: display)
+    scope = {'Path': Path, 'finish_selection': ml.finish_selection, 'selection_root': ml.selection_root}
+    return source_method('RemoteFolderCascade', '_remote_activate_file', scope), events
 
 
-def test_file_launch_dismisses_all_menus_after_mouse_event(tmp_path):
-    launch, deferred = setup_activate()
+def test_file_launch_dismisses_only_owned_menus_before_dispatch(tmp_path, monkeypatch):
+    from test_menu_lifecycle_processing_20261127 import Menu
+    launch, events = setup_activate(monkeypatch)
     filename = tmp_path / 'example.txt'
     filename.write_text('ok', encoding='utf-8')
-    events = []
-    launcher = NS(
-        activate=lambda row: events.append(('activate', row['_browse_file'])),
-        close_finished_file_context_menus=lambda: events.append(('close-all', None)),
-    )
-    launch(NS(launcher=launcher), {'_browse_file': str(filename)})
-    assert events == [('activate', str(filename))]
-    assert len(deferred) == 1
-    assert deferred[0][0] == 0
-    deferred.pop()[1]()
-    assert events == [('activate', str(filename)), ('close-all', None)]
+    root = Menu('root', events); owner = Menu('child', events, parent=root); root.child = owner
+    other = Menu('unrelated', events)
+    owner.launcher = NS(activate=lambda row: events.append(('activate', row['_browse_file'])))
+    launch(owner, {'_browse_file': str(filename)})
+    assert events == [('close','child'),('close','root'),('cursor','wait'),('activate',str(filename)),('restore',)]
+    assert other.visible
 
 
-def test_nonexistent_file_never_closes_folder_navigation(tmp_path):
-    launch, deferred = setup_activate()
-    owner = NS(launcher=NS(activate=Mock(), close_finished_file_context_menus=Mock()))
+def test_missing_selected_file_closes_and_reports_error(tmp_path, monkeypatch):
+    from test_menu_lifecycle_processing_20261127 import Menu
+    launch, events = setup_activate(monkeypatch)
+    owner = Menu('root', events)
+    owner.launcher = NS(activate=Mock(), error=Mock())
     launch(owner, {'_browse_file': str(tmp_path / 'does_not_exist.txt')})
-    assert not deferred
+    assert not owner.visible
     owner.launcher.activate.assert_not_called()
-    owner.launcher.close_finished_file_context_menus.assert_not_called()
+    owner.launcher.error.assert_called_once()
+    assert events[-1] == ('restore',)
 
 
-def test_failed_launch_still_dismisses_finished_command(tmp_path):
-    launch, deferred = setup_activate()
+def test_failed_launch_still_dismisses_finished_command(tmp_path, monkeypatch):
+    from test_menu_lifecycle_processing_20261127 import Menu
+    import pytest
+    launch, events = setup_activate(monkeypatch)
     filename = tmp_path / 'bad.txt'
     filename.write_text('ok', encoding='utf-8')
-    def fail(row):
-        raise OSError('cannot start')
-    owner = NS(launcher=NS(activate=fail, close_finished_file_context_menus=Mock()))
-    try:
-        launch(owner, {'_browse_file': str(filename)})
-    except OSError:
-        pass
-    else:
-        assert False, 'launch error must propagate normally'
-    assert len(deferred) == 1
-    deferred[0][1]()
-    owner.launcher.close_finished_file_context_menus.assert_called_once_with()
+    def fail(row): raise OSError('cannot start')
+    owner = Menu('root', events); owner.launcher = NS(activate=fail)
+    with pytest.raises(OSError): launch(owner, {'_browse_file': str(filename)})
+    assert not owner.visible and events[-1] == ('restore',)
 
 
 def test_non_scroll_and_scroll_double_click_share_single_launch_method():
@@ -83,17 +78,18 @@ def test_non_scroll_and_scroll_double_click_share_single_launch_method():
                if isinstance(n, ast.FunctionDef)}
     assert "lambda r=dbl: self._remote_activate_file(r)" in methods['mouseReleaseEvent']
     assert "lambda r=row: self._remote_activate_file(r)" in methods['_scroll_double_clicked']
-    assert 'close_finished_file_context_menus' in methods['_remote_activate_file']
+    assert 'finish_selection' in methods['_remote_activate_file']
 
 
-def test_closer_dismisses_both_right_click_opener_and_folder_columns():
-    scope = {}
-    close = source_method('Launcher', 'close_finished_file_context_menus', scope)
-    seen = []
-    context = NS(close=lambda: seen.append('context'))
-    cascade = NS(isVisible=lambda:True, close=lambda: seen.append('other-cascade'))
-    launcher = NS(_launch_context_menu=context, _remote_page_menu=None,
-                  menu=cascade, close_remote_folder_menu=lambda: seen.append('folder-root'))
-    close(launcher)
-    assert seen == ['context', 'folder-root', 'other-cascade']
-    assert launcher._launch_context_menu is None
+def test_context_selection_closes_linked_host_but_inline_handoff_retains_it():
+    from menu_lifecycle import close_selection
+    from test_menu_lifecycle_processing_20261127 import Menu, Action
+    events = []
+    host = Menu('host', events); context = Menu('context', events)
+    context._frb_selection_parent = host
+    action = Action(); action.property = lambda _: True
+    close_selection(context, action)
+    assert not context.visible and host.visible
+    context.visible = True
+    close_selection(context, Action())
+    assert not context.visible and not host.visible

@@ -2220,7 +2220,7 @@ class RemoteFilesExplorer(QWidget):
                 if launcher is not None:
                     menu = launcher._create_files_context_menu(self)
                     launcher._wire_hybrid_context_menu(menu, column='exp')
-                    menu.aboutToHide.connect(menu.deleteLater)
+                    menu.aboutToHide.connect(lambda m=menu: QTimer.singleShot(250, m.deleteLater))
                     menu.popup(point)
             return
         self._selection_timer.stop()
@@ -2500,7 +2500,7 @@ class RemoteFilesExplorer(QWidget):
         if launcher is not None:
             launcher._show_launch_json_context_popup(menu, position, column='exp')
         else:
-            menu.aboutToHide.connect(menu.deleteLater)
+            menu.aboutToHide.connect(lambda m=menu: QTimer.singleShot(250, m.deleteLater))
             menu.popup(position)
 
     def _save_size(self):

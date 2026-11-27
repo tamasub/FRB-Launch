@@ -118,34 +118,24 @@ def test_style_inactive_row_is_outline_only_without_green_fill():
 
 
 def test_finished_action_dismisses_popup_but_navigation_does_not():
-    callbacks = []
-    close = lambda: callbacks.append('closed')
-    timer = NS(singleShot=lambda ms, fn: callbacks.append(fn))
-    handler = extract(SOURCE_APP, 'Launcher', '_on_file_context_action_triggered', {'QTimer':timer})
-    row = NS(menu=lambda: None, text=lambda: '貼り付け')
-    new_row = NS(menu=lambda: None, text=lambda: '新しいフォルダー')
-    new_menu = NS(actions=lambda: [new_row])
-    new_action = NS(menu=lambda: new_menu)
-    folder_list = NS(menu=lambda: None, text=lambda:'Filesリスト')
-    menu = NS(folder_list_action=folder_list, new_submenu_action=new_action)
-    owner = NS(close_finished_file_context_menus=close)
-    handler(owner, menu, folder_list)
-    handler(owner, menu, new_action)
-    handler(owner, menu, new_row)
-    handler(owner, menu, NS(menu=lambda:None,text=lambda:'名前の変更'))
-    assert callbacks == []
-    handler(owner, menu, row)
-    assert len(callbacks) == 1
-    callbacks.pop()()
-    assert callbacks == ['closed']
+    from menu_lifecycle import is_terminal
+    from test_menu_lifecycle_processing_20261127 import Action, Menu
+    root = Menu('root', [])
+    folder_list = Action()
+    root.folder_list_action = folder_list
+    assert not is_terminal(root, folder_list)
+    assert not is_terminal(root, Action(child=Menu('new', [])))
+    # New/rename/paste are terminal selections; no caption-specific rules.
+    for name in ('新しいフォルダー', '名前の変更', '貼り付け'):
+        action = Action()
+        action.text = lambda: name
+        assert is_terminal(root, action)
 
 
-def test_explicit_folder_paste_dispatch_always_closes_context_popup():
+def test_explicit_folder_paste_dispatch_has_no_late_global_close():
     calls = []
-    dispatch = extract(SOURCE_APP, 'Launcher', '_paste_from_context_menu', {
-        'QTimer':NS(singleShot=lambda _ms, fn:fn())})
+    dispatch = extract(SOURCE_APP, 'Launcher', '_paste_from_context_menu', {})
     owner = NS(_paste_context_destination=lambda parent:'expanded',
-               paste_into_expanded_directory=lambda **kw: calls.append(('paste',kw)),
-               close_finished_file_context_menus=lambda: calls.append(('close',None)))
+               paste_into_expanded_directory=lambda **kw: calls.append(('paste',kw)))
     dispatch(owner, object(), target_folder='F:/target')
-    assert calls == [('paste', {'destination_override':'F:/target'}), ('close',None)]
+    assert calls == [('paste', {'destination_override':'F:/target'})]
