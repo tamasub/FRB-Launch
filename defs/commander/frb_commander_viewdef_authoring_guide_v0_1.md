@@ -19,7 +19,7 @@
 
 Commanderは人間の選択からPowerShell実行コマンドを組み立て、確認後に発行するUIである。ViewDefは選択経路と引数の対応を宣言する。PS1の業務処理、Node.js・Git等の探索や導入、ファイルの作成、上書き可否、エラー処理はPS1自身の責務。CommanderやViewDefがPS1の依存環境を提供するわけではない。
 
-PS1とViewDefはLaunchの管理外にあってもよい。事前登録は不要。ただし、ファイル／フォルダー選択UIを利用する場合はLaunch内でKeyboard ExのFiles Expが利用できる必要がある。
+PS1とViewDefはLaunchの管理外にあってもよい。事前登録は不要。ただし、ファイル／フォルダー選択UIを利用する場合はLaunch内でKeyboarder ExのFiles Expが利用できる必要がある。
 
 ```text
 FRB_Launch/
@@ -88,8 +88,8 @@ D:/Work/MyTools/                  ← 任意の配置先
 |---|---|---|
 | `single_choice` | 固定候補から1件選択 | `choices`（空配列不可） |
 | `text` | 1行の文字列入力 | なし。前後空白はUIで除去。空入力不可 |
-| `file_path` | Keyboard Exで既存ファイルを1件選択 | `selector` 必須 |
-| `folder_path` | Keyboard Exで既存フォルダーを1件選択 | `selector` 必須 |
+| `file_path` | Keyboarder Exで既存ファイルを1件選択 | `selector` 必須 |
+| `folder_path` | Keyboarder Exで既存フォルダーを1件選択 | `selector` 必須 |
 
 後続の `single_choice` には `args` を置かない。`value` が文字列としてsourceの引数テンプレートに渡る。例えば候補valueを `JSON` / `CSV` とし、source側のargsに `"-Format", "${format}"` を記述する。表示名は日本語でよい。
 
@@ -207,7 +207,7 @@ working_directory: PS1の親フォルダー
 | commit_range / `main..HEAD` | `["-Range", "main..HEAD"]` |
 | file_pair / 実在する2ファイル | `["-Mode", "FilePair", "-FromFile", "D:/Work/比較 元.json", "-ToFile", "D:/Work/比較 先.json"]` |
 
-パスは説明用の例。実行時はKeyboard Exが返す実在パスを使用する。
+パスは説明用の例。実行時はKeyboarder Exが返す実在パスを使用する。
 
 ## 6. 未対応機能と禁止事項
 
