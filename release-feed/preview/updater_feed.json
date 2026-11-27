@@ -1,7 +1,7 @@
 {
   "schema": "frb-updater-feed-v1",
-  "version": "0.9.13",
-  "url": "https://github.com/tamasub/FRB-Launch/releases/download/v0.9.13/FRBUpdater_0.9.13.exe",
-  "size": 10195665,
-  "sha256": "4ce3f8f06a94905d23e1f0bc222145256116160b1f461163079495f655813e84"
+  "version": "0.9.14",
+  "url": "https://github.com/tamasub/FRB-Launch/releases/download/v0.9.14/FRBUpdater_0.9.14.exe",
+  "size": 10639331,
+  "sha256": "04ff8a3231b84ec85f25c300bcf5e94f2f0caa6015f01ec6800aeb9b48b05f7a"
 }
