@@ -11,6 +11,7 @@
     <img alt="Freeware" src="https://img.shields.io/badge/Freeware-Free-24936A?style=flat-square" />
     <img alt="Preview" src="https://img.shields.io/badge/Launch%20v0.9.14-Preview-E2A100?style=flat-square" />
   </p>
+  
   <p><sub>Launch本体 v0.9.14 / README更新：2026-11-27（統合版の公開番号はReleasesを参照）</sub></p>
   <p>
     <a href="https://github.com/tamasub/FRB-Launch/releases/"><strong>ダウンロード（GitHub Releases）</strong></a> ・
